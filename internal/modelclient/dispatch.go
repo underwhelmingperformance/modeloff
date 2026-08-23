@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -15,6 +14,8 @@ import (
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 )
+
+var errDispatchWindowClosed = errors.New("dispatch window is closed")
 
 // runDispatchLoop is the long-lived dispatch goroutine for a model-
 // client. It reads [protocol.Delivery] envelopes from the
@@ -27,12 +28,12 @@ import (
 //
 // A burst is taken as a batch. After a delivery arrives the loop
 // drains whatever else is already queued without blocking, and the
-// triggers it finds for one window go into a single turn. Five
-// messages that land while the model was busy are five lines in one
-// prompt, which is both what a person reading a channel sees and
-// four fewer round-trips than one turn each. [ModelClient.fileBatch]
-// is where the split by window happens and where each window's
-// history snapshot is taken.
+// current events it finds for one window go into a single turn in
+// delivery order. Five messages that land while the model was busy
+// are five lines in one prompt, which is both what a person reading
+// a channel sees and four fewer round-trips than one turn each.
+// [ModelClient.fileBatch] is where the split by window happens and
+// where each window's history snapshot is taken.
 //
 // The history buffer feeds [ModelClient.dispatchTurn]'s prompt
 // construction. Loaded for known channels at attach (see
@@ -45,8 +46,10 @@ import (
 // same select as a re-dispatch, one delay later (see
 // [ModelClient.scheduleRedispatch]). The loop keeps draining
 // deliveries while that delay runs, so a re-dispatch never holds the
-// queue up, and a turn raised for the same window in the meantime
-// supersedes it: `pending` is what the two arms agree through.
+// queue up. A turn raised for the same window in the meantime
+// replaces the failed batch's payload but inherits its delay; the
+// failed traffic is already in the new turn's history. `pending`
+// retains the replacement batch until the delay ends.
 //
 // Each turn's span is linked to the originating handlers' spans via
 // the [trace.SpanContext] each producer captured at emit time. The
@@ -74,15 +77,10 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 		case <-done:
 			return
 		case delivery := <-events:
-			// Re-consulted every burst, so a catalogue refresh (a lazy
-			// first load, a `SetAPIKey` invalidation followed by a fresh
-			// `ListModels`) reaches the transcript token budget without
-			// needing a reattach.
-			mc.hist.SetContextLen(mc.contextLenFn(mc.instance.ModelID))
-
-			batches = mc.fileBatch(ctx, append([]protocol.Delivery{delivery}, drain(events)...))
-		case batch := <-mc.redispatch:
-			if !pending.claim(batch) {
+			batches = mc.batchesForDeliveries(ctx, events, delivery, pending)
+		case token := <-mc.redispatch:
+			batch, ok := pending.claim(token)
+			if !ok {
 				continue
 			}
 
@@ -105,6 +103,49 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 	}
 }
 
+func (mc *ModelClient) batchesForDeliveries(
+	ctx context.Context,
+	events <-chan protocol.Delivery,
+	first protocol.Delivery,
+	pending redispatchSet,
+) []*turnBatch {
+	// Re-consulted every burst, so a catalogue refresh (a lazy first
+	// load, a `SetAPIKey` invalidation followed by a fresh `ListModels`)
+	// reaches the transcript token budget without needing a reattach.
+	mc.hist.SetContextLen(mc.contextLenFn(mc.instance.ModelID))
+
+	deliveries := append([]protocol.Delivery{first}, drain(events)...)
+	batches := mc.fileBatch(ctx, deliveries)
+
+	closed := make(map[domain.ChannelName]bool)
+	for _, delivery := range deliveries {
+		if channel, closes := closedWindow(mc.instance, delivery.Event); closes {
+			pending.supersede(channel)
+			closed[channel] = true
+		}
+
+		if channel, opens := openedWindow(mc.instance, delivery.Event); opens {
+			closed[channel] = false
+		}
+	}
+
+	kept := batches[:0]
+	for _, batch := range batches {
+		if closed[batch.channel] && !invitationBatch(batch) {
+			continue
+		}
+
+		batch = pending.merge(batch)
+		if batch == nil || len(batch.triggers) == 0 {
+			continue
+		}
+
+		kept = append(kept, batch)
+	}
+
+	return kept
+}
+
 // redispatchSet holds the re-dispatch waiting for each window.
 //
 // [ModelClient.runDispatchLoop] creates it and is the only goroutine
@@ -112,11 +153,16 @@ func (mc *ModelClient) runDispatchLoop(ctx context.Context, sub protocol.Subscri
 // goroutine waiting out a delay never touches it: it hands its batch
 // back over `mc.redispatch`, and the loop decides there whether the
 // batch is still wanted.
-type redispatchSet map[domain.ChannelName]*turnBatch
+type pendingRedispatch struct {
+	token *turnBatch
+	batch *turnBatch
+}
+
+type redispatchSet map[domain.ChannelName]*pendingRedispatch
 
 // hold records `batch` as the re-dispatch its window is waiting for.
 func (s redispatchSet) hold(batch *turnBatch) {
-	s[batch.channel] = batch
+	s[batch.channel] = &pendingRedispatch{token: batch, batch: batch}
 }
 
 // supersede forgets whatever re-dispatch was waiting for `ch`.
@@ -124,55 +170,81 @@ func (s redispatchSet) supersede(ch domain.ChannelName) {
 	delete(s, ch)
 }
 
-// claim reports whether `batch` is still the re-dispatch its window
-// is waiting for, and forgets it when it is. A batch whose window was
-// superseded while it waited answers false: a later turn has already
-// covered what it was going to ask about.
-func (s redispatchSet) claim(batch *turnBatch) bool {
-	if s[batch.channel] != batch {
-		return false
+// merge replaces a waiting failed batch with newer traffic for the
+// same window. The new history snapshot already contains the failed
+// batch because fileBatch persisted it in the rolling transcript. The
+// replacement keeps its own current events and span links, but waits
+// for the provider-directed delay attached to the failed attempt.
+func (s redispatchSet) merge(batch *turnBatch) *turnBatch {
+	pending := s[batch.channel]
+	if pending == nil {
+		return batch
 	}
 
-	delete(s, batch.channel)
+	batch.retried = pending.batch.retried || batch.retried
+	pending.batch = batch
 
-	return true
+	return nil
+}
+
+// claim returns the latest batch waiting under `token` and forgets it.
+// A token cancelled when the window closed answers false.
+func (s redispatchSet) claim(token *turnBatch) (*turnBatch, bool) {
+	pending := s[token.channel]
+	if pending == nil || pending.token != token {
+		return nil, false
+	}
+
+	delete(s, token.channel)
+
+	return pending.batch, true
 }
 
 // runBatch dispatches one batch and schedules the single re-dispatch a
 // transient upstream failure earns it.
 //
-// A turn is the window's answer to everything outstanding in it, so
-// running one drops any re-dispatch still waiting there. That is what
-// keeps a message from reaching the model twice: `fileBatch` files
-// every delivery into the ring as it arrives, so a failed turn's chat
-// traffic is already in this turn's transcript, and handing the
-// failed batch back afterwards would ask the model to answer a line
-// it has just read. A poke is not filed anywhere, so a superseded
-// poke is simply dropped, which is the right end for it: the traffic
-// that superseded it is a better prompt than the nudge that stood in
-// for one.
+// New traffic for the same window replaces a waiting failed batch but
+// remains under its provider-directed delay. The dispatch loop also
+// cancels a pending batch when PART or KICK closes the window.
 //
 // The second attempt is the last: a provider that answered the same
 // way twice is not having a moment, and a model that kept trying
 // would spend the user's credits on a conversation that has already
 // moved on.
 func (mc *ModelClient) runBatch(ctx context.Context, batch *turnBatch, pending redispatchSet) {
-	pending.supersede(batch.channel)
+	turnCtx, cancel := context.WithCancel(ctx)
+	turn := &activeTurn{window: batch.channel, cancel: cancel}
+	mc.mu.Lock()
+	if mc.released {
+		mc.mu.Unlock()
+		cancel()
+		return
+	}
+	mc.activeTurn = turn
+	mc.mu.Unlock()
 
-	err := mc.dispatchTurn(ctx, batch)
+	err := mc.dispatchTurn(turnCtx, batch)
+	cancel()
+
+	mc.mu.Lock()
+	if mc.activeTurn == turn {
+		mc.activeTurn = nil
+	}
+	mc.mu.Unlock()
+
 	var nonReplayable *nonReplayableTurnError
 	if err == nil || batch.retried || errors.As(err, &nonReplayable) || !api.Retryable(err) {
 		return
 	}
 
-	if mc.scheduleRedispatch(ctx, batch) {
+	if mc.scheduleRedispatch(ctx, batch, err) {
 		pending.hold(batch)
 	}
 }
 
-// scheduleRedispatch hands `batch` back to the dispatch loop after a
-// jittered delay so the turn gets one more attempt, and reports
-// whether it scheduled one.
+// scheduleRedispatch hands `batch` back to the dispatch loop after the
+// provider-directed or locally jittered delay, and reports whether it
+// scheduled the attempt.
 //
 // The wait runs on a goroutine of its own and never on the dispatch
 // goroutine, which has to stay on its select: deliveries arriving
@@ -181,10 +253,14 @@ func (mc *ModelClient) runBatch(ctx context.Context, batch *turnBatch, pending r
 // client's wait group, so `Wait` covers it, and so does the shutdown
 // drain behind `Wait`; both of its own waits end on the loop's
 // context, which [ModelClient.Release] cancels.
-func (mc *ModelClient) scheduleRedispatch(ctx context.Context, batch *turnBatch) bool {
+func (mc *ModelClient) scheduleRedispatch(
+	ctx context.Context,
+	batch *turnBatch,
+	retryErr error,
+) bool {
 	batch.retried = true
 
-	delay, err := mc.retry.duration()
+	delay, err := mc.retry.durationFor(retryErr)
 	if err != nil {
 		slog.ErrorContext(ctx, "draw re-dispatch jitter, abandoning the retry",
 			"component", "modelclient",
@@ -204,13 +280,8 @@ func (mc *ModelClient) scheduleRedispatch(ctx context.Context, batch *turnBatch)
 	)
 
 	mc.wg.Go(func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-ctx.Done():
+		if err := mc.retry.waitFor(ctx, delay); err != nil {
 			return
-		case <-timer.C:
 		}
 
 		select {
@@ -229,6 +300,10 @@ func (mc *ModelClient) scheduleRedispatch(ctx context.Context, batch *turnBatch)
 // keeps for a consumer that no longer exists. The QUIT the
 // disconnect broadcasts is what the channel sees, so the failure is
 // visible where the client was.
+//
+// The failed goroutine cannot drain its own terminal deliveries.
+// DisconnectDeadClient therefore reaps that subscription after the
+// peer-visible teardown commits.
 func (mc *ModelClient) recoverDispatchPanic(ctx context.Context) {
 	r := recover()
 	if r == nil {
@@ -241,16 +316,17 @@ func (mc *ModelClient) recoverDispatchPanic(ctx context.Context) {
 		"panic", r,
 	)
 
-	mc.sess.Disconnect(ctx, mc.Identity(), "Internal error")
+	mc.sess.DisconnectDeadClient(ctx, mc.Identity(), "Internal error")
 }
 
-// drain takes everything already queued on `events` without
-// blocking. What it returns is the rest of the burst the caller's
-// first delivery started.
+// drain takes up to one history window of deliveries already queued
+// on `events` without blocking. The caller has already taken the
+// first delivery, so this function leaves one slot for it. Any
+// remainder starts the next chronological turn.
 func drain(events <-chan protocol.Delivery) []protocol.Delivery {
-	var rest []protocol.Delivery
+	rest := make([]protocol.Delivery, 0, modelHistorySize-1)
 
-	for {
+	for len(rest) < modelHistorySize-1 {
 		select {
 		case d := <-events:
 			rest = append(rest, d)
@@ -258,16 +334,25 @@ func drain(events <-chan protocol.Delivery) []protocol.Delivery {
 			return rest
 		}
 	}
+
+	return rest
 }
 
-// turnBatch is one window's worth of a burst: the triggers that
-// arrived for it, the transcript the turn reads them against, and
-// the span contexts of the deliveries that carried them.
+// turnBatch is one window's worth of a burst. History and replies are
+// the pre-burst context. Events preserve every renderable delivery in
+// current order. Triggers retain the subset that grants dispatch
+// authority, and causes link those triggering deliveries to the turn.
 type turnBatch struct {
 	channel  domain.ChannelName
 	history  []domain.StoredEvent
+	replies  []storedReply
+	events   []protocol.IRCMessage
 	triggers []protocol.IRCMessage
-	causes   []trace.SpanContext
+	// latestTrigger is the position of the newest dispatch trigger in
+	// events. Later entries can be sender history or state changes.
+	latestTrigger int
+	causes        []trace.SpanContext
+	historyErr    error
 
 	// retried records that this batch has already been handed back to
 	// the dispatch loop once, which is what bounds a failing turn to
@@ -279,48 +364,167 @@ type turnBatch struct {
 // and returns the turns they call for, one per window, in the order
 // the windows first appeared in the burst.
 //
-// The split between a turn's history and its triggers is the split
-// between what the model is shown as context and what it is being
-// asked about. Every window that will take a turn is snapshotted
-// before anything from the burst is filed, so a trigger the prompt
-// lists explicitly is not also sitting in the transcript above it.
-// The burst's own non-triggers — a topic change, a mode change, a
-// peer's quit — are then appended to that transcript in arrival
-// order, because a model catching up on five messages has to be told
-// what happened between them.
+// Every window that will take a turn is snapshotted before anything
+// from the burst is filed. The burst's triggers and non-triggers are
+// then appended to its current event block in arrival order, because
+// a model catching up on five messages has to see the topic or mode
+// changes that happened between them in the same positions.
 func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Delivery) []*turnBatch {
 	batches, byWindow := mc.openBatches(ctx, deliveries)
 
 	for _, delivery := range deliveries {
-		ch, irc, isTrigger := dispatchTrigger(mc.instance.ID(), delivery.Event)
+		ch, irc, isTrigger := dispatchTrigger(mc.instance, delivery.Event)
+		isTrigger = isTrigger && !delivery.HistoryOnly
 
 		if isTrigger {
-			batch := byWindow[ch]
-			batch.triggers = append(batch.triggers, irc)
-			batch.causes = append(batch.causes, delivery.SpanCtx)
+			fileTrigger(byWindow[ch], irc, delivery.SpanCtx)
 		}
 
-		ca, ok := delivery.Event.(domain.ChannelActivity)
-		if !ok {
+		if mc.fileIssuerReply(delivery.Event, batches, byWindow) {
 			continue
 		}
 
-		stored := domain.StoredEvent{Event: ca}
-
-		for _, target := range historyTargets(mc.instance.ID(), delivery) {
-			mc.hist.append(ctx, mc.sess, mc.instance.ID(), stored, target)
-
-			if isTrigger && target == ch {
-				continue
-			}
-
-			if batch, ok := byWindow[target]; ok {
-				batch.history = append(batch.history, stored)
-			}
-		}
+		mc.fileChannelActivity(ctx, delivery, ch, isTrigger, byWindow)
 	}
 
 	return batches
+}
+
+func fileTrigger(batch *turnBatch, message protocol.IRCMessage, cause trace.SpanContext) {
+	batch.latestTrigger = len(batch.events)
+	batch.events = append(batch.events, message)
+	batch.triggers = append(batch.triggers, message)
+	batch.causes = append(batch.causes, cause)
+}
+
+func (mc *ModelClient) fileIssuerReply(
+	event domain.ProtocolEvent,
+	batches []*turnBatch,
+	byWindow map[domain.ChannelName]*turnBatch,
+) bool {
+	reply, ok := event.(domain.IssuerReply)
+	if !ok {
+		return false
+	}
+
+	target := domain.EventTarget(reply)
+	var window protocol.WindowTarget
+	if target != "" {
+		window = protocol.WindowTargetForKey(target)
+	}
+	mc.hist.appendReply(window, domain.StoredEvent{Event: reply})
+
+	message, renderable := protocol.FromChannelEvent(reply)
+	if !renderable {
+		return true
+	}
+	if target != "" {
+		if batch := byWindow[target]; batch != nil {
+			batch.events = append(batch.events, message)
+		}
+
+		return true
+	}
+
+	for _, batch := range batches {
+		batch.events = append(batch.events, message)
+	}
+
+	return true
+}
+
+func (mc *ModelClient) fileChannelActivity(
+	ctx context.Context,
+	delivery protocol.Delivery,
+	triggerWindow domain.ChannelName,
+	isTrigger bool,
+	byWindow map[domain.ChannelName]*turnBatch,
+) {
+	activity, ok := delivery.Event.(domain.ChannelActivity)
+	if !ok {
+		return
+	}
+
+	if target, opened := openedWindow(mc.instance, delivery.Event); opened {
+		mc.hist.forget(target)
+		resetOpenedBatch(byWindow[target])
+	}
+	if target, closed := closedWindow(mc.instance, delivery.Event); closed {
+		mc.hist.forget(target)
+		resetClosedBatch(byWindow[target])
+
+		return
+	}
+
+	stored := domain.StoredEvent{Event: activity}
+	for _, target := range historyTargets(mc.instance.ID(), delivery) {
+		mc.fileWindowActivity(ctx, target, triggerWindow, isTrigger, stored, byWindow[target])
+	}
+}
+
+func resetOpenedBatch(batch *turnBatch) {
+	if batch == nil {
+		return
+	}
+
+	batch.history = nil
+	batch.replies = nil
+	batch.historyErr = nil
+}
+
+func resetClosedBatch(batch *turnBatch) {
+	if batch == nil {
+		return
+	}
+
+	batch.history = nil
+	batch.replies = nil
+	batch.events = nil
+	batch.triggers = nil
+	batch.causes = nil
+	batch.historyErr = nil
+	batch.retried = false
+}
+
+func (mc *ModelClient) fileWindowActivity(
+	ctx context.Context,
+	target domain.ChannelName,
+	triggerWindow domain.ChannelName,
+	isTrigger bool,
+	stored domain.StoredEvent,
+	batch *turnBatch,
+) {
+	if batch != nil && batch.historyErr != nil {
+		mc.hist.appendAfterSeedFailure(target, stored)
+	} else if err := mc.hist.append(ctx, stored, target); err != nil && batch != nil {
+		batch.historyErr = fmt.Errorf("load history for %q: %w", target, err)
+	}
+	if isTrigger && target == triggerWindow {
+		return
+	}
+	if batch == nil {
+		return
+	}
+
+	if message, ok := protocol.FromChannelEvent(stored.Event); ok {
+		batch.events = append(batch.events, message)
+	}
+}
+
+func openedWindow(self *domain.Instance, event domain.ProtocolEvent) (domain.ChannelName, bool) {
+	join, ok := event.(domain.Join)
+	return join.Target, ok && sourceIs(join.Source, self.ID())
+}
+
+func closedWindow(self *domain.Instance, event domain.ProtocolEvent) (domain.ChannelName, bool) {
+	switch e := event.(type) {
+	case domain.Part:
+		return e.Target, sourceIs(e.Source, self.ID())
+	case domain.Kicked:
+		return e.Target, e.SubjectIsSelf
+	default:
+		return "", false
+	}
 }
 
 // openBatches allocates one batch per window the burst will raise a
@@ -344,8 +548,8 @@ func (mc *ModelClient) openBatches(ctx context.Context, deliveries []protocol.De
 	byWindow := make(map[domain.ChannelName]*turnBatch)
 
 	for _, delivery := range deliveries {
-		ch, _, isTrigger := dispatchTrigger(mc.instance.ID(), delivery.Event)
-		if !isTrigger {
+		ch, _, isTrigger := dispatchTrigger(mc.instance, delivery.Event)
+		if !isTrigger || delivery.HistoryOnly {
 			continue
 		}
 
@@ -353,9 +557,12 @@ func (mc *ModelClient) openBatches(ctx context.Context, deliveries []protocol.De
 			continue
 		}
 
+		history, err := mc.hist.snapshot(ctx, ch)
 		batch := &turnBatch{
-			channel: ch,
-			history: mc.hist.snapshot(ctx, mc.sess, mc.instance.ID(), ch),
+			channel:    ch,
+			history:    history,
+			replies:    mc.hist.snapshotRepliesFor(ch),
+			historyErr: err,
 		}
 		byWindow[ch] = batch
 		batches = append(batches, batch)
@@ -414,10 +621,10 @@ func historyTargets(selfID domain.InstanceID, delivery protocol.Delivery) []doma
 // so a DM raises its turn under the counterpart whichever way the
 // message was going. A DM between two other clients belongs to
 // neither party's window and raises no turn.
-func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.ChannelName, protocol.IRCMessage, bool) {
+func dispatchTrigger(self *domain.Instance, ev domain.ProtocolEvent) (domain.ChannelName, protocol.IRCMessage, bool) {
 	switch e := ev.(type) {
 	case domain.Message:
-		key, ok := e.RoutingKey(selfID)
+		key, ok := e.RoutingKey(self.ID())
 		if !ok {
 			return "", protocol.IRCMessage{}, false
 		}
@@ -427,7 +634,7 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 		return key, msg, true
 
 	case domain.Join:
-		if e.InstanceID == selfID {
+		if sourceIs(e.Source, self.ID()) {
 			return "", protocol.IRCMessage{}, false
 		}
 
@@ -435,7 +642,7 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 		return e.Target, msg, true
 
 	case domain.Part:
-		if e.InstanceID == selfID {
+		if sourceIs(e.Source, self.ID()) {
 			return "", protocol.IRCMessage{}, false
 		}
 
@@ -443,18 +650,13 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 		return e.Target, msg, true
 
 	case domain.Invited:
-		if e.InstanceID != selfID {
-			return "", protocol.IRCMessage{}, false
-		}
-
 		msg, _ := protocol.FromChannelEvent(e)
 
 		return e.Target, msg, true
 
 	case domain.PokeEvent:
 		return e.Channel, protocol.IRCMessage{
-			Kind:   protocol.KindPoke,
-			From:   "modeloff",
+			Kind: protocol.KindPoke, Source: domain.ServerSource("modeloff"),
 			Target: string(e.Channel),
 			Body:   "the channel is quiet. if something comes to mind, say it — otherwise just lurk. don't force it.",
 			At:     e.At,
@@ -462,6 +664,11 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 	}
 
 	return "", protocol.IRCMessage{}, false
+}
+
+func sourceIs(source domain.Source, id domain.InstanceID) bool {
+	sourceID, ok := source.InstanceID()
+	return ok && sourceID == id
 }
 
 // dispatchTurn runs a single LLM turn for the model-client's
@@ -483,8 +690,8 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 // channel-based delivery boundary and a coalesced turn names every
 // delivery that fed it.
 //
-// A cancelled context is the server tearing this client down — a
-// KILL, a QUIT, or shutdown — so the turn ends without the
+// A cancelled context is the server tearing this client down after a
+// KILL, a QUIT, or shutdown, so the turn ends without the
 // `ModelUnavailableError` an upstream failure would raise. Nothing
 // was unavailable; the client was closed.
 //
@@ -494,7 +701,7 @@ func dispatchTrigger(selfID domain.InstanceID, ev domain.ProtocolEvent) (domain.
 // user changes, not a condition that passes.
 func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error {
 	inst := mc.instance
-	nick := inst.Nick()
+	nick := mc.nick()
 	ch := batch.channel
 
 	attrs := []attribute.KeyValue{
@@ -511,41 +718,122 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 			}
 		}
 
-		mc.sess.Emit(ctx, domain.ModelDispatchStarted{Instance: inst, At: mc.sess.Now()})
-		defer mc.sess.Emit(ctx, domain.ModelDispatchDone{Instance: inst, At: mc.sess.Now()})
+		guard, err := mc.captureWindowGuard(ctx, batch)
+		if errors.Is(err, errDispatchWindowClosed) {
+			return nil
+		}
+		if err != nil {
+			return mc.reportTurnFailure(ctx, ch, nick, err)
+		}
+		if batch.historyErr != nil {
+			return &nonReplayableTurnError{
+				Err: mc.reportTurnFailure(ctx, ch, nick, batch.historyErr),
+			}
+		}
 
-		window, err := dispatchWindowFor(ctx, mc.sess, ch, inst)
+		window, err := dispatchWindowFor(ctx, guard, ch)
+		if errors.Is(err, errDispatchWindowClosed) {
+			return nil
+		}
 		if err != nil {
 			return mc.reportTurnFailure(ctx, ch, nick, err)
 		}
 
 		apiClient := mc.apiFn()
 		if apiClient == nil {
-			mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+			mc.sess.EmitModelFailure(ctx, window.Target(), domain.ModelUnavailableError{
+				Source: domain.ClientSource(inst.ID(), nick), At: mc.sess.Now(),
+			})
 			return nil
 		}
+
+		dispatch := mc.sess.BeginModelDispatch(ctx, guard, window.Target(), domain.ModelDispatchStarted{
+			Source: domain.ClientSource(inst.ID(), inst.Nick()),
+			At:     mc.sess.Now(),
+		})
+		defer dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(inst.ID(), inst.Nick()),
+			At:     mc.sess.Now(),
+		})
 
 		turn := turnRequest{
 			api:    apiClient,
 			window: window,
+			guard:  guard,
 			// The turn addresses the window it is running in, and this
 			// is the only place that address is built: `batch.channel`
 			// comes from [dispatchTrigger], which names a window only
 			// alongside a turn to run in it, so a tool cannot be handed
 			// a target derived from a window that was never there.
-			target:      protocol.TargetForWindow(window),
-			history:     batch.history,
-			replies:     mc.hist.snapshotReplies(),
-			triggers:    batch.triggers,
-			tokenBudget: mc.hist.TokenBudget(),
+			target:        targetForContext(window),
+			history:       batch.history,
+			replies:       batch.replies,
+			events:        batch.events,
+			triggers:      batch.triggers,
+			latestTrigger: batch.latestTrigger,
+			tokenBudget:   mc.hist.TokenBudget(),
 		}
 
 		if err := mc.dispatchToInstance(ctx, turn); err != nil {
+			if errors.Is(err, errDispatchWindowClosed) {
+				return nil
+			}
 			return mc.reportTurnFailure(ctx, ch, nick, observability.ErrWithKind(err, observability.ErrorKindDispatch))
 		}
 
 		return nil
 	})
+}
+
+// captureWindowGuard records the authority that must remain valid
+// until the upstream request is sent.
+func (mc *ModelClient) captureWindowGuard(
+	ctx context.Context,
+	batch *turnBatch,
+) (protocol.WindowGuard, error) {
+	mc.mu.Lock()
+	sub := mc.sub
+	mc.mu.Unlock()
+	if sub == nil {
+		return nil, errDispatchWindowClosed
+	}
+
+	var (
+		guard protocol.WindowGuard
+		err   error
+	)
+	if invitationBatch(batch) {
+		guard, err = sub.GuardInvitation(ctx, batch.channel)
+	} else {
+		guard, err = sub.GuardWindow(ctx, protocol.WindowTargetForKey(batch.channel))
+	}
+	if err == nil {
+		return guard, nil
+	}
+	if errors.Is(err, protocol.ErrSubscriptionClosed) {
+		return nil, errDispatchWindowClosed
+	}
+
+	var notOnChannel domain.NotOnChannelError
+	if errors.As(err, &notOnChannel) {
+		return nil, errDispatchWindowClosed
+	}
+
+	return nil, err
+}
+
+func invitationBatch(batch *turnBatch) bool {
+	if len(batch.triggers) == 0 {
+		return false
+	}
+
+	for _, trigger := range batch.triggers {
+		if trigger.Kind != protocol.KindInvite {
+			return false
+		}
+	}
+
+	return true
 }
 
 // reportTurnFailure raises the operator diagnostic for a turn that
@@ -557,30 +845,43 @@ func (mc *ModelClient) reportTurnFailure(ctx context.Context, ch domain.ChannelN
 		return err
 	}
 
-	mc.sess.Emit(ctx, domain.ModelUnavailableError{Channel: ch, Nick: nick, At: mc.sess.Now()})
+	mc.sess.EmitModelFailure(ctx, protocol.WindowTargetForKey(ch), domain.ModelUnavailableError{
+		Source: domain.ClientSource(mc.instance.ID(), nick), At: mc.sess.Now(),
+	})
 
 	return err
 }
 
-// dispatchWindowFor produces the `Window` the model is in for the
-// turn, which the system prompt and the span tags are built from. A
-// channel window is loaded from storage. A DM window is built around
-// the counterpart the turn is with. `target` is the conversation
-// key, which is that counterpart's id, so the prompt names the client
-// the model is talking to.
-//
-// A counterpart the store does not hold fails the turn: a DM has
-// nobody at the other end of it, and the prompt has nothing to say
-// the conversation is with.
-func dispatchWindowFor(ctx context.Context, sess Session, target domain.ChannelName, inst *domain.Instance) (domain.Window, error) {
-	if domain.InferChannelKind(target) != domain.KindDM {
-		return sess.LoadChannelWindow(ctx, target)
+// dispatchWindowFor asks the actor-bound guard for the current window
+// view. Invitation turns have no membership interval yet and are
+// represented by the caller as a synthetic channel window.
+func dispatchWindowFor(
+	ctx context.Context,
+	guard protocol.WindowGuard,
+	target domain.ChannelName,
+) (protocol.WindowContext, error) {
+	if guard == nil {
+		return nil, fmt.Errorf("%w: %s", errDispatchWindowClosed, target)
 	}
 
-	counterpart, err := sess.ResolveInstanceByID(ctx, domain.InstanceID(target))
+	window, err := guard.Context(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("resolve DM counterpart %q for %s: %w", target, inst.Nick(), err)
+		return nil, err
+	}
+	if protocol.WindowKey(window.Target()) != target {
+		return nil, fmt.Errorf("window guard returned %q for %q", protocol.WindowKey(window.Target()), target)
 	}
 
-	return domain.NewDMWindow(counterpart, sess.Now()), nil
+	return window, nil
+}
+
+func targetForContext(window protocol.WindowContext) protocol.MsgTarget {
+	if peer, ok := protocol.DirectWindowPeer(window.Target()); ok {
+		return protocol.ClientTarget(peer)
+	}
+	if channel, ok := protocol.ChannelWindowName(window.Target()); ok {
+		return protocol.ChannelTarget(channel)
+	}
+
+	return nil
 }

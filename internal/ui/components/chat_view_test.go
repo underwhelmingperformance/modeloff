@@ -30,9 +30,9 @@ func (k testKind) ChannelKind() domain.ChannelKind { return domain.ChannelKind(k
 const testKindChannel = testKind(domain.KindChannel)
 
 var testEvents = []domain.Event{
-	domain.Message{Target: "#general", From: "alice", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
-	domain.Message{Target: "#general", From: "bob", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
-	domain.Message{Target: "#general", From: "alice", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
+	domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "hello", At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
+	domain.Message{Source: domain.LegacyClientSource("bob"), Target: "#general", Body: "hi there", At: time.Date(2025, 1, 1, 10, 1, 0, 0, time.UTC)},
+	domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "how are you?", At: time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)},
 }
 
 // nilContent is the message-list content getter for tests that
@@ -334,7 +334,7 @@ func TestChatView_clear_messages_removes_visible_messages(t *testing.T) {
 
 func TestChatView_View_fits_available_width_with_input_prefix(t *testing.T) {
 	cv := newChatViewWithEvents("#general", "testuser", "", []domain.Event{
-		domain.Join{Target: "#general", Nick: "testuser"},
+		domain.Join{Source: domain.LegacyClientSource("testuser"), Target: "#general"},
 	})
 
 	v := renderToBuffer(cv, 40, 10)
@@ -402,7 +402,7 @@ func TestChatView_View_uses_strftime_timestamp_format(t *testing.T) {
 func TestChatView_View_wraps_long_messages(t *testing.T) {
 	longBody := strings.Repeat("word ", 30)
 	events := []domain.Event{
-		domain.Message{Target: "#general", From: "alice", Body: longBody, At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: longBody, At: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)},
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
@@ -466,7 +466,7 @@ func TestChatView_command_from_input(t *testing.T) {
 func TestChatView_messages_updated(t *testing.T) {
 	updatedAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	cv := newChatViewWithEvents("#general", "testuser", "", []domain.Event{
-		domain.Message{Target: "#general", From: "charlie", Body: "new message", At: updatedAt},
+		domain.Message{Source: domain.LegacyClientSource("charlie"), Target: "#general", Body: "new message", At: updatedAt},
 	})
 
 	v := renderToBuffer(cv, 80, 24)
@@ -488,7 +488,7 @@ func TestChatView_original_messages_persist(t *testing.T) {
 	})
 
 	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	events = append(events, domain.Message{Target: "#general", From: "charlie", Body: "extra", At: appendAt})
+	events = append(events, domain.Message{Source: domain.LegacyClientSource("charlie"), Target: "#general", Body: "extra", At: appendAt})
 
 	v := renderToBuffer(updated, 80, 24)
 	require.Equal(t, []string{
@@ -514,7 +514,7 @@ func TestChatView_append_event(t *testing.T) {
 	})
 
 	appendAt := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	events = append(events, domain.Message{Target: "#general", From: "dave", Body: "appended message", At: appendAt})
+	events = append(events, domain.Message{Source: domain.LegacyClientSource("dave"), Target: "#general", Body: "appended message", At: appendAt})
 
 	v := renderToBuffer(updated, 80, 24)
 	require.Equal(t, []string{
@@ -529,11 +529,10 @@ func TestChatView_scroll(t *testing.T) {
 	// Create many messages to fill the view.
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
@@ -559,11 +558,10 @@ func TestChatView_scroll(t *testing.T) {
 func TestChatView_scroll_indicator(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
@@ -593,11 +591,10 @@ func TestChatView_scroll_indicator(t *testing.T) {
 func TestChatView_ctrl_arrow_scroll(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
@@ -636,11 +633,10 @@ func TestChatView_scroll_does_not_go_negative(t *testing.T) {
 func TestChatView_arrow_keys_stay_with_input(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
@@ -697,7 +693,7 @@ func renderNick(t *testing.T, nick, body string) string {
 	t.Helper()
 
 	cv := newChatViewWithEvents("#general", "user", "", messagesToEvents([]domain.Message{
-		{Target: "#general", From: domain.Nick(nick), Body: body},
+		{Source: domain.LegacyClientSource(domain.Nick(nick)), Target: "#general", Body: body},
 	}))
 
 	lines := rawRenderedLines(renderToBuffer(cv, 80, 24))
@@ -744,12 +740,13 @@ func TestChatView_nick_updates_after_change(t *testing.T) {
 }
 
 func TestChatView_dm_header_shows_counterpart_nick(t *testing.T) {
-	cv := components.NewChatView[testKind](nilContent("botname"), "botname", domain.KindChannel, "testuser", "")
+	cv := components.NewChatView[testKind](nilContent("inst-botty"), "inst-botty", domain.KindChannel, "testuser", "")
 
 	m, _ := cv.Update(components.SetChannelMsg{
-		Channel: "botname",
-		Topic:   "a DM carries no topic",
-		Kind:    domain.KindDM,
+		Channel:     "inst-botty",
+		DisplayName: "botname",
+		Topic:       "a DM carries no topic",
+		Kind:        domain.KindDM,
 	})
 	cv = m.(components.ChatView[testKind])
 
@@ -763,14 +760,30 @@ func TestChatView_dm_header_shows_counterpart_nick(t *testing.T) {
 	require.Equal(t, []string{"No messages yet"}, chatSegments(stripped))
 }
 
+func TestChatView_self_dm_header_shows_the_user_nick(t *testing.T) {
+	cv := components.NewChatView[testKind](nilContent(""), "", domain.KindChannel, "testuser", "")
+
+	m, _ := cv.Update(components.SetChannelMsg{
+		Channel:     "",
+		DisplayName: "testuser",
+		Kind:        domain.KindDM,
+	})
+	cv = m.(components.ChatView[testKind])
+
+	v := ansi.Strip(renderToBuffer(cv, 80, 24))
+
+	require.Equal(t, "@testuser", chatHeaderLine(v))
+	require.Equal(t, []string{"No messages yet"}, chatSegments(v))
+}
+
 func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 	now := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
 	events := []domain.Event{
-		domain.Join{Target: "botname", Nick: "testuser", At: now},
-		domain.Part{Target: "botname", Nick: "testuser", At: now},
-		domain.ChannelModeChange{Target: "botname", Nick: "testuser", Flag: domain.ModeOperator, Add: true, By: "ChanServ", At: now},
-		domain.TopicChange{Target: "botname", Topic: "x", By: "testuser", At: now},
-		domain.Message{Target: "botname", From: "bot", Body: "hello human", At: now},
+		domain.Join{Source: domain.LegacyClientSource("testuser"), Target: "botname", At: now},
+		domain.Part{Source: domain.LegacyClientSource("testuser"), Target: "botname", At: now},
+		domain.ChannelModeChange{Source: domain.LegacyClientSource("ChanServ"), Target: "botname", Subject: "testuser", Flag: domain.ModeOperator, Add: true, At: now},
+		domain.TopicChange{Source: domain.LegacyClientSource("testuser"), Target: "botname", Topic: "x", At: now},
+		domain.Message{Source: domain.LegacyClientSource("bot"), Target: "botname", Body: "hello human", At: now},
 	}
 
 	cv := components.NewChatView[testKind](staticContent("botname", events), "botname", domain.KindChannel, "testuser", "")
@@ -799,9 +812,9 @@ func TestChatView_dm_suppresses_join_part_events(t *testing.T) {
 // the two rendered messages draws a divider.
 func TestChatView_dm_suppressed_event_does_not_seed_the_day_change_divider(t *testing.T) {
 	events := []domain.Event{
-		domain.Message{Target: "botname", From: "bot", Body: "day one", At: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)},
-		domain.Join{Target: "botname", Nick: "bot", At: time.Date(2025, 1, 2, 12, 0, 0, 0, time.UTC)},
-		domain.Message{Target: "botname", From: "bot", Body: "day three", At: time.Date(2025, 1, 3, 12, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("bot"), Target: "botname", Body: "day one", At: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)},
+		domain.Join{Source: domain.LegacyClientSource("bot"), Target: "botname", At: time.Date(2025, 1, 2, 12, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("bot"), Target: "botname", Body: "day three", At: time.Date(2025, 1, 3, 12, 0, 0, 0, time.UTC)},
 	}
 
 	cv := components.NewChatView[testKind](staticContent("botname", events), "botname", domain.KindChannel, "testuser", "")
@@ -831,7 +844,7 @@ func TestChatView_dm_suppressed_event_does_not_seed_the_day_change_divider(t *te
 func TestChatView_dm_shows_quit_messages(t *testing.T) {
 	now := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
 	events := []domain.Event{
-		domain.Quit{Nick: "bot", Message: "goodbye", At: now},
+		domain.Quit{Source: domain.LegacyClientSource("bot"), Message: "goodbye", At: now},
 	}
 
 	cv := components.NewChatView[testKind](staticContent("botname", events), "botname", domain.KindChannel, "testuser", "")
@@ -884,11 +897,10 @@ func TestChatView_header_shows_channel_name_without_topic(t *testing.T) {
 func TestChatView_topic_bar_reduces_message_area(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("msg %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("msg %d", i)}
+
 	}
 
 	events := messagesToEvents(msgs)
@@ -977,42 +989,42 @@ func TestRenderLine_IRC_events(t *testing.T) {
 	}{
 		{
 			"join",
-			domain.Join{Target: "#general", Nick: "alice", At: now},
+			domain.Join{Source: domain.LegacyClientSource("alice"), Target: "#general", At: now},
 			"*** alice has joined #general",
 		},
 		{
 			"join_created",
-			domain.Join{Target: "#general", Nick: "alice", Created: true, At: now},
+			domain.Join{Source: domain.LegacyClientSource("alice"), Target: "#general", Created: true, At: now},
 			"*** Created channel #general",
 		},
 		{
 			"part",
-			domain.Part{Target: "#general", Nick: "alice", At: now},
+			domain.Part{Source: domain.LegacyClientSource("alice"), Target: "#general", At: now},
 			"*** alice has left #general",
 		},
 		{
 			"part_with_message",
-			domain.Part{Target: "#general", Nick: "alice", Message: "see you later", At: now},
+			domain.Part{Source: domain.LegacyClientSource("alice"), Target: "#general", Message: "see you later", At: now},
 			"*** alice has left #general (see you later)",
 		},
 		{
 			"quit",
-			domain.Quit{Nick: "alice", At: now},
+			domain.Quit{Source: domain.LegacyClientSource("alice"), At: now},
 			"*** alice has quit",
 		},
 		{
 			"quit_with_message",
-			domain.Quit{Nick: "alice", Message: "shutting down", At: now},
+			domain.Quit{Source: domain.LegacyClientSource("alice"), Message: "shutting down", At: now},
 			"*** alice has quit (shutting down)",
 		},
 		{
 			"nick_change",
-			domain.NickChange{OldNick: "alice", NewNick: "bob", At: now},
+			domain.NickChange{Source: domain.LegacyClientSource("alice"), NewNick: "bob", At: now},
 			"*** alice is now known as bob",
 		},
 		{
 			"topic_set_with_author",
-			domain.TopicChange{Target: "#general", Topic: "cool topic", By: "alice", At: now},
+			domain.TopicChange{Source: domain.LegacyClientSource("alice"), Target: "#general", Topic: "cool topic", At: now},
 			"*** topic for #general set by alice: cool topic",
 		},
 		{
@@ -1022,7 +1034,7 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		},
 		{
 			"topic_cleared",
-			domain.TopicChange{Target: "#general", Topic: "", By: "alice", At: now},
+			domain.TopicChange{Source: domain.LegacyClientSource("alice"), Target: "#general", Topic: "", At: now},
 			"*** topic for #general cleared by alice",
 		},
 		{
@@ -1041,26 +1053,26 @@ func TestRenderLine_IRC_events(t *testing.T) {
 		},
 		{
 			"mode_change",
-			domain.ChannelModeChange{
-				Target: "#general", Nick: "botty", Flag: domain.ModeChannelVoice, Add: true, By: "alice", At: now,
-			},
+			domain.ChannelModeChange{Source: domain.LegacyClientSource(
+				"alice"), Target: "#general", Subject: "botty", Flag: domain.ModeChannelVoice, Add: true, At: now},
+
 			"*** alice sets mode +v botty on #general",
 		},
 		{
 			"invited",
-			domain.Invited{
-				Target: "#general", Nick: "botty", By: "alice", At: now,
-			},
+			domain.Invited{Source: domain.LegacyClientSource(
+				"alice"), Target: "#general", Invitee: "botty", At: now},
+
 			"*** alice invited botty to #general",
 		},
 		{
 			"kicked",
-			domain.Kicked{Target: "#general", Nick: "botty", By: "someone", At: now},
+			domain.Kicked{Source: domain.LegacyClientSource("someone"), Target: "#general", Subject: "botty", At: now},
 			"*** botty was kicked from #general by someone",
 		},
 		{
 			"action_message",
-			domain.Message{Target: "#test", From: "alice", Body: "waves", Action: true, At: now},
+			domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "waves", Action: true, At: now},
 			"* alice waves",
 		},
 	}
@@ -1203,12 +1215,10 @@ func TestRenderLine_application_feedback(t *testing.T) {
 func TestNewMessagesDivider_fills_width(t *testing.T) {
 	events := make([]domain.Event, 30)
 	for i := range events {
-		events[i] = domain.Message{
-			Target: "#test",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-			At:     time.Now(),
-		}
+		events[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#test", Body: fmt.Sprintf("message %d", i), At: time.Now()}
+
 	}
 
 	cv := components.NewChatView[testKind](
@@ -1222,7 +1232,7 @@ func TestNewMessagesDivider_fills_width(t *testing.T) {
 
 	// Scroll up, then grow the events slice to trigger the divider.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
-	events = append(events, domain.Message{Target: "#test", From: "other", Body: "new arrival", At: time.Now()})
+	events = append(events, domain.Message{Source: domain.LegacyClientSource("other"), Target: "#test", Body: "new arrival", At: time.Now()})
 
 	// Scroll back towards the bottom to bring the divider into view.
 	for range 5 {
@@ -1405,12 +1415,10 @@ func TestChatView_mouse_click_positions_input_cursor(t *testing.T) {
 func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	events := make([]domain.Event, 30)
 	for i := range events {
-		events[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-			At:     time.Now(),
-		}
+		events[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i), At: time.Now()}
+
 	}
 
 	cv := components.NewChatView[testKind](
@@ -1438,12 +1446,9 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 	// message list to re-read the getter — the divider arms on
 	// growth observed while not at the bottom.
 	for i := 30; i < 33; i++ {
-		events = append(events, domain.Message{
-			Target: "#general",
-			From:   "other",
-			Body:   fmt.Sprintf("new message %d", i),
-			At:     time.Now(),
-		})
+		events = append(events, domain.Message{Source: domain.LegacyClientSource(
+
+			"other"), Target: "#general", Body: fmt.Sprintf("new message %d", i), At: time.Now()})
 		m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 	}
 
@@ -1464,12 +1469,10 @@ func TestChatView_divider_inserted_when_scrolled_up(t *testing.T) {
 func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 	events := make([]domain.Event, 5)
 	for i := range events {
-		events[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-			At:     time.Now(),
-		}
+		events[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i), At: time.Now()}
+
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
@@ -1478,12 +1481,9 @@ func TestChatView_no_divider_when_at_bottom(t *testing.T) {
 
 	// Add more events while at bottom.
 	for i := 5; i < 8; i++ {
-		m, _ = m.Update(domain.Message{
-			Target: "#general",
-			From:   "other",
-			Body:   fmt.Sprintf("new message %d", i),
-			At:     time.Now(),
-		})
+		m, _ = m.Update(domain.Message{Source: domain.LegacyClientSource(
+
+			"other"), Target: "#general", Body: fmt.Sprintf("new message %d", i), At: time.Now()})
 	}
 
 	v := renderToBuffer(m, 80, 24)
@@ -1508,8 +1508,8 @@ func dayChangedDividerLine(view string) string {
 
 func TestChatView_day_changed_divider_marks_a_date_rollover(t *testing.T) {
 	events := []domain.Event{
-		domain.Message{Target: "#general", From: "alice", Body: "before midnight", At: time.Date(2025, 1, 1, 23, 0, 0, 0, time.UTC)},
-		domain.Message{Target: "#general", From: "alice", Body: "after midnight", At: time.Date(2025, 1, 2, 0, 30, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "before midnight", At: time.Date(2025, 1, 1, 23, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "after midnight", At: time.Date(2025, 1, 2, 0, 30, 0, 0, time.UTC)},
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
@@ -1530,8 +1530,8 @@ func TestChatView_day_changed_divider_marks_a_date_rollover(t *testing.T) {
 
 func TestChatView_no_day_changed_divider_within_the_same_day(t *testing.T) {
 	events := []domain.Event{
-		domain.Message{Target: "#general", From: "alice", Body: "morning", At: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC)},
-		domain.Message{Target: "#general", From: "alice", Body: "evening", At: time.Date(2025, 1, 1, 21, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "morning", At: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "evening", At: time.Date(2025, 1, 1, 21, 0, 0, 0, time.UTC)},
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
@@ -1542,7 +1542,7 @@ func TestChatView_no_day_changed_divider_within_the_same_day(t *testing.T) {
 
 func TestChatView_no_day_changed_divider_before_the_first_event(t *testing.T) {
 	events := []domain.Event{
-		domain.Message{Target: "#general", From: "alice", Body: "only message", At: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC)},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "only message", At: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC)},
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", events)
@@ -1564,11 +1564,10 @@ func indexOfLineContaining(lines []string, substr string) int {
 func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	events := make([]domain.Event, 30)
 	for i := range 30 {
-		events[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		events[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := components.NewChatView[testKind](
@@ -1588,11 +1587,9 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	for i := 30; i < 33; i++ {
-		events = append(events, domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("new message %d", i),
-		})
+		events = append(events, domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("new message %d", i)})
 		m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 	}
 
@@ -1630,11 +1627,10 @@ func TestChatView_stored_events_insert_divider_when_scrolled_up(t *testing.T) {
 func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t *testing.T) {
 	events := make([]domain.Event, 30)
 	for i := range 30 {
-		events[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		events[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := components.NewChatView[testKind](
@@ -1654,19 +1650,15 @@ func TestChatView_stored_events_keep_divider_when_more_arrive_during_catch_up(t 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 
 	// First new event while scrolled up — divider is armed.
-	events = append(events, domain.Message{
-		Target: "#general",
-		From:   "user",
-		Body:   "new message 30",
-	})
+	events = append(events, domain.Message{Source: domain.LegacyClientSource(
+
+		"user"), Target: "#general", Body: "new message 30"})
 	m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 
 	// Second new event while still scrolled up — divider stays.
-	events = append(events, domain.Message{
-		Target: "#general",
-		From:   "user",
-		Body:   "new message 31",
-	})
+	events = append(events, domain.Message{Source: domain.LegacyClientSource(
+
+		"user"), Target: "#general", Body: "new message 31"})
 	m, _ = m.Update(components.ScrollbackUpdatedMsg{Channel: "#general"})
 
 	// Scroll to bottom to see both new events and the divider.
@@ -1754,7 +1746,7 @@ func (w *windowedChatView) send(msg tea.Msg) {
 func (w *windowedChatView) arrive(ch domain.ChannelName, body string) {
 	w.t.Helper()
 
-	w.windows[ch] = append(w.windows[ch], domain.Message{Target: ch, From: "alice", Body: body})
+	w.windows[ch] = append(w.windows[ch], domain.Message{Source: domain.LegacyClientSource("alice"), Target: ch, Body: body})
 
 	if ch != w.active {
 		return
@@ -1874,14 +1866,14 @@ func TestChatView_first_visit_reads_what_a_window_already_holds(t *testing.T) {
 	w := newWindowedChatView(t, "#general", map[domain.ChannelName][]domain.Event{
 		"#general": {},
 		"#random": {
-			domain.Message{Target: "#random", From: "alice", Body: "landed before anyone looked"},
+			domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#random", Body: "landed before anyone looked"},
 		},
 	})
 
 	// The switch is under way, and another line lands in the window
 	// before the list has taken it over.
 	w.windows["#random"] = append(w.windows["#random"],
-		domain.Message{Target: "#random", From: "alice", Body: "landed during the switch"})
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#random", Body: "landed during the switch"})
 
 	w.switchTo("#random")
 
@@ -1943,11 +1935,10 @@ func TestChatView_clearing_a_window_drops_the_reading_position(t *testing.T) {
 func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	cv := newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
@@ -1968,11 +1959,10 @@ func TestChatView_mouse_wheel_scrolls_messages(t *testing.T) {
 func TestChatView_mouse_wheel_outside_bounds_does_not_scroll_messages(t *testing.T) {
 	msgs := make([]domain.Message, 30)
 	for i := range msgs {
-		msgs[i] = domain.Message{
-			Target: "#general",
-			From:   "user",
-			Body:   fmt.Sprintf("message %d", i),
-		}
+		msgs[i] = domain.Message{Source: domain.LegacyClientSource(
+
+			"user"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 	}
 
 	var m ui.Component = newChatViewWithEvents("#general", "testuser", "", messagesToEvents(msgs))
@@ -2134,12 +2124,9 @@ func TestContainsHighlightWord(t *testing.T) {
 }
 
 func TestRenderLine_preserves_irc_formatting_in_plain_output(t *testing.T) {
-	rendered := renderSingleEvent(domain.Message{
-		Target: "#test",
-		From:   "alice",
-		Body:   "hello \x02bold\x02 \x1funder\x1f \x1estrike\x1e",
-		At:     time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC),
-	})
+	rendered := renderSingleEvent(domain.Message{Source: domain.LegacyClientSource(
+
+		"alice"), Target: "#test", Body: "hello \x02bold\x02 \x1funder\x1f \x1estrike\x1e", At: time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC)})
 
 	require.Equal(t, []string{"2026-04-12 11:00 <alice> hello bold under strike"}, chatSegments(rendered))
 }

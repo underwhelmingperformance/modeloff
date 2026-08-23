@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/observability/oteltest"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 var testTime = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -103,6 +106,858 @@ func newTestStore(t *testing.T) *SQLiteStore {
 	t.Cleanup(func() { _ = s.Close() })
 
 	return s
+}
+
+func TestSQLiteStore_CommitChannelJoin_rolls_back_every_row(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	actor := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, actor))
+
+	window := domain.NewChannelWindow("#dev", testTime)
+	window.Members.Add(actor)
+	candidate := actor.Snapshot()
+	candidate.JoinChannel("#dev", testTime)
+
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_join_projection
+		BEFORE INSERT ON channel_scrollback
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected join projection');
+		END
+	`)
+	require.NoError(t, err)
+
+	_, commitErr := s.CommitChannelJoin(ctx, ChannelJoin{
+		Window: window, Instance: candidate,
+		Event: domain.Join{
+			Source: domain.ClientSource(actor.ID(), actor.Nick()),
+			Target: "#dev",
+			At:     testTime,
+		},
+		Scrollback: []ChannelScrollbackRecord{{
+			InstanceID: actor.ID(), Channel: "#dev",
+			Event: domain.Join{
+				Source: domain.ClientSource(actor.ID(), actor.Nick()),
+				Target: "#dev", At: testTime,
+			},
+		}},
+	})
+	_, windowErr := s.GetWindow(ctx, "#dev")
+	storedActor, actorErr := s.GetInstanceByID(ctx, actor.ID())
+	events, eventsErr := s.EventsBefore(ctx, "#dev", nil, 10)
+	scrollback, scrollbackErr := s.ChannelScrollback(ctx, actor.ID(), "#dev", 10)
+
+	require.Equal(t, struct {
+		CommitFailed    bool
+		WindowAbsent    bool
+		ActorLoadError  error
+		ActorInChannel  bool
+		EventsLoadError error
+		Events          []domain.StoredEvent
+		ScrollbackError error
+		Scrollback      []domain.StoredEvent
+	}{
+		CommitFailed: true,
+		WindowAbsent: true,
+	}, struct {
+		CommitFailed    bool
+		WindowAbsent    bool
+		ActorLoadError  error
+		ActorInChannel  bool
+		EventsLoadError error
+		Events          []domain.StoredEvent
+		ScrollbackError error
+		Scrollback      []domain.StoredEvent
+	}{
+		CommitFailed:    commitErr != nil,
+		WindowAbsent:    errors.Is(windowErr, ErrNoSuchChannel),
+		ActorLoadError:  actorErr,
+		ActorInChannel:  storedActor.InChannel("#dev"),
+		EventsLoadError: eventsErr,
+		Events:          events,
+		ScrollbackError: scrollbackErr,
+		Scrollback:      scrollback,
+	})
+}
+
+func TestSQLiteStore_CommitChannelJoin_rolls_back_context_resets(t *testing.T) {
+	tests := map[string]string{
+		"scrollback deletion": `
+			CREATE TRIGGER reject_join_scrollback_reset
+			BEFORE DELETE ON channel_scrollback
+			BEGIN
+				SELECT RAISE(ABORT, 'rejected scrollback reset');
+			END
+		`,
+		"reply deletion": `
+			CREATE TRIGGER reject_join_reply_reset
+			BEFORE DELETE ON instance_replies
+			BEGIN
+				SELECT RAISE(ABORT, 'rejected reply reset');
+			END
+		`,
+		"turn deletion": `
+			CREATE TRIGGER reject_join_turn_reset
+			BEFORE DELETE ON model_turns
+			BEGIN
+				SELECT RAISE(ABORT, 'rejected turn reset');
+			END
+		`,
+		"join event": `
+			CREATE TRIGGER reject_join_after_context_reset
+			BEFORE INSERT ON events
+			WHEN NEW.type = 'join'
+			BEGIN
+				SELECT RAISE(ABORT, 'rejected join event');
+			END
+		`,
+	}
+
+	for name, trigger := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := t.Context()
+			actor := domain.NewModelInstance(
+				"inst-botty", "botty", "test/model", "", nil,
+			)
+			peer := domain.NewModelInstance(
+				"inst-peer", "peer", "test/model", "", nil,
+			)
+			peer.JoinChannel("#dev", testTime)
+			require.NoError(t, s.SaveInstance(ctx, actor))
+			require.NoError(t, s.SaveInstance(ctx, peer))
+
+			window := domain.NewChannelWindow("#dev", testTime)
+			window.Members.Add(peer)
+			window.Invitations.Add(actor.ID())
+			require.NoError(t, s.SaveWindow(ctx, window))
+
+			message := domain.Message{
+				Source: domain.ClientSource(peer.ID(), peer.Nick()),
+				Target: "#dev", Body: "previous interval", At: testTime,
+			}
+			scrollbackIDs, err := s.AppendChannelScrollback(
+				ctx, []ChannelScrollbackRecord{{
+					InstanceID: actor.ID(), Channel: "#dev", Event: message,
+				}},
+			)
+			require.NoError(t, err)
+
+			reply := domain.TopicInfo{
+				Target: "#dev", Topic: "previous topic", At: testTime,
+			}
+			replyID, err := s.AppendInstanceReply(
+				ctx, actor.ID(), protocol.ChannelWindowTarget("#dev"), reply,
+			)
+			require.NoError(t, err)
+
+			turnEntry := ModelTurnEntry{
+				Kind: ModelTurnInput,
+				Data: []byte(`{"input":"previous interval"}`),
+				At:   testTime,
+			}
+			turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+				InstanceID: actor.ID(),
+				Window:     protocol.ChannelWindowTarget("#dev"),
+				ModelID:    actor.ModelID,
+				StartedAt:  testTime,
+			}, turnEntry)
+			require.NoError(t, err)
+
+			_, err = s.db.ExecContext(ctx, trigger)
+			require.NoError(t, err)
+
+			candidateWindow := window.Clone()
+			candidateWindow.Members.Add(actor)
+			candidateWindow.Invitations.Remove(actor.ID())
+			candidateActor := actor.Snapshot()
+			candidateActor.JoinChannel("#dev", testTime)
+			_, commitErr := s.CommitChannelJoin(ctx, ChannelJoin{
+				Window: candidateWindow, Instance: candidateActor,
+				Event: domain.Join{
+					Source: domain.ClientSource(actor.ID(), actor.Nick()),
+					Target: "#dev", At: testTime,
+				},
+				ResetContext: true,
+			})
+
+			storedWindow, windowErr := s.GetWindow(ctx, "#dev")
+			storedActor, actorErr := s.GetInstanceByID(ctx, actor.ID())
+			audit, auditErr := s.EventsBefore(ctx, "#dev", nil, 10)
+			scrollback, scrollbackErr := s.ChannelScrollback(
+				ctx, actor.ID(), "#dev", 10,
+			)
+			replies, repliesErr := s.InstanceRepliesBefore(ctx, actor.ID(), nil, 10)
+			turnEntries, turnEntriesErr := s.ModelTurnEntries(ctx, turnID)
+
+			type joinState struct {
+				CommitFailed    bool
+				Window          domain.Window
+				WindowError     error
+				Actor           comparableInstance
+				ActorError      error
+				Audit           []domain.StoredEvent
+				AuditError      error
+				Scrollback      []domain.StoredEvent
+				ScrollbackError error
+				Replies         []InstanceReplyRecord
+				RepliesError    error
+				TurnEntries     []ModelTurnEntry
+				TurnEntriesErr  error
+			}
+			require.Equal(t, joinState{
+				CommitFailed: true,
+				Window:       window,
+				Actor:        normaliseInstance(actor),
+				Scrollback:   []domain.StoredEvent{{ID: scrollbackIDs[0], Event: message}},
+				Replies: []InstanceReplyRecord{{
+					ID: replyID, Window: protocol.ChannelWindowTarget("#dev"), Event: reply,
+				}},
+				TurnEntries: []ModelTurnEntry{turnEntry},
+			}, joinState{
+				CommitFailed:    commitErr != nil,
+				Window:          storedWindow,
+				WindowError:     windowErr,
+				Actor:           normaliseInstance(storedActor),
+				ActorError:      actorErr,
+				Audit:           audit,
+				AuditError:      auditErr,
+				Scrollback:      scrollback,
+				ScrollbackError: scrollbackErr,
+				Replies:         replies,
+				RepliesError:    repliesErr,
+				TurnEntries:     turnEntries,
+				TurnEntriesErr:  turnEntriesErr,
+			})
+		})
+	}
+}
+
+func TestSQLiteStore_CommitChannelUpdate_rolls_back_every_row(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, peer))
+
+	window := domain.NewChannelWindow("#dev", testTime)
+	window.Members.Add(peer)
+	window.Topic = "old topic"
+	require.NoError(t, s.SaveWindow(ctx, window))
+
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_topic_event
+		BEFORE INSERT ON events
+		WHEN NEW.type = 'topic_change'
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected topic event');
+		END
+	`)
+	require.NoError(t, err)
+
+	candidate := window.Clone()
+	candidate.Topic = "new topic"
+	topic := domain.TopicChange{
+		Source: domain.ClientSource(peer.ID(), peer.Nick()),
+		Target: "#dev", Topic: "new topic", At: testTime,
+	}
+	_, commitErr := s.CommitChannelUpdate(ctx, ChannelUpdate{
+		Window: candidate,
+		Event:  topic,
+		Scrollback: []ChannelScrollbackRecord{{
+			InstanceID: peer.ID(), Channel: "#dev", Event: topic,
+		}},
+	})
+
+	storedWindow, windowErr := s.GetWindow(ctx, "#dev")
+	storedChannel, storedIsChannel := storedWindow.(*domain.ChannelWindow)
+	audit, auditErr := s.EventsBefore(ctx, "#dev", nil, 10)
+	scrollback, scrollbackErr := s.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
+
+	require.Equal(t, struct {
+		CommitFailed   bool
+		WindowError    error
+		StoredChannel  *domain.ChannelWindow
+		AuditError     error
+		Audit          []domain.StoredEvent
+		ScrollbackErr  error
+		Scrollback     []domain.StoredEvent
+		StoredIsWindow bool
+	}{
+		CommitFailed:   true,
+		StoredChannel:  window,
+		StoredIsWindow: true,
+	}, struct {
+		CommitFailed   bool
+		WindowError    error
+		StoredChannel  *domain.ChannelWindow
+		AuditError     error
+		Audit          []domain.StoredEvent
+		ScrollbackErr  error
+		Scrollback     []domain.StoredEvent
+		StoredIsWindow bool
+	}{
+		CommitFailed:   commitErr != nil,
+		WindowError:    windowErr,
+		StoredChannel:  storedChannel,
+		AuditError:     auditErr,
+		Audit:          audit,
+		ScrollbackErr:  scrollbackErr,
+		Scrollback:     scrollback,
+		StoredIsWindow: storedIsChannel,
+	})
+}
+
+func TestSQLiteStore_CommitChannelEvent_rolls_back_the_audit_and_projections(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, peer))
+
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_projected_message
+		BEFORE INSERT ON channel_scrollback
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected projected message');
+		END
+	`)
+	require.NoError(t, err)
+
+	message := domain.Message{
+		Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+		Target: "#dev", Body: "hello", At: testTime,
+	}
+	_, commitErr := s.CommitChannelEvent(ctx, ChannelEvent{
+		Channel: "#dev",
+		Event:   message,
+		Scrollback: []ChannelScrollbackRecord{{
+			InstanceID: peer.ID(), Channel: "#dev", Event: message,
+		}},
+	})
+
+	audit, auditErr := s.EventsBefore(ctx, "#dev", nil, 10)
+	scrollback, scrollbackErr := s.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
+	require.Equal(t, struct {
+		CommitFailed  bool
+		AuditError    error
+		Audit         []domain.StoredEvent
+		ScrollbackErr error
+		Scrollback    []domain.StoredEvent
+	}{
+		CommitFailed: true,
+	}, struct {
+		CommitFailed  bool
+		AuditError    error
+		Audit         []domain.StoredEvent
+		ScrollbackErr error
+		Scrollback    []domain.StoredEvent
+	}{
+		CommitFailed:  commitErr != nil,
+		AuditError:    auditErr,
+		Audit:         audit,
+		ScrollbackErr: scrollbackErr,
+		Scrollback:    scrollback,
+	})
+}
+
+func TestSQLiteStore_CommitChannelDeparture_rolls_back_every_row(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	actor := domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "", nil,
+	)
+	peer := domain.NewModelInstance(
+		"inst-peer", "peer", "test/model", "", nil,
+	)
+	actor.JoinChannel("#dev", testTime)
+	peer.JoinChannel("#dev", testTime)
+	require.NoError(t, s.SaveInstance(ctx, actor))
+	require.NoError(t, s.SaveInstance(ctx, peer))
+
+	window := domain.NewChannelWindow("#dev", testTime)
+	window.Members.Add(actor)
+	window.Members.Add(peer)
+	require.NoError(t, s.SaveWindow(ctx, window))
+
+	prior := domain.Message{
+		Source: domain.ClientSource(peer.ID(), peer.Nick()),
+		Target: "#dev",
+		Body:   "still visible",
+		At:     testTime,
+	}
+	priorIDs, err := s.AppendChannelScrollback(ctx, []ChannelScrollbackRecord{{
+		InstanceID: actor.ID(), Channel: "#dev", Event: prior,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, []int64{1}, priorIDs)
+
+	replyID, err := s.AppendInstanceReply(
+		ctx, actor.ID(), protocol.ChannelWindowTarget("#dev"),
+		domain.TopicInfo{Target: "#dev", Topic: "release", At: testTime},
+	)
+	require.NoError(t, err)
+
+	turnEntry := ModelTurnEntry{
+		Kind: ModelTurnInput,
+		Data: []byte(`{"input":"channel context"}`),
+		At:   testTime,
+	}
+	turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: actor.ID(),
+		Window:     protocol.ChannelWindowTarget("#dev"),
+		ModelID:    actor.ModelID,
+		StartedAt:  testTime,
+	}, turnEntry)
+	require.NoError(t, err)
+
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_part_projection
+		BEFORE INSERT ON channel_scrollback
+		WHEN NEW.type = 'part'
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected part projection');
+		END
+	`)
+	require.NoError(t, err)
+
+	candidateWindow := window.Clone()
+	candidateWindow.Members.RemoveInstance(actor)
+	candidateActor := actor.Snapshot()
+	candidateActor.LeaveChannels("#dev")
+	part := domain.Part{
+		Source: domain.ClientSource(actor.ID(), actor.Nick()),
+		Target: "#dev", Message: "bye", At: testTime,
+	}
+	_, commitErr := s.CommitChannelDeparture(ctx, ChannelDeparture{
+		Window:   candidateWindow,
+		Instance: candidateActor,
+		Event:    part,
+		Scrollback: []ChannelScrollbackRecord{{
+			InstanceID: peer.ID(), Channel: "#dev", Event: part,
+		}},
+	})
+
+	storedWindow, windowErr := s.GetWindow(ctx, "#dev")
+	storedChannel, storedIsChannel := storedWindow.(*domain.ChannelWindow)
+	var rawActorJSON string
+	actorReadErr := s.db.QueryRowContext(ctx,
+		`SELECT data FROM instances WHERE instance_id = ?`, actor.ID(),
+	).Scan(&rawActorJSON)
+	var storedActor domain.Instance
+	actorDecodeErr := json.Unmarshal([]byte(rawActorJSON), &storedActor)
+	auditEvents, auditErr := s.EventsBefore(ctx, "#dev", nil, 10)
+	actorScrollback, actorScrollbackErr := s.ChannelScrollback(ctx, actor.ID(), "#dev", 10)
+	peerScrollback, peerScrollbackErr := s.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
+	replies, repliesErr := s.InstanceRepliesBefore(ctx, actor.ID(), nil, 10)
+	turnEntries, turnEntriesErr := s.ModelTurnEntries(ctx, turnID)
+
+	type departureState struct {
+		CommitFailed         bool
+		WindowError          error
+		WindowIsChannel      bool
+		WindowHasActor       bool
+		ActorReadError       error
+		ActorDecodeError     error
+		ActorInChannel       bool
+		AuditError           error
+		AuditEvents          []domain.StoredEvent
+		ActorScrollbackError error
+		ActorScrollback      []domain.StoredEvent
+		PeerScrollbackError  error
+		PeerScrollback       []domain.StoredEvent
+		RepliesError         error
+		Replies              []InstanceReplyRecord
+		TurnEntriesError     error
+		TurnEntries          []ModelTurnEntry
+	}
+	require.Equal(t, departureState{
+		CommitFailed:    true,
+		WindowIsChannel: true,
+		WindowHasActor:  true,
+		ActorInChannel:  true,
+		ActorScrollback: []domain.StoredEvent{{ID: 1, Event: prior}},
+		Replies: []InstanceReplyRecord{{
+			ID:     replyID,
+			Window: protocol.ChannelWindowTarget("#dev"),
+			Event:  domain.TopicInfo{Target: "#dev", Topic: "release", At: testTime},
+		}},
+		TurnEntries: []ModelTurnEntry{turnEntry},
+	}, departureState{
+		CommitFailed:         commitErr != nil,
+		WindowError:          windowErr,
+		WindowIsChannel:      storedIsChannel,
+		WindowHasActor:       storedIsChannel && storedChannel.Members.HasInstance(actor),
+		ActorReadError:       actorReadErr,
+		ActorDecodeError:     actorDecodeErr,
+		ActorInChannel:       storedActor.InChannel("#dev"),
+		AuditError:           auditErr,
+		AuditEvents:          auditEvents,
+		ActorScrollbackError: actorScrollbackErr,
+		ActorScrollback:      actorScrollback,
+		PeerScrollbackError:  peerScrollbackErr,
+		PeerScrollback:       peerScrollback,
+		RepliesError:         repliesErr,
+		Replies:              replies,
+		TurnEntriesError:     turnEntriesErr,
+		TurnEntries:          turnEntries,
+	})
+}
+
+func TestSQLiteStore_CommitActorRename_rolls_back_every_row(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	actor := domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "keeps context", nil,
+	)
+	actor.JoinChannel("#Dev", testTime)
+	actor.JoinChannel("#Ops", testTime.Add(time.Minute))
+	require.NoError(t, s.SaveInstance(ctx, actor))
+
+	dev := domain.NewChannelWindow("#Dev", testTime)
+	dev.Topic = "development"
+	dev.Members.Add(actor)
+	dev.Members.SetModesByNick(actor.Nick(), domain.MemberModes{Operator: true})
+	require.NoError(t, s.SaveWindow(ctx, dev))
+
+	ops := domain.NewChannelWindow("#Ops", testTime.Add(time.Minute))
+	ops.Topic = "operations"
+	ops.Modes.InviteOnly = true
+	ops.Members.Add(actor)
+	require.NoError(t, s.SaveWindow(ctx, ops))
+
+	candidateActor := actor.Snapshot()
+	candidateActor.SetNick("renamed")
+	candidateDev := dev.Clone()
+	candidateDev.Members.RenameTo(candidateActor, candidateActor.Nick())
+	candidateOps := ops.Clone()
+	candidateOps.Members.RenameTo(candidateActor, candidateActor.Nick())
+	nickChange := domain.NickChange{
+		Source:  domain.ClientSource(actor.ID(), actor.Nick()),
+		NewNick: candidateActor.Nick(),
+		At:      testTime.Add(2 * time.Minute),
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_second_nick_projection
+		BEFORE INSERT ON channel_scrollback
+		WHEN NEW.type = 'nick_change' AND NEW.channel = '#Ops'
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected second nick projection');
+		END
+	`)
+	require.NoError(t, err)
+
+	_, commitErr := s.CommitActorRename(ctx, ActorRename{
+		Instance: candidateActor,
+		Windows:  []*domain.ChannelWindow{candidateDev, candidateOps},
+		Events: []ChannelAuditEvent{
+			{Channel: dev.Name(), Event: nickChange},
+			{Channel: ops.Name(), Event: nickChange},
+		},
+		Scrollback: []ChannelScrollbackRecord{
+			{InstanceID: actor.ID(), Channel: dev.Name(), Event: nickChange},
+			{InstanceID: actor.ID(), Channel: ops.Name(), Event: nickChange},
+		},
+	})
+
+	var rawActorJSON string
+	actorReadErr := s.db.QueryRowContext(ctx,
+		`SELECT data FROM instances WHERE instance_id = ?`, actor.ID(),
+	).Scan(&rawActorJSON)
+	var databaseActor domain.Instance
+	actorDecodeErr := json.Unmarshal([]byte(rawActorJSON), &databaseActor)
+	canonicalActor, canonicalActorErr := s.GetInstanceByID(ctx, actor.ID())
+	storedDev, devErr := s.GetWindow(ctx, dev.Name())
+	storedOps, opsErr := s.GetWindow(ctx, ops.Name())
+	devEvents, devEventsErr := s.EventsBefore(ctx, dev.Name(), nil, 10)
+	opsEvents, opsEventsErr := s.EventsBefore(ctx, ops.Name(), nil, 10)
+	devScrollback, devScrollbackErr := s.ChannelScrollback(ctx, actor.ID(), dev.Name(), 10)
+	opsScrollback, opsScrollbackErr := s.ChannelScrollback(ctx, actor.ID(), ops.Name(), 10)
+
+	type renameState struct {
+		CommitFailed              bool
+		ActorReadError            error
+		ActorDecodeError          error
+		DatabaseActor             comparableInstance
+		CanonicalActorError       error
+		CanonicalActor            comparableInstance
+		CanonicalPointerPreserved bool
+		DevWindowError            error
+		DevWindow                 domain.Window
+		OpsWindowError            error
+		OpsWindow                 domain.Window
+		DevEventsError            error
+		DevEvents                 []domain.StoredEvent
+		OpsEventsError            error
+		OpsEvents                 []domain.StoredEvent
+		DevScrollbackError        error
+		DevScrollback             []domain.StoredEvent
+		OpsScrollbackError        error
+		OpsScrollback             []domain.StoredEvent
+	}
+	require.Equal(t, renameState{
+		CommitFailed:              true,
+		DatabaseActor:             normaliseInstance(actor),
+		CanonicalActor:            normaliseInstance(actor),
+		CanonicalPointerPreserved: true,
+		DevWindow:                 domain.Window(dev),
+		OpsWindow:                 domain.Window(ops),
+	}, renameState{
+		CommitFailed:              commitErr != nil,
+		ActorReadError:            actorReadErr,
+		ActorDecodeError:          actorDecodeErr,
+		DatabaseActor:             normaliseInstance(&databaseActor),
+		CanonicalActorError:       canonicalActorErr,
+		CanonicalActor:            normaliseInstance(canonicalActor),
+		CanonicalPointerPreserved: canonicalActor == actor,
+		DevWindowError:            devErr,
+		DevWindow:                 storedDev,
+		OpsWindowError:            opsErr,
+		OpsWindow:                 storedOps,
+		DevEventsError:            devEventsErr,
+		DevEvents:                 devEvents,
+		OpsEventsError:            opsEventsErr,
+		OpsEvents:                 opsEvents,
+		DevScrollbackError:        devScrollbackErr,
+		DevScrollback:             devScrollback,
+		OpsScrollbackError:        opsScrollbackErr,
+		OpsScrollback:             opsScrollback,
+	})
+}
+
+func TestSQLiteStore_CommitInstanceDeletion_rolls_back_every_row(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	actor := domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "keeps context", nil,
+	)
+	peer := domain.NewModelInstance(
+		"inst-peer", "peer", "test/model", "stays connected", nil,
+	)
+	actor.JoinChannel("#Shared", testTime)
+	actor.JoinChannel("#Solo", testTime.Add(time.Minute))
+	peer.JoinChannel("#Shared", testTime)
+	for _, inst := range []*domain.Instance{actor, peer} {
+		require.NoError(t, s.SaveInstance(ctx, inst))
+	}
+
+	shared := domain.NewChannelWindow("#Shared", testTime)
+	shared.Topic = "still active"
+	shared.Members.Add(actor)
+	shared.Members.Add(peer)
+	shared.Members.SetModesByNick(actor.Nick(), domain.MemberModes{Operator: true})
+	require.NoError(t, s.SaveWindow(ctx, shared))
+
+	sole := domain.NewChannelWindow("#Solo", testTime.Add(time.Minute))
+	sole.Topic = "destroyed only on commit"
+	sole.Modes.InviteOnly = true
+	sole.Members.Add(actor)
+	require.NoError(t, s.SaveWindow(ctx, sole))
+
+	memory := MemoryEntry{Key: "fact", Content: "likes tea", At: testTime}
+	require.NoError(t, s.WriteMemory(
+		ctx, actor.ID(), memory.Key, memory.Content, memory.At,
+	))
+
+	priorMessage := domain.Message{
+		Source: domain.ClientSource(peer.ID(), peer.Nick()),
+		Target: shared.Name(),
+		Body:   "still visible",
+		At:     testTime,
+	}
+	scrollbackIDs, err := s.AppendChannelScrollback(ctx, []ChannelScrollbackRecord{{
+		InstanceID: actor.ID(), Channel: shared.Name(), Event: priorMessage,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, []int64{1}, scrollbackIDs)
+
+	actorReply := domain.SystemNotice{Text: "actor reply", At: testTime}
+	actorReplyID, err := s.AppendInstanceReply(
+		ctx, actor.ID(), protocol.ChannelWindowTarget(shared.Name()), actorReply,
+	)
+	require.NoError(t, err)
+	peerReply := domain.SystemNotice{Text: "peer DM reply", At: testTime.Add(time.Second)}
+	peerReplyID, err := s.AppendInstanceReply(
+		ctx, peer.ID(), protocol.DirectWindowTarget(actor.ID()), peerReply,
+	)
+	require.NoError(t, err)
+
+	actorTurnEntry := ModelTurnEntry{
+		Kind: ModelTurnInput,
+		Data: []byte(`{"input":"actor context"}`),
+		At:   testTime,
+	}
+	actorTurnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: actor.ID(),
+		Window:     protocol.ChannelWindowTarget(shared.Name()),
+		ModelID:    actor.ModelID,
+		StartedAt:  testTime,
+	}, actorTurnEntry)
+	require.NoError(t, err)
+	peerDirectTurnEntry := ModelTurnEntry{
+		Kind: ModelTurnInput,
+		Data: []byte(`{"input":"peer direct context"}`),
+		At:   testTime.Add(time.Second),
+	}
+	peerDirectTurnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: peer.ID(),
+		Window:     protocol.DirectWindowTarget(actor.ID()),
+		ModelID:    peer.ModelID,
+		StartedAt:  testTime.Add(time.Second),
+	}, peerDirectTurnEntry)
+	require.NoError(t, err)
+	soleTurnEntry := ModelTurnEntry{
+		Kind: ModelTurnInput,
+		Data: []byte(`{"input":"sole channel context"}`),
+		At:   testTime.Add(2 * time.Second),
+	}
+	soleTurnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: peer.ID(),
+		Window:     protocol.ChannelWindowTarget(sole.Name()),
+		ModelID:    peer.ModelID,
+		StartedAt:  testTime.Add(2 * time.Second),
+	}, soleTurnEntry)
+	require.NoError(t, err)
+
+	_, err = s.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_quit_projection
+		BEFORE INSERT ON channel_scrollback
+		WHEN NEW.type = 'quit' AND NEW.instance_id = 'inst-peer'
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected quit projection');
+		END
+	`)
+	require.NoError(t, err)
+
+	quit := domain.Quit{
+		Source:  domain.ClientSource(actor.ID(), actor.Nick()),
+		Message: "gone away",
+		At:      testTime.Add(3 * time.Minute),
+	}
+	_, commitErr := s.CommitInstanceDeletion(ctx, InstanceDeletion{
+		InstanceID: actor.ID(),
+		Events: []ChannelAuditEvent{
+			{Channel: shared.Name(), Event: quit},
+			{Channel: sole.Name(), Event: quit},
+		},
+		Scrollback: []ChannelScrollbackRecord{{
+			InstanceID: peer.ID(), Channel: shared.Name(), Event: quit,
+		}},
+	})
+
+	var rawActorJSON string
+	actorReadErr := s.db.QueryRowContext(ctx,
+		`SELECT data FROM instances WHERE instance_id = ?`, actor.ID(),
+	).Scan(&rawActorJSON)
+	var databaseActor domain.Instance
+	actorDecodeErr := json.Unmarshal([]byte(rawActorJSON), &databaseActor)
+	canonicalActor, canonicalActorErr := s.GetInstanceByID(ctx, actor.ID())
+	storedShared, sharedErr := s.GetWindow(ctx, shared.Name())
+	storedSole, soleErr := s.GetWindow(ctx, sole.Name())
+	memories, memoriesErr := s.ReadMemories(ctx, actor.ID())
+	pending, pendingErr := s.ListPendingMemoryDeletions(ctx)
+	actorScrollback, actorScrollbackErr := s.ChannelScrollback(
+		ctx, actor.ID(), shared.Name(), 10,
+	)
+	peerScrollback, peerScrollbackErr := s.ChannelScrollback(
+		ctx, peer.ID(), shared.Name(), 10,
+	)
+	actorReplies, actorRepliesErr := s.InstanceRepliesBefore(ctx, actor.ID(), nil, 10)
+	peerReplies, peerRepliesErr := s.InstanceRepliesBefore(ctx, peer.ID(), nil, 10)
+	actorTurnEntries, actorTurnErr := s.ModelTurnEntries(ctx, actorTurnID)
+	peerDirectTurnEntries, peerDirectTurnErr := s.ModelTurnEntries(ctx, peerDirectTurnID)
+	soleTurnEntries, soleTurnErr := s.ModelTurnEntries(ctx, soleTurnID)
+	sharedEvents, sharedEventsErr := s.EventsBefore(ctx, shared.Name(), nil, 10)
+	soleEvents, soleEventsErr := s.EventsBefore(ctx, sole.Name(), nil, 10)
+
+	type deletionState struct {
+		CommitFailed              bool
+		ActorReadError            error
+		ActorDecodeError          error
+		DatabaseActor             comparableInstance
+		CanonicalActorError       error
+		CanonicalActor            comparableInstance
+		CanonicalPointerPreserved bool
+		SharedWindowError         error
+		SharedWindow              domain.Window
+		SoleWindowError           error
+		SoleWindow                domain.Window
+		MemoriesError             error
+		Memories                  []MemoryEntry
+		PendingError              error
+		Pending                   []domain.InstanceID
+		ActorScrollbackError      error
+		ActorScrollback           []domain.StoredEvent
+		PeerScrollbackError       error
+		PeerScrollback            []domain.StoredEvent
+		ActorRepliesError         error
+		ActorReplies              []InstanceReplyRecord
+		PeerRepliesError          error
+		PeerReplies               []InstanceReplyRecord
+		ActorTurnError            error
+		ActorTurn                 []ModelTurnEntry
+		PeerDirectTurnError       error
+		PeerDirectTurn            []ModelTurnEntry
+		SoleTurnError             error
+		SoleTurn                  []ModelTurnEntry
+		SharedEventsError         error
+		SharedEvents              []domain.StoredEvent
+		SoleEventsError           error
+		SoleEvents                []domain.StoredEvent
+	}
+	require.Equal(t, deletionState{
+		CommitFailed:              true,
+		DatabaseActor:             normaliseInstance(actor),
+		CanonicalActor:            normaliseInstance(actor),
+		CanonicalPointerPreserved: true,
+		SharedWindow:              domain.Window(shared),
+		SoleWindow:                domain.Window(sole),
+		Memories:                  []MemoryEntry{memory},
+		ActorScrollback:           []domain.StoredEvent{{ID: 1, Event: priorMessage}},
+		ActorReplies: []InstanceReplyRecord{{
+			ID: actorReplyID, Window: protocol.ChannelWindowTarget(shared.Name()), Event: actorReply,
+		}},
+		PeerReplies: []InstanceReplyRecord{{
+			ID: peerReplyID, Window: protocol.DirectWindowTarget(actor.ID()), Event: peerReply,
+		}},
+		ActorTurn:      []ModelTurnEntry{actorTurnEntry},
+		PeerDirectTurn: []ModelTurnEntry{peerDirectTurnEntry},
+		SoleTurn:       []ModelTurnEntry{soleTurnEntry},
+	}, deletionState{
+		CommitFailed:              commitErr != nil,
+		ActorReadError:            actorReadErr,
+		ActorDecodeError:          actorDecodeErr,
+		DatabaseActor:             normaliseInstance(&databaseActor),
+		CanonicalActorError:       canonicalActorErr,
+		CanonicalActor:            normaliseInstance(canonicalActor),
+		CanonicalPointerPreserved: canonicalActor == actor,
+		SharedWindowError:         sharedErr,
+		SharedWindow:              storedShared,
+		SoleWindowError:           soleErr,
+		SoleWindow:                storedSole,
+		MemoriesError:             memoriesErr,
+		Memories:                  memories,
+		PendingError:              pendingErr,
+		Pending:                   pending,
+		ActorScrollbackError:      actorScrollbackErr,
+		ActorScrollback:           actorScrollback,
+		PeerScrollbackError:       peerScrollbackErr,
+		PeerScrollback:            peerScrollback,
+		ActorRepliesError:         actorRepliesErr,
+		ActorReplies:              actorReplies,
+		PeerRepliesError:          peerRepliesErr,
+		PeerReplies:               peerReplies,
+		ActorTurnError:            actorTurnErr,
+		ActorTurn:                 actorTurnEntries,
+		PeerDirectTurnError:       peerDirectTurnErr,
+		PeerDirectTurn:            peerDirectTurnEntries,
+		SoleTurnError:             soleTurnErr,
+		SoleTurn:                  soleTurnEntries,
+		SharedEventsError:         sharedEventsErr,
+		SharedEvents:              sharedEvents,
+		SoleEventsError:           soleEventsErr,
+		SoleEvents:                soleEvents,
+	})
 }
 
 // TestNewSQLiteStore_sets_pragmas exercises the connection-time
@@ -329,10 +1184,7 @@ func TestSQLiteStore_SaveWindow_rejects_dm(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	bot := domain.NewModelInstance("id-1", "botty", "anthropic/claude-3-haiku", "", nil)
-	require.NoError(t, s.SaveInstance(ctx, bot))
-
-	err := s.SaveWindow(ctx, domain.NewDMWindow(bot, testTime))
+	err := s.SaveWindow(ctx, domain.WindowKey("id-1"))
 	require.Error(t, err)
 }
 
@@ -359,6 +1211,43 @@ func TestSQLiteStore_DeleteWindow(t *testing.T) {
 
 	_, err := s.GetWindow(ctx, "#general")
 	require.ErrorIs(t, err, ErrNoSuchChannel)
+}
+
+func TestSQLiteStore_DeleteWindow_removes_model_turns_for_the_channel(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#Dev", testTime)))
+	fixtures := []protocol.WindowTarget{
+		protocol.ChannelWindowTarget("#Dev"),
+		protocol.ChannelWindowTarget("#other"),
+		protocol.DirectWindowTarget("inst-peer"),
+	}
+	var turnIDs []ModelTurnID
+	for _, window := range fixtures {
+		turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+			InstanceID: "inst-botty",
+			Window:     window,
+			ModelID:    "test/model",
+			StartedAt:  testTime,
+		}, ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime})
+		require.NoError(t, err)
+		turnIDs = append(turnIDs, turnID)
+	}
+
+	require.NoError(t, s.DeleteWindow(ctx, "#dev"))
+
+	got := make([][]ModelTurnEntry, 0, len(turnIDs))
+	for _, turnID := range turnIDs {
+		entries, err := s.ModelTurnEntries(ctx, turnID)
+		require.NoError(t, err)
+		got = append(got, entries)
+	}
+	require.Equal(t, [][]ModelTurnEntry{
+		nil,
+		{{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime}},
+		{{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime}},
+	}, got)
 }
 
 func TestSQLiteStore_SaveWindowOverwrites(t *testing.T) {
@@ -400,11 +1289,9 @@ func TestSQLiteStore_AppendAndReadEvent(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	event := domain.Join{
-		Target: "#general",
-		Nick:   "alice",
-		At:     testTime,
-	}
+	event := domain.Join{Source: domain.LegacyClientSource(
+
+		"alice"), Target: "#general", At: testTime}
 
 	id, err := s.AppendEvent(ctx, "#general", event)
 	require.NoError(t, err)
@@ -451,6 +1338,49 @@ func TestSQLiteStore_EventsBefore_with_cursor(t *testing.T) {
 	require.Equal(t, []int64{ids[1], ids[2]}, gotIDs)
 }
 
+func TestSQLiteStore_ChannelScrollback_resets_membership_interval(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		channel = domain.ChannelName("#general")
+		actor   = domain.InstanceID("inst-botty")
+	)
+
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow(channel, testTime)))
+
+	appendScrollback := func(event domain.PersistableEvent) {
+		t.Helper()
+		_, err := s.AppendChannelScrollback(ctx, []ChannelScrollbackRecord{{
+			InstanceID: actor,
+			Channel:    channel,
+			Event:      event,
+		}})
+		require.NoError(t, err)
+	}
+
+	appendScrollback(domain.Join{Target: channel, Source: domain.ClientSource(actor, "botty"), At: testTime})
+	appendScrollback(domain.Message{Source: domain.LegacyClientSource("alice"), Target: channel, Body: "first interval", At: testTime})
+	require.NoError(t, s.DeleteChannelScrollback(ctx, actor, channel))
+
+	secondJoin := domain.Join{Target: channel, Source: domain.ClientSource(actor, "botty"), At: testTime}
+	secondMessage := domain.Message{Source: domain.LegacyClientSource("alice"), Target: channel, Body: "second interval", At: testTime}
+	appendScrollback(secondJoin)
+	appendScrollback(secondMessage)
+
+	got, err := s.ChannelScrollback(ctx, actor, channel, 100)
+	require.NoError(t, err)
+	require.Equal(t, []domain.PersistableEvent{secondJoin, secondMessage}, storedEvents(got))
+}
+
+func storedEvents(events []domain.StoredEvent) []domain.PersistableEvent {
+	result := make([]domain.PersistableEvent, len(events))
+	for i, event := range events {
+		result[i] = event.Event
+	}
+
+	return result
+}
+
 // TestSQLiteStore_EventsBefore_skips_unrecognised_row pins the
 // decode-resilience of the channel-log read path. An older database
 // may hold rows whose type discriminator this build no longer knows
@@ -467,7 +1397,7 @@ func TestSQLiteStore_EventsBefore_skips_unrecognised_row(t *testing.T) {
 		"#general", "help", legacy, testTime.Add(-time.Minute).Format(time.RFC3339Nano))
 	require.NoError(t, err)
 
-	good := domain.Join{Target: "#general", Nick: "alice", At: testTime}
+	good := domain.Join{Source: domain.LegacyClientSource("alice"), Target: "#general", At: testTime}
 	id, err := s.AppendEvent(ctx, "#general", good)
 	require.NoError(t, err)
 
@@ -500,25 +1430,21 @@ func TestSQLiteStore_DMEventsBefore_unions_both_directions(t *testing.T) {
 	}
 
 	// User → botty.
-	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
-	})
+	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+		"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: testTime})
 
 	// Botty → user.
-	id2 := mustAppend("", domain.Message{
-		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
-	})
+	id2 := mustAppend("", domain.Message{Source: domain.ClientSource(
+		bottyID, "botty"), Target: "", Body: "hello", At: testTime.Add(time.Second)})
 
 	// User → botty again.
-	id3 := mustAppend(domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "iain", Body: "still here", At: testTime.Add(2 * time.Second),
-	})
+	id3 := mustAppend(domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+		"iain"), Target: domain.ChannelName(bottyID), Body: "still here", At: testTime.Add(2 * time.Second)})
 
 	// Foreign DM: helper → botty. Should not appear in the
 	// user↔botty view.
-	mustAppend(domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "helper", InstanceID: helperID, Body: "side chat", At: testTime.Add(3 * time.Second),
-	})
+	mustAppend(domain.ChannelName(bottyID), domain.Message{Source: domain.ClientSource(
+		helperID, "helper"), Target: domain.ChannelName(bottyID), Body: "side chat", At: testTime.Add(3 * time.Second)})
 
 	got, err := s.DMEventsBefore(ctx, userID, bottyID, nil, 10)
 	require.NoError(t, err)
@@ -530,13 +1456,10 @@ func TestSQLiteStore_DMEventsBefore_unions_both_directions(t *testing.T) {
 	require.Equal(t, []int64{id1, id2, id3}, gotIDs)
 }
 
-// TestSQLiteStore_DMEventsBefore_includes_peer_actor_events
-// pins that peer's actor-scoped events (`quit`, `nick_change`)
-// surface in the DM thread between `self` and `peer`, and that
-// per-channel persistence (one row per channel the actor was in
-// at event time) is collapsed back to a single row by
-// `(instance_id, type, at)`.
-func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
+// TestSQLiteStore_DMEventsBefore_excludes_unobserved_actor_events
+// pins that a peer's channel-scoped QUIT does not appear in a DM
+// thread merely because the peer was its actor.
+func TestSQLiteStore_DMEventsBefore_excludes_unobserved_actor_events(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
@@ -551,20 +1474,18 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 	}
 
 	// User → botty.
-	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
-	})
+	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+		"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: testTime})
 
 	// Botty's quit fanned out per-channel (in real life, one row
 	// per channel botty was in). Persisted under different
 	// `channel` columns but carrying the same Quit payload.
 	quit := domain.Quit{
-		Nick:       "botty",
-		InstanceID: bottyID,
-		Message:    "shutting down",
-		At:         testTime.Add(time.Second),
+		Source:  domain.ClientSource(bottyID, "botty"),
+		Message: "shutting down",
+		At:      testTime.Add(time.Second),
 	}
-	idGeneral := mustAppend("#general", quit)
+	mustAppend("#general", quit)
 	mustAppend("#dev", quit)
 
 	got, err := s.DMEventsBefore(ctx, userID, bottyID, nil, 10)
@@ -575,11 +1496,7 @@ func TestSQLiteStore_DMEventsBefore_includes_peer_actor_events(t *testing.T) {
 		gotIDs[i] = e.ID
 	}
 
-	// Expect the message and exactly one quit row (the earliest
-	// id, picked by MIN(id) in the dedupe), in chronological
-	// order.
-	require.Equal(t, []int64{id1, idGeneral}, gotIDs)
-	require.IsType(t, domain.Quit{}, got[1].Event)
+	require.Equal(t, []int64{id1}, gotIDs)
 }
 
 // TestSQLiteStore_CountDMEventsFrom pins the count behind a DM's
@@ -602,26 +1519,22 @@ func TestSQLiteStore_CountDMEventsFrom(t *testing.T) {
 	}
 
 	// User → botty.
-	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
-	})
+	id1 := mustAppend(domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+		"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: testTime})
 
 	// Botty → user, twice.
-	id2 := mustAppend("", domain.Message{
-		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
-	})
-	id3 := mustAppend("", domain.Message{
-		Target: "", From: "botty", InstanceID: bottyID, Body: "still here", At: testTime.Add(2 * time.Second),
-	})
+	id2 := mustAppend("", domain.Message{Source: domain.ClientSource(
+		bottyID, "botty"), Target: "", Body: "hello", At: testTime.Add(time.Second)})
+	id3 := mustAppend("", domain.Message{Source: domain.ClientSource(
+		bottyID, "botty"), Target: "", Body: "still here", At: testTime.Add(2 * time.Second)})
 
 	// Helper → botty: a DM the user is not party to.
-	mustAppend(domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "helper", InstanceID: helperID, Body: "side chat", At: testTime.Add(3 * time.Second),
-	})
+	mustAppend(domain.ChannelName(bottyID), domain.Message{Source: domain.ClientSource(
+		helperID, "helper"), Target: domain.ChannelName(bottyID), Body: "side chat", At: testTime.Add(3 * time.Second)})
 
 	// Botty's quit, which belongs to the channel it was in.
 	mustAppend("#general", domain.Quit{
-		Nick: "botty", InstanceID: bottyID, Message: "bye", At: testTime.Add(4 * time.Second),
+		Source: domain.ClientSource(bottyID, "botty"), Message: "bye", At: testTime.Add(4 * time.Second),
 	})
 
 	tests := []struct {
@@ -785,14 +1698,14 @@ func TestSQLiteStore_Events_type_discriminator_round_trip(t *testing.T) {
 	s := newTestStore(t)
 
 	events := []domain.ChannelActivity{
-		domain.Message{Target: "#general", From: "alice", Body: "hello", At: testTime},
-		domain.Join{Target: "#general", Nick: "bob", At: testTime},
-		domain.Part{Target: "#general", Nick: "bob", At: testTime},
-		domain.TopicChange{Target: "#general", Topic: "new", By: "alice", At: testTime},
-		domain.ChannelModeChange{Target: "#general", Nick: "bob", Flag: domain.ModeChannelVoice, Add: true, By: "ChanServ", At: testTime},
-		domain.Invited{Target: "#general", Nick: "botty", By: "alice", At: testTime},
-		domain.Kicked{Target: "#general", Nick: "botty", By: "alice", At: testTime},
-		domain.NickChange{OldNick: "bob", NewNick: "robert", At: testTime},
+		domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "hello", At: testTime},
+		domain.Join{Source: domain.LegacyClientSource("bob"), Target: "#general", At: testTime},
+		domain.Part{Source: domain.LegacyClientSource("bob"), Target: "#general", At: testTime},
+		domain.TopicChange{Source: domain.LegacyClientSource("alice"), Target: "#general", Topic: "new", At: testTime},
+		domain.ChannelModeChange{Source: domain.LegacyClientSource("ChanServ"), Target: "#general", Subject: "bob", Flag: domain.ModeChannelVoice, Add: true, At: testTime},
+		domain.Invited{Source: domain.LegacyClientSource("alice"), Target: "#general", Invitee: "botty", At: testTime},
+		domain.Kicked{Source: domain.LegacyClientSource("alice"), Target: "#general", Subject: "botty", At: testTime},
+		domain.NickChange{Source: domain.LegacyClientSource("bob"), NewNick: "robert", At: testTime},
 	}
 
 	for _, e := range events {
@@ -938,6 +1851,52 @@ func TestSQLiteStore_pending_instance_deletions_are_not_active(t *testing.T) {
 	require.Equal(t, []domain.InstanceID(nil), pendingIDs)
 }
 
+func TestSQLiteStore_DeleteInstanceByID_removes_model_turns_with_the_actor(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	departing := domain.NewModelInstance("inst-departing", "departing", "test/model", "", nil)
+	other := domain.NewModelInstance("inst-other", "other", "test/model", "", nil)
+	for _, inst := range []*domain.Instance{departing, other} {
+		require.NoError(t, s.SaveInstance(ctx, inst))
+	}
+
+	type turnFixture struct {
+		actor  domain.InstanceID
+		window protocol.WindowTarget
+	}
+	fixtures := []turnFixture{
+		{actor: departing.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: other.ID(), window: protocol.DirectWindowTarget(departing.ID())},
+		{actor: other.ID(), window: protocol.DirectWindowTarget("")},
+	}
+	var turnIDs []ModelTurnID
+	for _, fixture := range fixtures {
+		turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+			InstanceID: fixture.actor,
+			Window:     fixture.window,
+			ModelID:    "test/model",
+			StartedAt:  testTime,
+		}, ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime})
+		require.NoError(t, err)
+		turnIDs = append(turnIDs, turnID)
+	}
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, departing.ID()))
+
+	got := make([][]ModelTurnEntry, 0, len(turnIDs))
+	for _, turnID := range turnIDs {
+		entries, err := s.ModelTurnEntries(ctx, turnID)
+		require.NoError(t, err)
+		got = append(got, entries)
+	}
+	require.Equal(t, [][]ModelTurnEntry{
+		nil,
+		nil,
+		{{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime}},
+	}, got)
+}
+
 // TestSQLiteStore_WriteMemory_records_at pins that a written entry
 // carries the write time its caller supplied, read back exactly.
 func TestSQLiteStore_WriteMemory_records_at(t *testing.T) {
@@ -1053,17 +2012,48 @@ func TestSQLiteStore_DeleteInstanceByID_removes_channel_memberships(t *testing.T
 	shared.Members.Add(gone)
 	shared.Members.Add(kept)
 	require.NoError(t, s.SaveWindow(ctx, shared))
+	soleTurn, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: kept.ID(), Window: protocol.ChannelWindowTarget(sole.Name()),
+		ModelID: kept.ModelID, StartedAt: testTime,
+	}, ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"sole"}`), At: testTime})
+	require.NoError(t, err)
+	sharedTurn, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: kept.ID(), Window: protocol.ChannelWindowTarget(shared.Name()),
+		ModelID: kept.ModelID, StartedAt: testTime,
+	}, ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"shared"}`), At: testTime})
+	require.NoError(t, err)
 
 	require.NoError(t, s.DeleteInstanceByID(ctx, gone.ID()))
 
-	_, err := s.GetWindow(ctx, sole.Name())
+	_, err = s.GetWindow(ctx, sole.Name())
 	require.ErrorIs(t, err, ErrNoSuchChannel)
 	got, err := s.GetWindow(ctx, shared.Name())
+	require.NoError(t, err)
+	soleEntries, err := s.ModelTurnEntries(ctx, soleTurn)
+	require.NoError(t, err)
+	sharedEntries, err := s.ModelTurnEntries(ctx, sharedTurn)
 	require.NoError(t, err)
 	want := domain.NewChannelWindow("#shared", testTime)
 	want.Topic = "still here"
 	want.Members.Add(kept)
-	require.Equal(t, domain.Window(want), got)
+	require.Equal(t, struct {
+		Window        domain.Window
+		SoleEntries   []ModelTurnEntry
+		SharedEntries []ModelTurnEntry
+	}{
+		Window: domain.Window(want),
+		SharedEntries: []ModelTurnEntry{{
+			Kind: ModelTurnInput, Data: []byte(`{"input":"shared"}`), At: testTime,
+		}},
+	}, struct {
+		Window        domain.Window
+		SoleEntries   []ModelTurnEntry
+		SharedEntries []ModelTurnEntry
+	}{
+		Window:        got,
+		SoleEntries:   soleEntries,
+		SharedEntries: sharedEntries,
+	})
 }
 
 func TestSQLiteStore_DeleteInstanceByID_removes_channel_shadow_spellings(t *testing.T) {
@@ -1159,17 +2149,18 @@ func TestSQLiteStore_GetWindow_drops_dead_member_references(t *testing.T) {
 	s := newTestStore(t)
 
 	cw := domain.NewChannelWindow("#dev", testTime)
-	cw.Members = storeTestMembers(t, s, "alice", "bob")
+	cw.Members = storeTestMembers(t, s, "alice", "bob", "carol")
 	require.NoError(t, s.SaveWindow(ctx, cw))
 
-	// Delete bob's backing instance. The channel membership record
-	// still references inst-bob but no instance row remains.
+	// Delete adjacent backing instances. The channel membership record
+	// still references both ids, but neither instance row remains.
 	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-bob"))
+	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-carol"))
 
 	got, err := s.GetWindow(ctx, "#dev")
 	require.NoError(t, err)
 
-	// The surviving member is alice; bob's stub is dropped. Compare
+	// The surviving member is alice; both dead stubs are dropped. Compare
 	// the nick snapshots so the assertion doesn't depend on pointer
 	// identity of the canonical handles.
 	gotChannel, ok := got.(*domain.ChannelWindow)
@@ -1283,9 +2274,8 @@ func seedChannelWithEvent(t *testing.T, s *SQLiteStore, ch domain.ChannelName) i
 
 	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow(ch, testTime)))
 
-	id, err := s.AppendEvent(ctx, ch, domain.Join{
-		Target: ch, Nick: "testuser", At: testTime,
-	})
+	id, err := s.AppendEvent(ctx, ch, domain.Join{Source: domain.LegacyClientSource(
+		"testuser"), Target: ch, At: testTime})
 	require.NoError(t, err)
 
 	return id
@@ -1328,9 +2318,8 @@ func TestSQLiteStore_SetLastRead_overwrites(t *testing.T) {
 
 	seedChannelWithEvent(t, s, "#general")
 	// Append a second event to get a different ID.
-	id2, err := s.AppendEvent(ctx, "#general", domain.Message{
-		Target: "#general", From: "alice", Body: "hello", At: testTime,
-	})
+	id2, err := s.AppendEvent(ctx, "#general", domain.Message{Source: domain.LegacyClientSource(
+		"alice"), Target: "#general", Body: "hello", At: testTime})
 	require.NoError(t, err)
 
 	require.NoError(t, s.SetLastRead(ctx, "#general", 1))
@@ -1353,9 +2342,8 @@ func seedDMWithEvent(t *testing.T, s *SQLiteStore, peer domain.InstanceID) int64
 		domain.NewModelInstance(peer, domain.Nick(peer), "test/model", "", nil),
 	))
 
-	id, err := s.AppendEvent(ctx, domain.ChannelName(peer), domain.Message{
-		Target: domain.ChannelName(peer), From: "testuser", Body: "hi", At: testTime,
-	})
+	id, err := s.AppendEvent(ctx, domain.ChannelName(peer), domain.Message{Source: domain.LegacyClientSource(
+		"testuser"), Target: domain.ChannelName(peer), Body: "hi", At: testTime})
 	require.NoError(t, err)
 
 	return id
@@ -1404,9 +2392,8 @@ func TestSQLiteStore_SetDMLastRead_overwrites(t *testing.T) {
 
 	seedDMWithEvent(t, s, "inst-botty")
 	// Append a second event to get a different ID.
-	id2, err := s.AppendEvent(ctx, "inst-botty", domain.Message{
-		Target: "inst-botty", From: "botty", InstanceID: "inst-botty", Body: "again", At: testTime,
-	})
+	id2, err := s.AppendEvent(ctx, "inst-botty", domain.Message{Source: domain.ClientSource(
+		"inst-botty", "botty"), Target: "inst-botty", Body: "again", At: testTime})
 	require.NoError(t, err)
 
 	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", 1))
@@ -1453,16 +2440,22 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	s := newTestStore(t)
 
 	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
-	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{
-		Target: "#general", Nick: "alice", At: testTime,
-	})
+	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{Source: domain.LegacyClientSource(
+		"alice"), Target: "#general", At: testTime})
 	require.NoError(t, err)
 	require.NoError(t, s.SaveInstance(ctx,
 		domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
 	))
 	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#general")))
 	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
-	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
+	_, err = s.AppendInstanceReply(ctx, "inst-botty", protocol.ChannelWindowTarget("#general"), domain.Whois{At: testTime})
+	require.NoError(t, err)
+	turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: "inst-botty",
+		Window:     protocol.ChannelWindowTarget("#general"),
+		ModelID:    "test/model",
+		StartedAt:  testTime,
+	}, ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime})
 	require.NoError(t, err)
 	require.NoError(t, s.AddDMWindow(ctx, "inst-botty"))
 	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", eventID))
@@ -1496,6 +2489,10 @@ func TestSQLiteStore_Reset(t *testing.T) {
 	replies, err := s.InstanceRepliesBefore(ctx, "inst-botty", nil, 10)
 	require.NoError(t, err)
 	require.Empty(t, replies)
+
+	turnEntries, err := s.ModelTurnEntries(ctx, turnID)
+	require.NoError(t, err)
+	require.Empty(t, turnEntries)
 
 	dmWindows, err := s.ListDMWindows(ctx)
 	require.NoError(t, err)
@@ -1754,6 +2751,114 @@ func TestSQLiteStore_Reset_includes_personas(t *testing.T) {
 	require.Empty(t, got)
 }
 
+func TestSQLiteStore_model_turn_journal_preserves_entry_order(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	input := ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime}
+	turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: "inst-botty",
+		Window:     protocol.ChannelWindowTarget("#dev"),
+		ModelID:    "test/model",
+		StartedAt:  testTime,
+	}, input)
+	require.NoError(t, err)
+
+	followingEntries := []ModelTurnEntry{
+		{Kind: ModelTurnAssistant, Data: []byte(`{"tools":["msg"]}`), At: testTime.Add(time.Second)},
+		{Kind: ModelTurnToolResults, Data: []byte(`{"ok":true}`), At: testTime.Add(2 * time.Second)},
+		{Kind: ModelTurnOutcome, Data: []byte(`{"pass_reason":""}`), At: testTime.Add(3 * time.Second)},
+	}
+	for _, entry := range followingEntries {
+		require.NoError(t, s.AppendModelTurnEntry(ctx, turnID, entry))
+	}
+	entries := append([]ModelTurnEntry{input}, followingEntries...)
+
+	got, err := s.ModelTurnEntries(ctx, turnID)
+	require.NoError(t, err)
+	require.Equal(t, entries, got)
+}
+
+func TestSQLiteStore_DeleteModelTurnsForWindow_is_actor_scoped(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	type turnFixture struct {
+		actor  domain.InstanceID
+		window protocol.WindowTarget
+	}
+
+	fixtures := []turnFixture{
+		{actor: "inst-botty", window: protocol.ChannelWindowTarget("#dev")},
+		{actor: "inst-botty", window: protocol.ChannelWindowTarget("#other")},
+		{actor: "inst-other", window: protocol.ChannelWindowTarget("#dev")},
+		{actor: "inst-botty", window: protocol.DirectWindowTarget("inst-peer")},
+	}
+	for _, fixture := range fixtures {
+		_, err := s.BeginModelTurn(ctx, ModelTurn{
+			InstanceID: fixture.actor,
+			Window:     fixture.window,
+			ModelID:    "test/model",
+			StartedAt:  testTime,
+		}, ModelTurnEntry{
+			Kind: ModelTurnInput,
+			Data: []byte(`{"input":"hello"}`),
+			At:   testTime,
+		})
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, s.DeleteModelTurnsForWindow(
+		ctx,
+		"inst-botty",
+		protocol.ChannelWindowTarget("#dev"),
+	))
+
+	got := dumpTable(t, s.db, `
+		SELECT instance_id, window_kind, window_key
+		FROM model_turns
+		ORDER BY instance_id, window_kind, window_key
+	`)
+	require.Equal(t, []string{
+		"instance_id=inst-botty|window_kind=1|window_key=#other",
+		"instance_id=inst-botty|window_kind=2|window_key=inst-peer",
+		"instance_id=inst-other|window_kind=1|window_key=#dev",
+	}, got)
+
+	entryCount := dumpTable(t, s.db, `SELECT count(*) FROM model_turn_entries`)
+	require.Equal(t, []string{"count(*)=3"}, entryCount)
+}
+
+func TestSQLiteStore_AppendModelTurnEntry_refuses_a_deleted_turn(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	window := protocol.ChannelWindowTarget("#dev")
+
+	turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: "inst-botty",
+		Window:     window,
+		ModelID:    "test/model",
+		StartedAt:  testTime,
+	}, ModelTurnEntry{
+		Kind: ModelTurnInput,
+		Data: []byte(`{"input":"hello"}`),
+		At:   testTime,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteModelTurnsForWindow(ctx, "inst-botty", window))
+	err = s.AppendModelTurnEntry(ctx, turnID, ModelTurnEntry{
+		Kind: ModelTurnOutcome,
+		Data: []byte(`{"pass_reason":""}`),
+		At:   testTime.Add(time.Second),
+	})
+	require.ErrorIs(t, err, ErrModelTurnClosed)
+
+	got, err := s.ModelTurnEntries(ctx, turnID)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 // --- Autojoin ---
 
 func TestSQLiteStore_ListAutojoinChannels_empty(t *testing.T) {
@@ -1827,9 +2932,8 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	s := newTestStore(t)
 
 	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
-	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{
-		Target: "#general", Nick: "alice", At: testTime,
-	})
+	eventID, err := s.AppendEvent(ctx, "#general", domain.Join{Source: domain.LegacyClientSource(
+		"alice"), Target: "#general", At: testTime})
 	require.NoError(t, err)
 	require.NoError(t, s.SaveInstance(ctx,
 		domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
@@ -1842,7 +2946,7 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 		Origin:      domain.PersonaGenerated,
 	}))
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
-	_, err = s.AppendInstanceReply(ctx, "inst-botty", domain.Whois{Target: "#general", At: testTime})
+	_, err = s.AppendInstanceReply(ctx, "inst-botty", protocol.ChannelWindowTarget("#general"), domain.Whois{At: testTime})
 	require.NoError(t, err)
 	require.NoError(t, s.AddDMWindow(ctx, "inst-botty"))
 	require.NoError(t, s.SetDMLastRead(ctx, "inst-botty", eventID))
@@ -1880,12 +2984,9 @@ func appendTestEvents(t *testing.T, s *SQLiteStore, ch domain.ChannelName, n int
 	ids := make([]int64, n)
 
 	for i := range n {
-		event := domain.Message{
-			Target: ch,
-			From:   "alice",
-			Body:   "message",
-			At:     testTime.Add(time.Duration(i) * time.Second),
-		}
+		event := domain.Message{Source: domain.LegacyClientSource(
+
+			"alice"), Target: ch, Body: "message", At: testTime.Add(time.Duration(i) * time.Second)}
 
 		id, err := s.AppendEvent(t.Context(), ch, event)
 		require.NoError(t, err)
@@ -1911,6 +3012,8 @@ func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
 		"dm_windows":               `SELECT * FROM dm_windows`,
 		"dm_last_read":             `SELECT * FROM dm_last_read`,
 		"instance_replies":         `SELECT * FROM instance_replies`,
+		"model_turn_entries":       `SELECT * FROM model_turn_entries`,
+		"model_turns":              `SELECT * FROM model_turns`,
 		"pending_memory_deletions": `SELECT * FROM pending_memory_deletions`,
 		"instances":                `SELECT * FROM instances`,
 		"memories":                 `SELECT * FROM memories`,

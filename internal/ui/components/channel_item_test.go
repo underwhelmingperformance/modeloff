@@ -24,19 +24,26 @@ var testChannels = []domain.Window{
 
 var italicSGR = regexp.MustCompile(`\x1b\[(?:[0-9]+;)*3(?:;[0-9]+)*m`)
 
-// dmStub builds a DM window addressed by a synthetic instance id
-// derived from the counterpart nick. Test fixtures need a stable
-// id-shaped name and a counterpart whose `Nick()` matches what
-// the sidebar renders.
-func dmStub(nick domain.Nick, created time.Time) *domain.DMWindow {
-	counterpart := domain.NewModelInstance(
-		domain.InstanceID("stub-"+string(nick)),
-		nick,
-		"test/model",
-		"",
-		nil,
-	)
-	return domain.NewDMWindow(counterpart, created)
+type dmTestWindow struct {
+	id      domain.InstanceID
+	nick    domain.Nick
+	created time.Time
+}
+
+func dmStub(nick domain.Nick, created time.Time) *dmTestWindow {
+	return &dmTestWindow{id: domain.InstanceID("stub-" + string(nick)), nick: nick, created: created}
+}
+
+func (w *dmTestWindow) Name() domain.ChannelName { return domain.ChannelName(w.id) }
+func (w *dmTestWindow) Created() time.Time       { return w.created }
+func (*dmTestWindow) Kind() domain.ChannelKind   { return domain.KindDM }
+func (w *dmTestWindow) DisplayName() string      { return string(w.nick) }
+func (w *dmTestWindow) Less(other domain.Window) bool {
+	if other.Kind() != domain.KindDM {
+		return false
+	}
+
+	return w.Name() < other.Name()
 }
 
 func key(k string) tea.KeyPressMsg {

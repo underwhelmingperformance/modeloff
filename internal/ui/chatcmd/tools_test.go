@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -314,6 +315,31 @@ type toolTestAPI struct{}
 
 func (toolTestAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil, nil }
 
+func (toolTestAPI) RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt api.SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	return api.RenderEventRequest(
+		modelID, selfInstanceID, systemPrompt, history, events, tools...,
+	)
+}
+
+func (toolTestAPI) RenderToolResultRequest(
+	conv *api.Conversation,
+	results []api.ToolResult,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	if conv == nil {
+		return api.RenderedEventRequest{}, nil
+	}
+
+	return api.RenderToolResultRequest(conv, results, tools...)
+}
+
 func (toolTestAPI) SendEvents(
 	context.Context,
 	domain.ModelID,
@@ -359,12 +385,27 @@ func newToolTestSession(t *testing.T) (*session.Session, *userclient.UserClient)
 // active actor so dispatched commands route through the same
 // [protocol.Client.Send] path the chat-screen exercises.
 func userToolContext(sess *session.Session, user *userclient.UserClient, target protocol.MsgTarget) modelclient.ToolContext {
-	return modelclient.ToolContext{
-		Session: sess,
-		Actor:   user.Instance(),
-		Target:  target,
-		Client:  user,
-	}
+	return modelclient.NewToolContext(openWindowGuard{}, sess, user, target)
+}
+
+// openWindowGuard stands in for the window authority a turn holds.
+// It admits every check and dispatches through the client, so a test
+// exercises the tool and not the authority.
+type openWindowGuard struct{}
+
+func (openWindowGuard) Valid(context.Context) bool { return true }
+func (openWindowGuard) Context(context.Context) (protocol.WindowContext, error) {
+	return nil, nil
+}
+func (openWindowGuard) RunWithAuthority(_ context.Context, operation func() error) error {
+	return operation()
+}
+func (openWindowGuard) Send(
+	ctx context.Context,
+	client protocol.Client,
+	cmd protocol.Command,
+) (protocol.Response, error) {
+	return client.Send(ctx, cmd)
 }
 
 type channelEventReader interface {
@@ -455,6 +496,81 @@ func (toolTestClient) Events() <-chan protocol.Delivery { return nil }
 
 func (toolTestClient) Caps() command.CapabilityHolder { return command.NoCapabilities() }
 
+type commandTestSession struct {
+	now     time.Time
+	resolve func(domain.Nick) (domain.InstanceID, domain.Nick, error)
+}
+
+func (s *commandTestSession) ResolveNick(
+	_ context.Context,
+	nick domain.Nick,
+) (domain.InstanceID, domain.Nick, error) {
+	return s.resolve(nick)
+}
+
+func (s *commandTestSession) Now() time.Time { return s.now }
+
+func TestDelayedFocusCommands_stamp_the_user_intent(t *testing.T) {
+	intentAt := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	completionAt := intentAt.Add(time.Minute)
+
+	tests := []struct {
+		name string
+		run  func(*commandTestSession) tea.Cmd
+		want tea.Msg
+	}{
+		{
+			name: "join",
+			run: func(sess *commandTestSession) tea.Cmd {
+				client := toolTestClient{send: func(
+					_ context.Context,
+					command protocol.Command,
+				) (protocol.Response, error) {
+					require.Equal(t, protocol.Join{Channels: []domain.ChannelName{"#dev"}}, command)
+					sess.now = completionAt
+
+					return protocol.Response{Events: []protocol.Event{
+						domain.JoinedChannel{Channel: "#dev"},
+					}}, nil
+				}}
+
+				return JoinCommand{Channel: "#dev"}.Run(t.Context(), Context{
+					Session: sess,
+					Client:  client,
+				})
+			},
+			want: ChannelJoinFocusMsg{Channel: "#dev", At: intentAt},
+		},
+		{
+			name: "query",
+			run: func(sess *commandTestSession) tea.Cmd {
+				sess.resolve = func(nick domain.Nick) (domain.InstanceID, domain.Nick, error) {
+					require.Equal(t, domain.Nick("botty"), nick)
+					sess.now = completionAt
+
+					return "inst-botty", "botty", nil
+				}
+
+				return QueryCommand{Nick: "botty"}.Run(t.Context(), Context{Session: sess})
+			},
+			want: DMOpenedMsg{
+				CounterpartID: "inst-botty", CounterpartNick: "botty",
+				Focus: true, At: intentAt,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &commandTestSession{now: intentAt}
+
+			cmd := tt.run(sess)
+
+			require.Equal(t, tt.want, cmd())
+		})
+	}
+}
+
 func TestRunTool_join_with_channel(t *testing.T) {
 	sess, user := newToolTestSession(t)
 	tc := userToolContext(sess, user, protocol.ChannelTarget("#general"))
@@ -482,7 +598,8 @@ func TestRunTool_session_failure_is_an_execution_error(t *testing.T) {
 	spec, ok := registry.Find("list")
 	require.True(t, ok)
 
-	payload, err := spec.Execute(t.Context(), modelclient.ToolContext{Client: client}, json.RawMessage(`{}`))
+	payload, err := spec.Execute(t.Context(), modelclient.NewToolContext(openWindowGuard{}, nil, client, nil),
+		json.RawMessage(`{}`))
 
 	require.Equal(t, modelclient.ToolResultPayload{}, payload)
 	require.ErrorIs(t, err, sentinel)
@@ -533,7 +650,7 @@ func TestJoinCommand_Run_multi_target_partial_success_shows_a_notice(t *testing.
 	require.NoError(t, s.SaveWindow(t.Context(), locked))
 
 	join := JoinCommand{Channel: "#open,#locked"}
-	rc := Context{Client: user, Active: domain.WindowKey("#general")}
+	rc := Context{Session: sess, Client: user, Active: domain.WindowKey("#general")}
 
 	msg := join.Run(t.Context(), rc)()
 
@@ -545,8 +662,8 @@ func TestJoinCommand_Run_multi_target_partial_success_shows_a_notice(t *testing.
 		Text   string
 		AtSet  bool
 	}
-	got := make([]noticeResult, 0, len(events))
-	for _, event := range events {
+	got := make([]noticeResult, 0, len(events.Events))
+	for _, event := range events.Events {
 		notice, ok := event.(domain.SystemNotice)
 		require.True(t, ok, "expected a SystemNotice, got %T", event)
 		got = append(got, noticeResult{
@@ -561,6 +678,66 @@ func TestJoinCommand_Run_multi_target_partial_success_shows_a_notice(t *testing.
 		Text:   "joined #open; cannot join #locked: invite-only channel",
 		AtSet:  true,
 	}}, got)
+}
+
+func TestJoinCommand_preserves_committed_targets_when_execution_fails(t *testing.T) {
+	executionFailure := errors.New("save channel: disk full")
+	refusal := domain.ChannelInviteOnlyError{Channel: "#locked"}
+	response := protocol.Response{
+		Events: []protocol.Event{
+			domain.JoinedChannel{Channel: "#open"},
+			refusal,
+		},
+		Err: refusal,
+	}
+	client := toolTestClient{send: func(_ context.Context, command protocol.Command) (protocol.Response, error) {
+		require.Equal(t, protocol.Join{Channels: []domain.ChannelName{"#open", "#locked", "#broken"}}, command)
+
+		return response, executionFailure
+	}}
+	join := JoinCommand{Channel: "#open,#locked,#broken"}
+	issuingChannel := domain.NewChannelWindow("#general", time.Time{})
+
+	humanMessage := join.Run(t.Context(), Context{
+		Session: &commandTestSession{},
+		Client:  client,
+		Active:  issuingChannel,
+	})()
+	humanReply, ok := humanMessage.(ReplyEvents)
+	require.True(t, ok, "expected ReplyEvents, got %T", humanMessage)
+	for index, event := range humanReply.Events {
+		if notice, ok := event.(domain.SystemNotice); ok {
+			notice.At = time.Time{}
+			humanReply.Events[index] = notice
+		}
+	}
+	if humanReply.Error != nil {
+		humanReply.Error.At = time.Time{}
+	}
+
+	modelReply := join.RunTool(t.Context(), modelclient.NewToolContext(
+		openWindowGuard{}, nil, client, protocol.ChannelTarget("#general"),
+	))
+	require.ErrorIs(t, modelReply.ExecutionError, executionFailure)
+
+	require.Equal(t, struct {
+		Human        ReplyEvents
+		ModelPayload modelclient.ToolResultPayload
+	}{
+		Human: ReplyEvents{
+			Events: []domain.ProtocolEvent{domain.SystemNotice{
+				Target: "#general",
+				Text:   "joined #open; cannot join #locked: invite-only channel",
+			}},
+			Error: &domain.ErrorEvent{Operation: "join", Err: executionFailure, Target: "#general"},
+		},
+	}, struct {
+		Human        ReplyEvents
+		ModelPayload modelclient.ToolResultPayload
+	}{
+		Human:        humanReply,
+		ModelPayload: modelReply.Payload,
+	})
 }
 
 // TestJoinCommand_Run_focuses_the_channel_the_server_joined covers
@@ -588,11 +765,18 @@ func TestJoinCommand_Run_focuses_the_channel_the_server_joined(t *testing.T) {
 			require.NoError(t, s.SaveWindow(t.Context(), domain.NewChannelWindow("#dev", time.Now())))
 
 			join := JoinCommand{Channel: tt.typed}
-			msg := join.Run(t.Context(), Context{Client: user, Active: domain.WindowKey("#general")})()
+			msg := join.Run(t.Context(), Context{
+				Session: sess,
+				Client:  user,
+				Active:  domain.WindowKey("#general"),
+			})()
 
-			focus, ok := msg.(ChannelFocusMsg)
-			require.True(t, ok, "expected ChannelFocusMsg, got %T", msg)
-			require.Equal(t, tt.want, focus.Channel)
+			focus, ok := msg.(ChannelJoinFocusMsg)
+			require.True(t, ok, "expected ChannelJoinFocusMsg, got %T", msg)
+			require.Equal(t, ChannelJoinFocusMsg{
+				Channel: tt.want,
+				At:      focus.At,
+			}, focus)
 		})
 	}
 }
@@ -612,6 +796,56 @@ func TestRunTool_help_no_args(t *testing.T) {
 		OK:      true,
 		Summary: "available command tools include join, part, list, invite, kick, msg, nick, topic, me, whois, help, and quit",
 	}, result)
+}
+
+func TestRunTool_topic_returns_only_projected_topic_metadata(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	topic := domain.TopicInfo{
+		Target:     "#anon",
+		Topic:      "quiet room",
+		TopicSetBy: domain.AnonymousNick,
+		TopicSetAt: at,
+		At:         at,
+	}
+	client := toolTestClient{send: func(_ context.Context, command protocol.Command) (protocol.Response, error) {
+		require.Equal(t, protocol.TopicQuery{Channel: "#anon"}, command)
+
+		return protocol.Response{Events: []protocol.Event{topic}}, nil
+	}}
+
+	result := executeTool(t, "topic", `{"topic": null}`, modelclient.NewToolContext(
+		openWindowGuard{}, nil, client, protocol.ChannelTarget("#anon"),
+	))
+
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:      true,
+		Summary: "returned current topic",
+		Data:    topic,
+	}, result)
+}
+
+func TestTopicCommand_Run_uses_the_actor_projected_reply(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	topic := domain.TopicInfo{
+		Target:     "#anon",
+		Topic:      "quiet room",
+		TopicSetBy: domain.AnonymousNick,
+		TopicSetAt: at,
+		At:         at,
+	}
+	client := toolTestClient{send: func(_ context.Context, command protocol.Command) (protocol.Response, error) {
+		require.Equal(t, protocol.TopicQuery{Channel: "#anon"}, command)
+
+		return protocol.Response{Events: []protocol.Event{topic}}, nil
+	}}
+
+	issuingChannel := domain.NewChannelWindow("#anon", at)
+	message := (TopicCommand{}).Run(t.Context(), Context{
+		Active: issuingChannel,
+		Client: client,
+	})()
+
+	require.Equal(t, TopicInfoResult{Topic: topic}, message)
 }
 
 func TestRunTool_part_no_channel_returns_error(t *testing.T) {
@@ -710,10 +944,9 @@ func TestTopicCommand_tool_distinguishes_query_from_clear(t *testing.T) {
 		t.Fatalf("decoded clear command has type %T", clearValue)
 	}
 
-	outcome := clearCommand.RunTool(t.Context(), modelclient.ToolContext{
-		Client: client,
-		Target: protocol.ChannelTarget("#lobby"),
-	})
+	outcome := clearCommand.RunTool(t.Context(), modelclient.NewToolContext(
+		openWindowGuard{}, nil, client, protocol.ChannelTarget("#lobby"),
+	))
 	require.Equal(t, struct {
 		Outcome modelclient.ToolOutcome
 		Command protocol.Command
@@ -767,7 +1000,7 @@ func TestRunTool_msg_pins_a_nick_batch_to_the_first_recipient(t *testing.T) {
 	outcome := (MsgCommand{
 		Target: "shared-nick",
 		Body:   MessageBodies{"first", "second"},
-	}).RunTool(t.Context(), modelclient.ToolContext{Client: client})
+	}).RunTool(t.Context(), modelclient.NewToolContext(openWindowGuard{}, nil, client, nil))
 	require.NoError(t, outcome.ExecutionError)
 	require.Equal(t, modelclient.ToolResultPayload{
 		OK:      true,
@@ -784,7 +1017,7 @@ func TestRunTool_msg_does_not_follow_a_renamed_and_reclaimed_nick(t *testing.T) 
 	sess, _, user := uitest.NewTestSession(t, eventStore, toolTestAPI{}, nil, nil, "", "", t.Context)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	original := testclient.New("shared", sess, testclient.WithInstanceID("original-instance"))
+	original := testclient.NewStored("shared", sess, eventStore, testclient.WithInstanceID("original-instance"))
 	require.NoError(t, original.Attach(t.Context()))
 	t.Cleanup(original.Detach)
 
@@ -801,7 +1034,7 @@ func TestRunTool_msg_does_not_follow_a_renamed_and_reclaimed_nick(t *testing.T) 
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 
-		replacement = testclient.New("shared", sess, testclient.WithInstanceID("replacement-instance"))
+		replacement = testclient.NewStored("shared", sess, eventStore, testclient.WithInstanceID("replacement-instance"))
 		require.NoError(t, replacement.Attach(ctx))
 
 		return nil
@@ -819,11 +1052,11 @@ func TestRunTool_msg_does_not_follow_a_renamed_and_reclaimed_nick(t *testing.T) 
 	require.NotNil(t, replacement)
 	t.Cleanup(replacement.Detach)
 
-	originalEvents, err := eventStore.DMEventsBefore(t.Context(), user.Instance().ID(), original.Instance().ID(), nil, 100)
+	originalEvents, err := eventStore.DMEventsBefore(t.Context(), user.ID(), original.Instance().ID(), nil, 100)
 	require.NoError(t, err)
 	require.Equal(t, []messageShape{{Body: "first"}, {Body: "second"}}, storedMessageShapesFromEvents(originalEvents))
 
-	replacementEvents, err := eventStore.DMEventsBefore(t.Context(), user.Instance().ID(), replacement.Instance().ID(), nil, 100)
+	replacementEvents, err := eventStore.DMEventsBefore(t.Context(), user.ID(), replacement.Instance().ID(), nil, 100)
 	require.NoError(t, err)
 	require.Equal(t, []domain.StoredEvent(nil), replacementEvents)
 }
@@ -836,7 +1069,7 @@ func TestRunTool_msg_counts_a_missing_confirmation_as_sent(t *testing.T) {
 	outcome := (MsgCommand{
 		Target: "shared-nick",
 		Body:   MessageBodies{"first", "second"},
-	}).RunTool(t.Context(), modelclient.ToolContext{Client: client})
+	}).RunTool(t.Context(), modelclient.NewToolContext(openWindowGuard{}, nil, client, nil))
 
 	var batchError *ToolBatchError
 	require.ErrorAs(t, outcome.ExecutionError, &batchError)
@@ -859,15 +1092,13 @@ func TestMsgTool_pacing_failure_is_a_typed_execution_error(t *testing.T) {
 		sends++
 		return protocol.Response{Events: []protocol.Event{domain.Message{Target: "#lobby"}}}, nil
 	}}
-	tc := modelclient.ToolContext{
-		Client: client,
-		Pace: func(_ context.Context, _ string) error {
-			if sends == 1 {
-				return sentinel
-			}
+	tc := modelclient.NewToolContext(openWindowGuard{}, nil, client, nil)
+	tc.Pace = func(_ context.Context, _ string) error {
+		if sends == 1 {
+			return sentinel
+		}
 
-			return nil
-		},
+		return nil
 	}
 
 	registry, err := BuildToolRegistry()
@@ -1042,7 +1273,7 @@ func TestRenderReplyMessages_returns_typed_validation_errors(t *testing.T) {
 	}
 }
 
-func TestRunTool_whois_stamps_issuing_window(t *testing.T) {
+func TestRunTool_whois_returns_the_actor_snapshot(t *testing.T) {
 	sess, user := newToolTestSession(t)
 
 	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
@@ -1057,10 +1288,19 @@ func TestRunTool_whois_stamps_issuing_window(t *testing.T) {
 
 	result := runTool(t, tool, tc)
 
-	require.True(t, result.OK)
 	whois, ok := result.Data.(domain.Whois)
 	require.True(t, ok, "whois tool returns a domain.Whois snapshot")
-	require.Equal(t, domain.ChannelName("#lobby"), whois.Target)
+	whois.At = time.Time{}
+	result.Data = whois
+	require.Equal(t, modelclient.ToolResultPayload{
+		OK:      true,
+		Summary: "returned details for testbot",
+		Data: domain.Whois{
+			Nick:     "testbot",
+			ModelID:  "anthropic/haiku",
+			Channels: []domain.ChannelName{"#lobby"},
+		},
+	}, result)
 }
 
 func TestRunTool_nick_changes_nick(t *testing.T) {
@@ -1100,19 +1340,62 @@ func TestRunTool_me_without_a_window_returns_error(t *testing.T) {
 	}, runTool(t, tool, tc))
 }
 
+func TestMeCommand_refuses_the_status_window(t *testing.T) {
+	command, err := (MeCommand{Action: ActionBodies{"waves"}}).ToCommand(Context{
+		Active: domain.WindowKey(domain.StatusChannelName),
+	})
+	var targetErr noMessageTargetError
+	require.ErrorAs(t, err, &targetErr)
+
+	require.Equal(t, struct {
+		Command protocol.Command
+		Error   noMessageTargetError
+	}{
+		Command: nil,
+		Error:   noMessageTargetError{Window: domain.StatusChannelName},
+	}, struct {
+		Command protocol.Command
+		Error   noMessageTargetError
+	}{
+		Command: command,
+		Error:   targetErr,
+	})
+}
+
 func TestMeCommand_Run_preserves_a_typed_body_error(t *testing.T) {
+	active := domain.WindowKey("#lobby")
 	msg := (MeCommand{Action: ActionBodies{"line one\nline two"}}).Run(t.Context(), Context{
-		Active: domain.WindowKey("#lobby"),
+		Active: active,
 	})()
 
-	event, ok := msg.(domain.ErrorEvent)
-	require.True(t, ok)
-	require.Equal(t, "me", event.Operation)
-	require.Equal(t, domain.ChannelName("#lobby"), event.Target)
-
+	result, ok := msg.(CommandErrorResult)
 	var bodyError domain.InvalidMessageBodyError
-	require.ErrorAs(t, event.Err, &bodyError)
-	require.Equal(t, "ACTION", bodyError.Command)
+	if ok {
+		require.ErrorAs(t, result.Error.Err, &bodyError)
+		bodyError.At = time.Time{}
+		result.Error.Err = bodyError
+		result.Error.At = time.Time{}
+	}
+
+	require.Equal(t, struct {
+		OK     bool
+		Result CommandErrorResult
+	}{
+		OK: true,
+		Result: CommandErrorResult{
+			Error: domain.ErrorEvent{
+				Operation: "me",
+				Err:       domain.InvalidMessageBodyError{Command: "ACTION"},
+				Target:    "#lobby",
+			},
+		},
+	}, struct {
+		OK     bool
+		Result CommandErrorResult
+	}{
+		OK:     ok,
+		Result: result,
+	})
 }
 
 // TestRunTool_me_in_a_dm_addresses_the_counterpart covers `/me`
@@ -1124,10 +1407,10 @@ func TestRunTool_me_in_a_dm_addresses_the_counterpart(t *testing.T) {
 	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#lobby")))
 	uitest.AddModel(t, user, "#lobby", "anthropic/haiku", "")
 
-	bot, err := sess.ResolveNick(t.Context(), "testbot")
+	botID, _, err := sess.ResolveNick(t.Context(), "testbot")
 	require.NoError(t, err)
 
-	tc := userToolContext(sess, user, protocol.ClientTarget(bot.ID()))
+	tc := userToolContext(sess, user, protocol.ClientTarget(botID))
 
 	v := toolValue(t, "me", `{"content": {"action": ["waves"]}}`)
 
@@ -1136,7 +1419,7 @@ func TestRunTool_me_in_a_dm_addresses_the_counterpart(t *testing.T) {
 
 	require.Equal(t, modelclient.ToolResultPayload{
 		OK:      true,
-		Summary: "sent action to " + string(bot.ID()),
+		Summary: "sent action to " + string(botID),
 	}, runTool(t, tool, tc))
 }
 

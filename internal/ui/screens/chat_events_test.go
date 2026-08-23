@@ -99,9 +99,9 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	})
 
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Part{
-		Target:   "#random",
-		Instance: user.Instance(),
-		At:       time.Now(),
+		Target: "#random",
+		Source: domain.ClientSource(protocol.UserClientID, user.Nick()),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#random"})
 
 	// Active channel should remain #general since we parted #random.
@@ -131,12 +131,11 @@ func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
 			strings.Contains(view, "*** Created channel #general")
 	})
 
-	screenstest.SendProtocolEvent(tm.TestModel, domain.TopicChange{
-		Target: "#random",
-		Topic:  "Random topic",
-		By:     "someone",
-		At:     time.Now(),
-	}, []domain.ChannelName{"#random"})
+	screenstest.SendProtocolEvent(tm.TestModel, domain.TopicChange{Source: domain.LegacyClientSource(
+
+		"someone"), Target: "#random", Topic: "Random topic", At: time.Now()},
+
+		[]domain.ChannelName{"#random"})
 
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
@@ -154,7 +153,7 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 
 	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
-	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	id, nick, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, h)
@@ -164,10 +163,9 @@ func TestChatScreen_QuitEvent_shows_quit_message(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Quit{
-		Nick:     inst.Nick(),
-		Instance: inst,
-		Message:  "shutting down",
-		At:       time.Now(),
+		Source:  domain.ClientSource(id, nick),
+		Message: "shutting down",
+		At:      time.Now(),
 	}, []domain.ChannelName{"#general"})
 
 	tm.WaitFor("fakenick has quit (shutting down)")
@@ -190,7 +188,7 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 
 	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
-	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	id, nick, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, h)
@@ -200,9 +198,8 @@ func TestChatScreen_QuitEvent_removes_instance_from_nick_list(t *testing.T) {
 	tm.WaitFor("Created channel #general", "fakenick has joined #general")
 
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Quit{
-		Nick:     inst.Nick(),
-		Instance: inst,
-		At:       time.Now(),
+		Source: domain.ClientSource(id, nick),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#general"})
 
 	view := tm.WaitForView(func(view string) bool {
@@ -230,7 +227,7 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 	uitest.SeedChannel(t, user, "#general")
 	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
-	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	id, nick, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, h)
@@ -247,10 +244,9 @@ func TestChatScreen_QuitEvent_surfaces_in_open_DM(t *testing.T) {
 	})
 
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Quit{
-		Nick:     inst.Nick(),
-		Instance: inst,
-		Message:  "shutting down",
-		At:       time.Now(),
+		Source:  domain.ClientSource(id, nick),
+		Message: "shutting down",
+		At:      time.Now(),
 	}, []domain.ChannelName{"#general"})
 
 	// The active window is the DM. The QUIT line should land
@@ -275,7 +271,7 @@ func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 	uitest.SeedChannel(t, user, "#general")
 	uitest.AddModel(t, user, "#general", "anthropic/claude-3-haiku", "")
 
-	inst, err := sess.ResolveNick(t.Context(), "fakenick")
+	id, _, err := sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, h)
@@ -287,20 +283,20 @@ func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 		return strings.Contains(view, "▸fakenick")
 	})
 
-	// `Instance.Nick()` is already the new value by the time the
-	// event reaches the chat-screen — the session renames before
-	// emitting. Mirror that by setting the live nick on the
-	// canonical handle before dispatch.
-	inst.SetNick("renamedbot")
-
 	screenstest.SendProtocolEvent(tm.TestModel, domain.NickChange{
-		OldNick:  "fakenick",
-		NewNick:  "renamedbot",
-		Instance: inst,
-		At:       time.Now(),
+		Source:  domain.ClientSource(id, "fakenick"),
+		NewNick: "renamedbot",
+		At:      time.Now(),
 	}, []domain.ChannelName{"#general"})
 
 	tm.WaitFor("fakenick is now known as renamedbot")
+	want := [][]string{
+		{"Channels", "&modeloff", "#general", "Queries", "▸renamedbot"},
+		{"*** fakenick is now known as renamedbot", "testuser >"},
+		{"Nicks", "renamedbot"},
+	}
+	view := waitForVisibleColumns(tm, want)
+	require.Equal(t, want, normalisedVisibleColumns(view))
 }
 
 func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
@@ -316,25 +312,29 @@ func TestChatScreen_ignores_join_for_unknown_channel(t *testing.T) {
 
 	// A model joins a channel the user isn't in.
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
-		Target:   "#secret",
-		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
-		At:       time.Now(),
+		Target: "#secret",
+		Source: domain.ClientSource("bot-1", "botty"),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#secret"})
 
 	// Send a subsequent event to #general to ensure the join event
 	// has been fully processed before we inspect the view.
-	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
-		Target: "#general",
-		From:   "alice",
-		Body:   "sync marker",
-		At:     time.Now(),
-	}, nil)
-	tm.WaitFor("sync marker")
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{Source: domain.LegacyClientSource(
 
-	// The sidebar should NOT show #secret.
-	view := tm.CurrentView()
-	body, _ := uitest.SplitBodyAndStatus(view)
-	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
+		"alice"), Target: "#general", Body: "sync marker", At: time.Now()},
+
+		nil)
+	want := [][]string{
+		{"Channels", "&modeloff", "▸#general"},
+		{
+			"*** Created channel #general",
+			"<alice> sync marker",
+			"testuser >",
+		},
+		{"Nicks", "@testuser"},
+	}
+	view := waitForVisibleColumns(tm, want)
+	require.Equal(t, want, normalisedVisibleColumns(view))
 }
 
 func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
@@ -361,18 +361,17 @@ func TestChatScreen_model_join_does_not_switch_active(t *testing.T) {
 
 	// A model joins #random (which the user is in).
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
-		Target:   "#random",
-		Instance: domain.NewModelInstance("bot-1", "botty", "test/model", "", nil),
-		At:       time.Now(),
+		Target: "#random",
+		Source: domain.ClientSource("bot-1", "botty"),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#random"})
 
 	// Send a subsequent event to ensure the join event has been processed.
-	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
-		Target: "#general",
-		From:   "alice",
-		Body:   "sync marker",
-		At:     time.Now(),
-	}, nil)
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{Source: domain.LegacyClientSource(
+
+		"alice"), Target: "#general", Body: "sync marker", At: time.Now()},
+
+		nil)
 	tm.WaitFor("sync marker")
 
 	// Active channel should remain #general — the view should show
@@ -405,24 +404,23 @@ func TestChatScreen_rapid_switch_does_not_revert(t *testing.T) {
 	// back to back. With the fix, these no longer change the active
 	// channel — they only update the sidebar.
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
-		Target:   "#random",
-		Instance: user.Instance(),
-		At:       time.Now(),
+		Target: "#random",
+		Source: domain.ClientSource(protocol.UserClientID, user.Nick()),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#random"})
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Join{
-		Target:   "#general",
-		Instance: user.Instance(),
-		At:       time.Now(),
+		Target: "#general",
+		Source: domain.ClientSource(protocol.UserClientID, user.Nick()),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#general"})
 
 	// Send a sync marker to #chat to ensure the JoinEvents have
 	// been fully processed.
-	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
-		Target: "#chat",
-		From:   "alice",
-		Body:   "sync marker",
-		At:     time.Now(),
-	}, nil)
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{Source: domain.LegacyClientSource(
+
+		"alice"), Target: "#chat", Body: "sync marker", At: time.Now()},
+
+		nil)
 	tm.WaitFor("sync marker")
 
 	// Active channel should still be #chat — JoinEvents for the
@@ -471,6 +469,58 @@ func TestChatScreen_focus_new_channel_before_join_event(t *testing.T) {
 		"testuser >",
 	}, normaliseContent(uitest.WithoutHeader(uitest.NonEmptyColumn(columns[1]))),
 		"#general content should not be shown — #newchannel is active")
+}
+
+func TestChatScreen_join_focus_waits_for_the_complete_join_reply(t *testing.T) {
+	h := newTestSession(t)
+	bot := testclient.NewStored(
+		"botty", h.sess, h.store,
+		testclient.WithInstanceID("inst-botty"),
+	)
+	require.NoError(t, bot.Attach(t.Context()))
+	t.Cleanup(bot.Detach)
+	response, err := bot.Send(t.Context(), protocol.Join{
+		Channels: []domain.ChannelName{"#joined"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, response.Err)
+	response, err = bot.Send(t.Context(), protocol.Topic{
+		Channel: "#joined",
+		Body:    "release topic",
+	})
+	require.NoError(t, err)
+	require.NoError(t, response.Err)
+
+	tm := newChatApp(t, h)
+	tm.WaitFor("Welcome to modeloff")
+	tm.Submit("/join #joined")
+
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸#joined") &&
+			strings.Contains(view, "release topic") &&
+			strings.Contains(view, "@botty")
+	})
+	columns := normalisedVisibleColumns(view)
+	normalised := make([][]string, 0, len(columns))
+	for _, column := range columns {
+		lines := make([]string, 0, len(column))
+		for _, line := range column {
+			if strings.HasPrefix(line, "*** topic for #joined: release topic (set by botty on ") {
+				line = "*** topic for #joined: release topic (set by botty)"
+			}
+			lines = append(lines, line)
+		}
+		normalised = append(normalised, lines)
+	}
+	require.Equal(t, [][]string{
+		{"Channels", "&modeloff", "▸#joined"},
+		{
+			"*** testuser has joined #joined",
+			"*** topic for #joined: release topic (set by botty)",
+			"testuser >",
+		},
+		{"Nicks", "@botty", "testuser"},
+	}, normalised)
 }
 
 func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
@@ -534,7 +584,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	// out, so the unread count the sidebar reads can see it. An
 	// event injected straight into the model would never reach the
 	// log, and the badge would have nothing to count.
-	bob := testclient.New("bob", h.sess, testclient.WithChannels("#random", "#general"))
+	bob := testclient.NewStored("bob", h.sess, h.store, testclient.WithChannels("#random", "#general"))
 	require.NoError(t, bob.Attach(t.Context()))
 	t.Cleanup(bob.Detach)
 

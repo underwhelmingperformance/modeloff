@@ -37,13 +37,10 @@ func benchEvents(n int) []domain.Event {
 	events := make([]domain.Event, n)
 
 	for i := range events {
-		events[i] = domain.Message{
-			Target:     "#general",
-			From:       nicks[i%len(nicks)],
-			InstanceID: domain.InstanceID(fmt.Sprintf("inst-%d", i%len(nicks))),
-			Body:       fmt.Sprintf("message %d: a realistic line of chat with a handful of words in it.", i),
-			At:         base.Add(time.Duration(i) * time.Second),
-		}
+		events[i] = domain.Message{Source: domain.ClientSource(
+
+			domain.InstanceID(fmt.Sprintf("inst-%d", i%len(nicks))), nicks[i%len(nicks)]), Target: "#general", Body: fmt.Sprintf("message %d: a realistic line of chat with a handful of words in it.", i), At: base.Add(time.Duration(i) * time.Second)}
+
 	}
 
 	return events
@@ -150,10 +147,8 @@ func BenchmarkMessageListKeystrokeScrolledUp(b *testing.B) {
 // upwards as the loop runs.
 func BenchmarkMessageListMessageArrival(b *testing.B) {
 	base := benchEvents(benchScrollbackSize)
-	arrival := domain.Message{
-		Target: "#general", From: "alice", InstanceID: "inst-0",
-		Body: "and one more line", At: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
-	}
+	arrival := domain.Message{Source: domain.ClientSource(
+		"inst-0", "alice"), Target: "#general", Body: "and one more line", At: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
 
 	b.ReportAllocs()
 

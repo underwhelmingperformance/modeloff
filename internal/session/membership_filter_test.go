@@ -27,8 +27,8 @@ func TestServerClient_userClient_membership_filter(t *testing.T) {
 		ev   domain.ProtocolEvent
 		want bool
 	}{
-		{"message in a joined channel", domain.Message{Target: "#joined", From: "botty", Body: "hi", At: fixedTime}, true},
-		{"message in an unjoined channel", domain.Message{Target: "#elsewhere", From: "botty", Body: "hi", At: fixedTime}, false},
+		{"message in a joined channel", domain.Message{Source: domain.ClientSource(testMemberID("botty"), "botty"), Target: "#joined", Body: "hi", At: fixedTime}, true},
+		{"message in an unjoined channel", domain.Message{Source: domain.ClientSource(testMemberID("botty"), "botty"), Target: "#elsewhere", Body: "hi", At: fixedTime}, false},
 		{"welcome does not ride the membership filter", domain.Welcome{ServerName: domain.StatusServerName, Nick: "testuser", At: fixedTime}, false},
 	}
 
@@ -60,20 +60,17 @@ func TestServerClient_modelUnavailableError_is_operator_scoped(t *testing.T) {
 	model := fakeServerClient(t, botty)
 
 	cases := []struct {
-		name    string
-		client  *serverClient
-		channel domain.ChannelName
-		want    bool
+		name   string
+		client *serverClient
+		want   bool
 	}{
-		{"operator, joined channel", uc, "#joined", true},
-		{"operator, unjoined channel", uc, "#elsewhere", true},
-		{"operator, DM", uc, domain.ChannelName(botty.ID()), true},
-		{"non-operator model, its own channel", model, "#joined", false},
+		{"operator", uc, true},
+		{"non-operator model", model, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ev := domain.ModelUnavailableError{Channel: tc.channel, Nick: "botty", At: fixedTime}
+			ev := domain.ModelUnavailableError{Source: domain.LegacyClientSource("botty"), At: fixedTime}
 			require.Equal(t, tc.want, tc.client.canReceive(ev, nil))
 		})
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -91,10 +92,9 @@ func TestChatScreen_unread_badge_counts_only_what_arrived_since_the_last_visit(t
 			uitest.SeedMessage(t, sess, "#random", "second")
 
 			second := domain.Message{
-				Target:     "#random",
-				From:       "seedbot",
-				InstanceID: "inst-seedbot",
-				Body:       "second",
+				Target: "#random",
+				Source: domain.ClientSource("inst-seedbot", "seedbot"),
+				Body:   "second",
 			}
 
 			counted := collectMsgs(screen.renderMessage(second, "#random"))
@@ -130,10 +130,9 @@ func TestChatScreen_own_message_mentioning_own_nick_does_not_badge_mention(t *te
 	screen = focused(t, screen, "#general")
 
 	ownMessage := domain.Message{
-		Target:     "#random",
-		From:       user.Nick(),
-		InstanceID: "",
-		Body:       "hey " + string(user.Nick()),
+		Target: "#random",
+		Source: domain.ClientSource(protocol.UserClientID, user.Nick()),
+		Body:   "hey " + string(user.Nick()),
 	}
 
 	counted := collectMsgs(screen.renderMessage(ownMessage, "#random"))
@@ -157,13 +156,14 @@ func TestChatScreen_clear_drops_the_window_history(t *testing.T) {
 	window, ok := screen.windowByName("#general")
 	require.True(t, ok)
 
-	window.Scrollback.Append(domain.Message{Target: "#general", From: "alice", Body: "hello"})
+	window.Scrollback.Append(domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#general", Body: "hello"})
 
 	screen, cmd := screen.update(chatcmd.ClearResult{})
 
 	require.Equal(t, &Window{
 		Window:     window.Window,
 		Scrollback: window.Scrollback,
+		Revision:   window.Revision,
 		Visits:     window.Visits,
 		UserTime:   window.UserTime,
 	}, window, "clearing must leave every field but the history alone")
@@ -174,6 +174,57 @@ func TestChatScreen_clear_drops_the_window_history(t *testing.T) {
 	require.Equal(t, []tea.Msg{
 		components.ScrollbackClearedMsg{Channel: "#general"},
 	}, collectMsgs(cmd))
+}
+
+func TestChatScreen_clear_keeps_the_issuing_window_after_focus_changes(t *testing.T) {
+	screen := newScreenFixture(t)
+	general := newWindow(domain.NewChannelWindow("#general", time.Time{}))
+	other := newWindow(domain.NewChannelWindow("#other", time.Time{}))
+	screen.channels.Insert(general)
+	screen.channels.Insert(other)
+	screen = focused(t, screen, "#general")
+
+	general.Scrollback.Append(domain.Message{
+		Source: domain.LegacyClientSource("alice"),
+		Target: "#general",
+		Body:   "clear me",
+	})
+	other.Scrollback.Append(domain.Message{
+		Source: domain.LegacyClientSource("bob"),
+		Target: "#other",
+		Body:   "keep me",
+	})
+
+	cmd := screen.handleCommand(components.CommandSubmitMsg{Raw: "/clear"})
+	require.NotNil(t, cmd)
+	screen = focused(t, screen, "#other")
+
+	screen, effects := screen.update(cmd())
+
+	require.Equal(t, struct {
+		Active  domain.ChannelName
+		General []domain.Event
+		Other   []domain.Event
+		Effects []tea.Msg
+	}{
+		Active: "#other",
+		Other: []domain.Event{domain.Message{
+			Source: domain.LegacyClientSource("bob"),
+			Target: "#other",
+			Body:   "keep me",
+		}},
+		Effects: []tea.Msg{components.ScrollbackClearedMsg{Channel: "#general"}},
+	}, struct {
+		Active  domain.ChannelName
+		General []domain.Event
+		Other   []domain.Event
+		Effects []tea.Msg
+	}{
+		Active:  screen.active.Name(),
+		General: general.Scrollback.Events(),
+		Other:   other.Scrollback.Events(),
+		Effects: collectMsgs(effects),
+	})
 }
 
 // TestChatScreen_unread_count_read_before_a_visit_is_dropped pins the
@@ -215,10 +266,9 @@ func TestChatScreen_unread_count_read_before_a_visit_is_dropped(t *testing.T) {
 			// The count is read while the user is still in
 			// #general and the message is genuinely unread.
 			counted := collectMsgs(screen.renderMessage(domain.Message{
-				Target:     "#random",
-				From:       "seedbot",
-				InstanceID: "inst-seedbot",
-				Body:       "first",
+				Target: "#random",
+				Source: domain.ClientSource("inst-seedbot", "seedbot"),
+				Body:   "first",
 			}, "#random"))
 
 			require.Equal(t, []tea.Msg{unreadCountedMsg{

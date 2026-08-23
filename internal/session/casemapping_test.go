@@ -63,7 +63,7 @@ func TestSession_handleJoin_reports_the_canonical_name(t *testing.T) {
 // covers the send path: the message the channel relays, and the row
 // the event log keeps, both carry the channel's own spelling.
 func TestSession_message_to_a_channel_in_another_case_uses_its_name(t *testing.T) {
-	sess, s := newTestSession(t)
+	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
 	require.NoError(t, userJoin(ctx, t, sess, "#Dev"))
@@ -72,18 +72,18 @@ func TestSession_message_to_a_channel_in_another_case_uses_its_name(t *testing.T
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
-	msg, ok := resp.Events[0].(domain.Message)
-	require.True(t, ok)
-	require.Equal(t, domain.ChannelName("#Dev"), msg.Target)
+	require.Equal(t, []protocol.Event{domain.Message{Source: domain.ClientSource(
 
-	events, err := s.EventsBefore(ctx, "#Dev", nil, 1000)
+		protocol.UserClientID, "testuser"), Target: "#Dev", Body: "hello", At: fixedTime}}, resp.Events)
+
+	stored, err := sess.store.EventsBefore(ctx, "#Dev", nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.StoredEvent{
 		{
 			ID: 1,
 			Event: domain.Join{
 				Target:  "#Dev",
-				Nick:    "testuser",
+				Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
 				Created: true,
 				At:      fixedTime,
 			},
@@ -92,12 +92,12 @@ func TestSession_message_to_a_channel_in_another_case_uses_its_name(t *testing.T
 			ID: 2,
 			Event: domain.Message{
 				Target: "#Dev",
-				From:   "testuser",
+				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
 				Body:   "hello",
 				At:     fixedTime,
 			},
 		},
-	}, events, "the JOIN and the message are both filed under the one name")
+	}, stored, "the JOIN and the message are both filed under the one name")
 }
 
 // TestSession_resolves_a_nick_in_another_case covers RFC 2812 §2.2
@@ -106,16 +106,17 @@ func TestSession_resolves_a_nick_in_another_case(t *testing.T) {
 	sess, _ := newTestSession(t)
 	ctx := t.Context()
 
-	botty := domain.NewModelInstance("m1", "botty", "test/model", "", nil)
-	require.NoError(t, sess.store.SaveInstance(ctx, botty))
+	botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
 
-	resolved, err := sess.ResolveNick(ctx, "BoTTy")
+	resolvedID, resolvedNick, err := sess.ResolveNick(ctx, "BoTTy")
 	require.NoError(t, err)
-	require.Same(t, botty, resolved)
+	require.Equal(t, botty.ID(), resolvedID)
+	require.Equal(t, botty.Nick(), resolvedNick)
 
-	user, err := sess.ResolveNick(ctx, domain.Nick(strings.ToUpper(string(userNick(t, sess)))))
+	userID, userResolvedNick, err := sess.ResolveNick(ctx, domain.Nick(strings.ToUpper(string(userNick(t, sess)))))
 	require.NoError(t, err)
-	require.Same(t, userInstance(t, sess), user)
+	require.Equal(t, userInstance(t, sess).ID(), userID)
+	require.Equal(t, userInstance(t, sess).Nick(), userResolvedNick)
 }
 
 // TestSession_nick_refuses_a_taken_nick_in_another_case pins that

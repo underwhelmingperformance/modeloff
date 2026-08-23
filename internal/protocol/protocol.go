@@ -2,8 +2,8 @@
 // session (the IRC-like server) and its clients.
 //
 // There are two client kinds — the chat-screen (one user-client per
-// running TUI) and each model instance (one model-client per
-// `*domain.Instance`) — and they speak the same protocol. The
+// running TUI) and each registered model actor (one model-client per
+// actor) — and they speak the same protocol. The
 // dispatcher does not know which kind it is talking to: capability
 // parity is enforced at the type level.
 //
@@ -346,26 +346,23 @@ const (
 )
 
 // IRCMessage is the structured representation of an event sent to a
-// model. It mirrors IRC message structure: a sender, a kind, a
-// target (channel or nick), and a body. `From` + `InstanceID`
-// identify the actor — whoever the wire `:<sender>` prefix would
-// name. `Subject` carries the affected participant's nick for
+// model. It mirrors IRC message structure: a source prefix, a kind,
+// a target (channel or nick), and a body. `Subject` carries the
+// affected participant's nick for
 // ditransitive events where actor and subject differ (KICK names
-// the kicked nick; INVITE names the invitee). `InstanceID` is
-// stripped before the envelope reaches the model.
+// the kicked nick; INVITE names the invitee).
 //
 // `At` is omitted when zero. Every event carries the time it
 // happened, and a server reply describing current state, such as the
 // line carrying an instance's stored memories, describes no point in
 // time at all.
 type IRCMessage struct {
-	Kind       MessageKind       `json:"kind"`
-	From       string            `json:"from"`
-	InstanceID domain.InstanceID `json:"instance_id,omitzero"`
-	Target     string            `json:"target"`
-	Subject    string            `json:"subject,omitempty"`
-	Body       string            `json:"body,omitempty"`
-	At         time.Time         `json:"at,omitzero"`
+	Kind    MessageKind   `json:"kind"`
+	Source  domain.Source `json:"source,omitzero"`
+	Target  string        `json:"target"`
+	Subject string        `json:"subject,omitempty"`
+	Body    string        `json:"body,omitempty"`
+	At      time.Time     `json:"at,omitzero"`
 }
 
 // FromChannelEvent converts a model-visible channel event into an
@@ -380,32 +377,20 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		}
 
 		return IRCMessage{
-			Kind:       kind,
-			From:       string(e.From),
-			InstanceID: e.InstanceID,
-			Target:     string(e.Target),
-			Body:       e.Body,
-			At:         e.At,
+			Kind: kind, Source: e.Source, Target: string(e.Target),
+			Body: e.Body, At: e.At,
 		}, true
 
 	case domain.Join:
 		return IRCMessage{
-			Kind:       KindJoin,
-			From:       string(e.Nick),
-			InstanceID: e.InstanceID,
-			Target:     string(e.Target),
-			Body:       e.Message,
-			At:         e.At,
+			Kind: KindJoin, Source: e.Source, Target: string(e.Target),
+			Body: e.Message, At: e.At,
 		}, true
 
 	case domain.Part:
 		return IRCMessage{
-			Kind:       KindPart,
-			From:       string(e.Nick),
-			InstanceID: e.InstanceID,
-			Target:     string(e.Target),
-			Body:       e.Message,
-			At:         e.At,
+			Kind: KindPart, Source: e.Source, Target: string(e.Target),
+			Body: e.Message, At: e.At,
 		}, true
 
 	case domain.Quit:
@@ -414,21 +399,13 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		// model knows which window the line belongs to without
 		// a target field on the protocol message.
 		return IRCMessage{
-			Kind:       KindQuit,
-			From:       string(e.Nick),
-			InstanceID: e.InstanceID,
-			Body:       e.Message,
-			At:         e.At,
+			Kind: KindQuit, Source: e.Source, Body: e.Message, At: e.At,
 		}, true
 
 	case domain.TopicChange:
 		return IRCMessage{
-			Kind:       KindTopic,
-			From:       string(e.By),
-			InstanceID: e.InstanceID,
-			Target:     string(e.Target),
-			Body:       e.Topic,
-			At:         e.At,
+			Kind: KindTopic, Source: e.Source, Target: string(e.Target),
+			Body: e.Topic, At: e.At,
 		}, true
 
 	case domain.ChannelModeChange:
@@ -440,21 +417,13 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		// affected member but not for the actor, so `InstanceID` stays
 		// empty.
 		return IRCMessage{
-			Kind:    KindMode,
-			From:    string(e.By),
-			Target:  string(e.Target),
-			Subject: string(e.Nick),
-			Body:    modeChangeLine(e),
-			At:      e.At,
+			Kind: KindMode, Source: e.Source, Target: string(e.Target),
+			Subject: string(e.Subject), Body: modeChangeLine(e), At: e.At,
 		}, true
 
 	case domain.NickChange:
 		return IRCMessage{
-			Kind:       KindNick,
-			From:       string(e.OldNick),
-			InstanceID: e.InstanceID,
-			Target:     string(e.NewNick),
-			At:         e.At,
+			Kind: KindNick, Source: e.Source, Target: string(e.NewNick), At: e.At,
 		}, true
 
 	case domain.Invited:
@@ -463,11 +432,14 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		// the dispatch loop it is the receiving model itself, so it
 		// stays implicit rather than landing in `Subject`.
 		return IRCMessage{
-			Kind:       KindInvite,
-			From:       string(e.By),
-			InstanceID: e.ByInstanceID,
-			Target:     string(e.Target),
-			At:         e.At,
+			Kind: KindInvite, Source: e.Source, Target: string(e.Target), At: e.At,
+		}, true
+
+	case domain.Inviting:
+		return IRCMessage{
+			Kind: KindServerReply, Source: domain.ServerSource("modeloff"),
+			Target: string(e.Target),
+			Body:   fmt.Sprintf("invited %s to %s", e.Invitee, e.Target), At: e.At,
 		}, true
 
 	case domain.Kicked:
@@ -475,26 +447,26 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		// channel members reading this event in their history need
 		// to know who was removed.
 		return IRCMessage{
-			Kind:       KindKick,
-			From:       string(e.By),
-			InstanceID: e.ByInstanceID,
-			Target:     string(e.Target),
-			Subject:    string(e.Nick),
-			At:         e.At,
+			Kind: KindKick, Source: e.Source, Target: string(e.Target),
+			Subject: string(e.Subject), At: e.At,
+		}, true
+
+	case domain.TopicInfo:
+		return IRCMessage{
+			Kind: KindServerReply, Source: domain.ServerSource("modeloff"),
+			Target: string(e.Target), Body: topicInfoReplyLine(e), At: e.At,
 		}, true
 
 	case domain.Whois:
 		return IRCMessage{
-			Kind: KindServerReply,
-			Body: whoisReplyLine(e),
-			At:   e.At,
+			Kind: KindServerReply, Source: domain.ServerSource("modeloff"),
+			Body: whoisReplyLine(e), At: e.At,
 		}, true
 
 	case domain.ListReply:
 		return IRCMessage{
-			Kind: KindServerReply,
-			Body: listReplyLine(e),
-			At:   e.At,
+			Kind: KindServerReply, Source: domain.ServerSource("modeloff"),
+			Body: listReplyLine(e), At: e.At,
 		}, true
 
 	case domain.SystemNotice:
@@ -503,10 +475,8 @@ func FromChannelEvent(evt domain.PersistableEvent) (IRCMessage, bool) {
 		// is about; a notice about the connection itself, such as the
 		// flood throttle, names the status window.
 		return IRCMessage{
-			Kind:   KindServerReply,
-			Target: string(e.Target),
-			Body:   e.Text,
-			At:     e.At,
+			Kind: KindServerReply, Source: domain.ServerSource("modeloff"),
+			Target: string(e.Target), Body: e.Text, At: e.At,
 		}, true
 
 	default:
@@ -562,4 +532,22 @@ func listReplyLine(r domain.ListReply) string {
 	}
 
 	return line
+}
+
+func topicInfoReplyLine(info domain.TopicInfo) string {
+	if info.Topic == "" {
+		return fmt.Sprintf("topic %s: no topic is set", info.Target)
+	}
+
+	line := fmt.Sprintf("topic %s: %s", info.Target, info.Topic)
+	if info.TopicSetBy == "" {
+		return line
+	}
+
+	line += fmt.Sprintf(" (set by %s", info.TopicSetBy)
+	if !info.TopicSetAt.IsZero() {
+		line += " at " + info.TopicSetAt.Format(time.RFC3339)
+	}
+
+	return line + ")"
 }

@@ -34,13 +34,10 @@ var listTimestamp = time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
 // `listWidth`, naming itself so an assertion can say which events it
 // expects to see.
 func listMessage(channel domain.ChannelName, i int) domain.Event {
-	return domain.Message{
-		Target:     channel,
-		From:       "alice",
-		InstanceID: "inst",
-		Body:       fmt.Sprintf("message %d", i),
-		At:         listTimestamp,
-	}
+	return domain.Message{Source: domain.ClientSource(
+
+		"inst", "alice"), Target: channel, Body: fmt.Sprintf("message %d", i), At: listTimestamp}
+
 }
 
 // listLine is what listMessage renders to once the list is given a

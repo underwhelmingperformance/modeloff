@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -15,7 +16,52 @@ import (
 	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/store/storetest"
 )
+
+type cancelAfterJoinStore struct {
+	Store
+
+	actor  domain.InstanceID
+	cancel context.CancelFunc
+}
+
+type joinProjectionFailure struct{}
+
+func (*joinProjectionFailure) Error() string { return "join projection failed" }
+
+type failingJoinProjectionStore struct {
+	Store
+}
+
+type windowInterruption struct {
+	Client protocol.ClientID
+	Window domain.ChannelName
+}
+
+func (s *failingJoinProjectionStore) CommitChannelJoin(
+	ctx context.Context,
+	join storemod.ChannelJoin,
+) (storemod.CommittedChannelEvent, error) {
+	if len(join.Scrollback) > 0 {
+		return storemod.CommittedChannelEvent{}, &joinProjectionFailure{}
+	}
+
+	return s.Store.CommitChannelJoin(ctx, join)
+}
+
+func (s *cancelAfterJoinStore) CommitChannelJoin(
+	ctx context.Context,
+	join storemod.ChannelJoin,
+) (storemod.CommittedChannelEvent, error) {
+	committed, err := s.Store.CommitChannelJoin(ctx, join)
+	if err == nil && join.Instance.ID() == s.actor {
+		s.cancel()
+	}
+
+	return committed, err
+}
 
 func TestJoinAs_model_actor(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -61,6 +107,198 @@ func TestJoinAs_model_actor(t *testing.T) {
 	})
 }
 
+func TestSession_join_finishes_persistence_and_delivery_after_cancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		backing := storetest.NewMemoryStore(t)
+		commandCtx, cancelCommand := context.WithCancel(ctx)
+		store := &cancelAfterJoinStore{
+			Store: backing, actor: protocol.UserClientID, cancel: cancelCommand,
+		}
+		factory := newTestModelClientFactory(t, &apitest.Fake{})
+		sess := New(ctx, store, factory, nil)
+		t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+		require.NoError(t, store.SaveInstance(ctx, peer))
+		peerClient := &passiveClient{id: protocol.ClientID(peer.ID())}
+		peerSub, err := subscribeTestClient(ctx, t, sess, peerClient,
+			protocol.SubscribeOptions{ReplayHistory: true})
+		require.NoError(t, err)
+		peerClient.sub = peerSub
+		peerSub.Activate()
+		require.NoError(t, joinAs(ctx, sess, peer, "#dev", ""))
+		synctest.Wait()
+		drainDeliveries(peerClient)
+
+		resp, sendErr := userClient(t, sess).Send(commandCtx, protocol.Join{
+			Channels: []domain.ChannelName{"#dev"},
+		})
+		synctest.Wait()
+
+		auditEvents, err := backing.EventsBefore(ctx, "#dev", nil, 10)
+		require.NoError(t, err)
+		scrollback, err := backing.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
+		require.NoError(t, err)
+		storedUser, err := backing.GetInstanceByID(ctx, protocol.UserClientID)
+		require.NoError(t, err)
+
+		require.Equal(t, struct {
+			Response             protocol.Response
+			SendError            error
+			CommandContextError  error
+			AuditEvents          []domain.StoredEvent
+			Scrollback           []domain.StoredEvent
+			PeerDeliveries       []domain.Event
+			LiveUserMembership   bool
+			StoredUserMembership bool
+		}{
+			Response: protocol.Response{Events: []protocol.Event{
+				domain.JoinedChannel{Channel: "#dev"},
+			}},
+			CommandContextError: context.Canceled,
+			AuditEvents: []domain.StoredEvent{
+				{ID: 1, Event: domain.Join{
+					Source: domain.ClientSource(peer.ID(), peer.Nick()),
+					Target: "#dev", Created: true, At: fixedTime,
+				}},
+				{ID: 2, Event: domain.Join{
+					Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+					Target: "#dev", At: fixedTime,
+				}},
+			},
+			Scrollback: []domain.StoredEvent{
+				{ID: 1, Event: domain.Join{
+					Source: domain.ClientSource(peer.ID(), peer.Nick()),
+					Target: "#dev", Created: true, At: fixedTime,
+				}},
+				{ID: 2, Event: domain.Join{
+					Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+					Target: "#dev", At: fixedTime,
+				}},
+			},
+			PeerDeliveries: []domain.Event{
+				domain.Join{
+					Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+					Target: "#dev", At: fixedTime,
+				},
+			},
+			LiveUserMembership:   true,
+			StoredUserMembership: true,
+		}, struct {
+			Response             protocol.Response
+			SendError            error
+			CommandContextError  error
+			AuditEvents          []domain.StoredEvent
+			Scrollback           []domain.StoredEvent
+			PeerDeliveries       []domain.Event
+			LiveUserMembership   bool
+			StoredUserMembership bool
+		}{
+			Response:             resp,
+			SendError:            sendErr,
+			CommandContextError:  commandCtx.Err(),
+			AuditEvents:          auditEvents,
+			Scrollback:           scrollback,
+			PeerDeliveries:       drainDeliveries(peerClient),
+			LiveUserMembership:   userInstance(t, sess).InChannel("#dev"),
+			StoredUserMembership: storedUser.InChannel("#dev"),
+		})
+	})
+}
+
+func TestSession_failed_join_projection_rolls_back_state_and_delivery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		sess, backing := newTestSession(t)
+		peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+		require.NoError(t, backing.SaveInstance(ctx, peer))
+		peerClient := &passiveClient{id: protocol.ClientID(peer.ID())}
+		peerSub, err := subscribeTestClient(ctx, t, sess, peerClient,
+			protocol.SubscribeOptions{ReplayHistory: true})
+		require.NoError(t, err)
+		peerClient.sub = peerSub
+		peerSub.Activate()
+		require.NoError(t, joinAs(ctx, sess, peer, "#dev", ""))
+		synctest.Wait()
+		collectEmittedEvents(t, sess)
+		drainDeliveries(peerClient)
+
+		beforeLive, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		beforeStored, err := backing.GetWindow(ctx, "#dev")
+		require.NoError(t, err)
+		beforeUser, err := backing.GetInstanceByID(ctx, protocol.UserClientID)
+		require.NoError(t, err)
+		beforePeer, err := backing.GetInstanceByID(ctx, peer.ID())
+		require.NoError(t, err)
+		beforeAudit, err := backing.EventsBefore(ctx, "#dev", nil, 10)
+		require.NoError(t, err)
+		beforeScrollback, err := backing.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
+		require.NoError(t, err)
+
+		sess.store = &failingJoinProjectionStore{Store: backing}
+		response, sendErr := userClient(t, sess).Send(ctx, protocol.Join{
+			Channels: []domain.ChannelName{"#dev"},
+		})
+		synctest.Wait()
+
+		var executionErr protocol.JoinExecutionError
+		require.ErrorAs(t, sendErr, &executionErr)
+		require.Equal(t, domain.ChannelName("#dev"), executionErr.Channel)
+		var projectionErr *joinProjectionFailure
+		require.ErrorAs(t, sendErr, &projectionErr)
+
+		afterLive, err := sess.loadChannelWindow(ctx, "#dev")
+		require.NoError(t, err)
+		afterStored, err := backing.GetWindow(ctx, "#dev")
+		require.NoError(t, err)
+		afterUser, err := backing.GetInstanceByID(ctx, protocol.UserClientID)
+		require.NoError(t, err)
+		afterPeer, err := backing.GetInstanceByID(ctx, peer.ID())
+		require.NoError(t, err)
+		afterAudit, err := backing.EventsBefore(ctx, "#dev", nil, 10)
+		require.NoError(t, err)
+		afterScrollback, err := backing.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
+		require.NoError(t, err)
+
+		type joinState struct {
+			Response       protocol.Response
+			LiveWindow     *domain.ChannelWindow
+			StoredWindow   domain.Window
+			User           *domain.Instance
+			Peer           *domain.Instance
+			Audit          []domain.StoredEvent
+			PeerScrollback []domain.StoredEvent
+			UserEvents     []domain.Event
+			PeerEvents     []domain.Event
+			PeerConnected  bool
+		}
+		require.Equal(t, joinState{
+			LiveWindow:     beforeLive,
+			StoredWindow:   beforeStored,
+			User:           beforeUser,
+			Peer:           beforePeer,
+			Audit:          beforeAudit,
+			PeerScrollback: beforeScrollback,
+			PeerConnected:  true,
+		}, joinState{
+			Response:       response,
+			LiveWindow:     afterLive,
+			StoredWindow:   afterStored,
+			User:           afterUser,
+			Peer:           afterPeer,
+			Audit:          afterAudit,
+			PeerScrollback: afterScrollback,
+			UserEvents:     collectEmittedEvents(t, sess),
+			PeerEvents:     drainDeliveries(peerClient),
+			PeerConnected:  sess.activeClientHandle(peerClient.Identity()) != nil,
+		})
+	})
+}
+
 func TestJoinAs_non_oper_creator_receives_channel_op_in_names(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, _ := newTestSession(t)
@@ -78,17 +316,13 @@ func TestJoinAs_non_oper_creator_receives_channel_op_in_names(t *testing.T) {
 		synctest.Wait()
 
 		members := domain.NewMemberList()
-		members.Add(creator)
-		members.SetModes(creator, domain.MemberModes{Operator: true})
+		members.AddIdentity(creator.ID(), creator.Nick())
+		members.SetModesID(creator.ID(), domain.MemberModes{Operator: true})
 
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#new",
-				Nick:       "creator",
-				InstanceID: creator.ID(),
-				Created:    true,
-				At:         fixedTime,
-				Instance:   creator,
+				Source: domain.ClientSource(creator.ID(), "creator"),
+				Target: "#new", Created: true, At: fixedTime,
 			},
 			domain.NamesReplyEvent{Channel: "#new", Members: members, At: fixedTime},
 			domain.NamesEnd{Channel: "#new", At: fixedTime},
@@ -131,16 +365,25 @@ func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testi
 
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				At:         fixedTime,
-				Instance:   botty,
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#dev", At: fixedTime,
 			},
 		}, collectEmittedEvents(t, sess),
 			"the user-client bus carries only the JOIN broadcast; the bot's own "+
 				"JOIN raises no dispatch turn, and NamesReplyEvent + TopicInfo are "+
 				"scoped to the joiner (the bot) and never reach the user")
+
+		replies, err := s.InstanceRepliesBefore(ctx, botty.ID(), nil, 10)
+		require.NoError(t, err)
+		require.Equal(t, []domain.PersistableEvent{
+			domain.TopicInfo{
+				Target:     "#dev",
+				Topic:      "ongoing work",
+				TopicSetBy: "testuser",
+				TopicSetAt: fixedTime,
+				At:         fixedTime,
+			},
+		}, storedReplyEvents(replies))
 	})
 }
 
@@ -156,6 +399,17 @@ func TestPartAs_model_actor(t *testing.T) {
 			Channels: testChannels("#dev"),
 		})
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+		turnID, err := s.BeginModelTurn(ctx, storemod.ModelTurn{
+			InstanceID: botty.ID(),
+			Window:     protocol.ChannelWindowTarget("#dev"),
+			ModelID:    botty.ModelID,
+			StartedAt:  fixedTime,
+		}, storemod.ModelTurnEntry{
+			Kind: storemod.ModelTurnInput,
+			Data: []byte(`{"input":"channel context"}`),
+			At:   fixedTime,
+		})
+		require.NoError(t, err)
 
 		require.NoError(t, sess.partAs(ctx, botty, "#dev", "goodbye"))
 		synctest.Wait()
@@ -163,12 +417,8 @@ func TestPartAs_model_actor(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Part{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Message:    "goodbye",
-				At:         fixedTime,
-				Instance:   botty,
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#dev", Message: "goodbye", At: fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -176,12 +426,139 @@ func TestPartAs_model_actor(t *testing.T) {
 		require.NoError(t, err)
 		requireChannelEqual(t, newTestChannelWindow("#dev", fixedTime, testMembers(t, sess, s, "testuser")), ch)
 
+		entries, err := s.ModelTurnEntries(ctx, turnID)
+		require.NoError(t, err)
+		require.Equal(t, []storemod.ModelTurnEntry{{
+			Kind: storemod.ModelTurnInput,
+			Data: []byte(`{"input":"channel context"}`),
+			At:   fixedTime,
+		}}, entries)
+
 		inst, err := s.ResolveNick(ctx, "botty")
 		require.NoError(t, err)
 		requireInstanceEqual(t, domain.NewModelInstance(
 			testMemberID("botty"), "botty", "test/model", "", testChannels(),
 		), inst)
 	})
+}
+
+func TestSession_failed_departure_preserves_membership_and_publishes_nothing(t *testing.T) {
+	for _, tc := range []struct {
+		Name string
+		Run  func(context.Context, *Session, *domain.Instance) error
+	}{
+		{
+			Name: "part",
+			Run: func(ctx context.Context, sess *Session, actor *domain.Instance) error {
+				return sess.partAs(ctx, actor, "#dev", "bye")
+			},
+		},
+		{
+			Name: "kick",
+			Run: func(ctx context.Context, sess *Session, actor *domain.Instance) error {
+				return sess.kickAs(ctx, sess.userInstance(), actor, "#dev")
+			},
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sess, backing := newTestSession(t)
+				ctx := t.Context()
+				var interruptions []windowInterruption
+				factory := sess.modelClientFactory.(*testModelClientFactory)
+				factory.interruptWindowFn = func(id protocol.ClientID, window domain.ChannelName) {
+					interruptions = append(interruptions, windowInterruption{Client: id, Window: window})
+				}
+				require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+
+				botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+				require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
+				turnEntry := storemod.ModelTurnEntry{
+					Kind: storemod.ModelTurnInput,
+					Data: []byte(`{"input":"channel context"}`),
+					At:   fixedTime,
+				}
+				turnID, err := backing.BeginModelTurn(ctx, storemod.ModelTurn{
+					InstanceID: botty.ID(),
+					Window:     protocol.ChannelWindowTarget("#dev"),
+					ModelID:    botty.ModelID,
+					StartedAt:  fixedTime,
+				}, turnEntry)
+				require.NoError(t, err)
+
+				synctest.Wait()
+				collectEmittedEvents(t, sess)
+				drainDeliveries(client)
+
+				sentinel := errors.New("departure failed")
+				sess.store = &failingChannelDepartureStore{Store: backing, err: sentinel}
+				departureErr := tc.Run(ctx, sess, botty)
+				synctest.Wait()
+
+				liveWindow, liveWindowErr := sess.loadChannelWindow(ctx, "#dev")
+				storedWindow, storedWindowErr := backing.GetWindow(ctx, "#dev")
+				storedChannel, storedIsChannel := storedWindow.(*domain.ChannelWindow)
+				storedActor, storedActorErr := backing.GetInstanceByID(ctx, botty.ID())
+				auditEvents, auditErr := backing.EventsBefore(ctx, "#dev", nil, 10)
+				turnEntries, turnEntriesErr := backing.ModelTurnEntries(ctx, turnID)
+
+				type departureState struct {
+					Failed             bool
+					LiveWindowError    error
+					LiveWindowHasActor bool
+					LiveActorInChannel bool
+					StoredWindowError  error
+					StoredIsChannel    bool
+					StoredHasActor     bool
+					StoredActorError   error
+					StoredActorInRoom  bool
+					AuditError         error
+					AuditEvents        []domain.StoredEvent
+					TurnEntriesError   error
+					TurnEntries        []storemod.ModelTurnEntry
+					UserEvents         []domain.Event
+					ActorEvents        []domain.Event
+					Interruptions      []windowInterruption
+				}
+				require.Equal(t, departureState{
+					Failed:             true,
+					LiveWindowHasActor: true,
+					LiveActorInChannel: true,
+					StoredIsChannel:    true,
+					StoredHasActor:     true,
+					StoredActorInRoom:  true,
+					AuditEvents: []domain.StoredEvent{
+						{ID: 1, Event: domain.Join{
+							Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+							Target: "#dev", Created: true, At: fixedTime,
+						}},
+						{ID: 2, Event: domain.Join{
+							Source: domain.ClientSource(botty.ID(), botty.Nick()),
+							Target: "#dev", At: fixedTime,
+						}},
+					},
+					TurnEntries: []storemod.ModelTurnEntry{turnEntry},
+				}, departureState{
+					Failed:             errors.Is(departureErr, sentinel),
+					LiveWindowError:    liveWindowErr,
+					LiveWindowHasActor: liveWindow.Members.HasInstance(botty),
+					LiveActorInChannel: botty.InChannel("#dev"),
+					StoredWindowError:  storedWindowErr,
+					StoredIsChannel:    storedIsChannel,
+					StoredHasActor:     storedIsChannel && storedChannel.Members.HasInstance(botty),
+					StoredActorError:   storedActorErr,
+					StoredActorInRoom:  storedActor.InChannel("#dev"),
+					AuditError:         auditErr,
+					AuditEvents:        auditEvents,
+					TurnEntriesError:   turnEntriesErr,
+					TurnEntries:        turnEntries,
+					UserEvents:         collectEmittedEvents(t, sess),
+					ActorEvents:        drainDeliveries(client),
+					Interruptions:      interruptions,
+				})
+			})
+		})
+	}
 }
 
 func TestPartAs_non_member_returns_442(t *testing.T) {
@@ -234,11 +611,8 @@ func TestQuitAs_model_actor(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Quit{
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Message:    "farewell",
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				Message: "farewell", At: fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -269,22 +643,16 @@ func TestQuitAs_model_actor(t *testing.T) {
 	})
 }
 
-// TestKillAs_announces_as_quit pins the kill announcement: an
-// operator KILL is seen by peers exactly as RFC 2812 frames it — a
-// QUIT carrying the "Killed by <oper> (<reason>)" reason. There is no
-// separate notification to the killed model, which is being reaped.
-func TestKillAs_announces_as_quit(t *testing.T) {
+func TestKillAs_sends_the_target_KILL_QUIT_ERROR_and_peers_only_QUIT(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
 		sess, s := newTestSession(t)
 		ctx := t.Context()
 
-		botty := seedInstance(t, sess, s, instanceSpec{
-			Nick:     "botty",
-			ModelID:  "test/model",
-			Channels: testChannels("#dev"),
-		})
-		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
+		require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+		botty, target := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
+		drainDeliveries(target)
+		collectEmittedEvents(t, sess)
 
 		resp, err := sess.Handle(ctx, userClient(t, sess), protocol.Kill{Nick: "botty", Reason: "spam"})
 		require.NoError(t, err)
@@ -292,15 +660,20 @@ func TestKillAs_announces_as_quit(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{
-			bootstrapModeChange(t, sess, bootAt),
-			domain.Quit{
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Message:    "Killed by testuser (spam)",
-				At:         fixedTime,
-				Instance:   botty,
+			domain.KillNotice{
+				Source:  domain.ClientSource("", "testuser"),
+				Subject: "botty", Reason: "spam", At: fixedTime,
 			},
-		}, collectEmittedEvents(t, sess))
+			domain.Quit{
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				Message: "Killed by testuser (spam)", At: fixedTime,
+			},
+			domain.ConnectionError{Reason: "Killed by testuser (spam)", At: fixedTime},
+		}, drainDeliveries(target))
+		require.Equal(t, []domain.Event{domain.Quit{
+			Source:  domain.ClientSource(botty.ID(), "botty"),
+			Message: "Killed by testuser (spam)", At: fixedTime,
+		}}, collectEmittedEvents(t, sess))
 
 		_, err = s.ResolveNick(ctx, "botty")
 		require.Error(t, err)
@@ -348,32 +721,6 @@ func TestQuitAs_delivery_targets_intersect_per_recipient(t *testing.T) {
 	)
 	require.Equal(t, []domain.ChannelName{"#shared"}, gotUser,
 		"user-client receives only the channels it shares with the actor")
-}
-
-// TestActorChannelSnapshot_only_for_actor_scoped pins the
-// helper's gating: window-scoped events return nil so the
-// per-sub loop in [Session.fanOutProtocol] does not produce a
-// `Targets` slice for them.
-func TestActorChannelSnapshot_only_for_actor_scoped(t *testing.T) {
-	actor := domain.NewModelInstance("inst-a", "alpha", "test/model", "", testChannels("#one"))
-
-	cases := []struct {
-		name string
-		ev   domain.ProtocolEvent
-		want []domain.ChannelName
-	}{
-		{"quit returns actor channels", domain.Quit{Instance: actor}, []domain.ChannelName{"#one"}},
-		{"nick_change returns actor channels", domain.NickChange{Instance: actor}, []domain.ChannelName{"#one"}},
-		{"join returns nil", domain.Join{Target: "#one"}, nil},
-		{"part returns nil", domain.Part{Target: "#one"}, nil},
-		{"message returns nil", domain.Message{Target: "#one"}, nil},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, actorChannelSnapshot(tc.ev))
-		})
-	}
 }
 
 // fakeServerClient builds a minimal model-client subscription for
@@ -435,18 +782,19 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Message{
-				Target:     "#dev",
-				From:       "botty",
-				InstanceID: testMemberID("botty"),
-				Body:       "hello world",
-				At:         fixedTime,
-			},
+			domain.Message{Source: domain.ClientSource(
+
+				testMemberID("botty"), "botty"), Target: "#dev", Body: "hello world", At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		msgs := channelMessages(t, s, "#dev")
 		require.Equal(t, []domain.Message{
-			{Target: "#dev", From: "botty", InstanceID: testMemberID("botty"), Body: "hello world", At: fixedTime},
+			{
+				Source: domain.ClientSource(testMemberID("botty"), "botty"),
+				Target: "#dev",
+				Body:   "hello world",
+				At:     fixedTime,
+			},
 		}, msgs)
 	})
 }
@@ -475,12 +823,10 @@ func TestSendMessageAs_user_actor_echoes_to_originator(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Created:    true,
-				At:         fixedTime,
-				Instance:   user,
+				Source:  domain.ClientSource(user.ID(), "testuser"),
+				Target:  "#dev",
+				Created: true,
+				At:      fixedTime,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#dev",
@@ -491,13 +837,9 @@ func TestSendMessageAs_user_actor_echoes_to_originator(t *testing.T) {
 				Channel: "#dev",
 				At:      fixedTime,
 			},
-			domain.Message{
-				Target:     "#dev",
-				From:       "testuser",
-				InstanceID: user.ID(),
-				Body:       "hello",
-				At:         fixedTime,
-			},
+			domain.Message{Source: domain.ClientSource(
+
+				user.ID(), "testuser"), Target: "#dev", Body: "hello", At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 	})
 }
@@ -517,12 +859,10 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.TopicChange{
-				Target:     "#dev",
-				Topic:      "new topic",
-				By:         "botty",
-				InstanceID: botty.ID(),
-				At:         fixedTime,
-				ByInstance: botty,
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#dev",
+				Topic:  "new topic",
+				At:     fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -558,11 +898,12 @@ func TestSetTopicAs_no_op_suppresses_event(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.TopicChange{
-				Target:     "#dev",
-				Topic:      "stable topic",
-				By:         userInstance(t, sess).Nick(),
-				At:         fixedTime,
-				ByInstance: userInstance(t, sess),
+				Source: domain.ClientSource(
+					userInstance(t, sess).ID(), userInstance(t, sess).Nick(),
+				),
+				Target: "#dev",
+				Topic:  "stable topic",
+				At:     fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -614,9 +955,14 @@ func TestKickAs_model_actor(t *testing.T) {
 		helper := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "helper",
 			ModelID:  "test/model-b",
-			Channels: testChannels("#dev"),
+			Channels: testChannels("#dev", "#other"),
 		})
 		seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty", "helper")
+		var interruptions []windowInterruption
+		factory := sess.modelClientFactory.(*testModelClientFactory)
+		factory.interruptWindowFn = func(id protocol.ClientID, window domain.ChannelName) {
+			interruptions = append(interruptions, windowInterruption{Client: id, Window: window})
+		}
 
 		// KICK is channel-op gated (RFC 2812 §3.2.8); give botty `@`
 		// before exercising the kick path.
@@ -631,13 +977,10 @@ func TestKickAs_model_actor(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Kicked{
-				Target:       "#dev",
-				Nick:         "helper",
-				InstanceID:   helper.ID(),
-				By:           "botty",
-				ByInstanceID: botty.ID(),
-				At:           fixedTime,
-				Instance:     helper,
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				Target:  "#dev",
+				Subject: "helper",
+				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 
@@ -650,15 +993,19 @@ func TestKickAs_model_actor(t *testing.T) {
 		inst, err := s.ResolveNick(ctx, "helper")
 		require.NoError(t, err)
 		requireInstanceEqual(t, domain.NewModelInstance(
-			testMemberID("helper"), "helper", "test/model-b", "", testChannels(),
+			testMemberID("helper"), "helper", "test/model-b", "", testChannels("#other"),
 		), inst)
+		require.Equal(t, []windowInterruption{{
+			Client: protocol.ClientID(helper.ID()), Window: "#dev",
+		}}, interruptions)
+		require.NotNil(t, sess.activeClientHandle(protocol.ClientID(helper.ID())))
 	})
 }
 
 // TestInviteAs_unknown_nick_returns_notice pins the unknown-nick
 // path of `inviteAs`: there is no subscription to deliver the
-// invite to, so the call returns a [domain.SystemNotice] for the
-// inviter and leaves the channel event log untouched.
+// invite to, so the call returns the typed refusal and a private
+// [domain.SystemNotice], and leaves the channel event log untouched.
 func TestInviteAs_unknown_nick_returns_notice(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
@@ -667,7 +1014,7 @@ func TestInviteAs_unknown_nick_returns_notice(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#dev", "testuser", "botty")
 
 	event, err := sess.inviteAs(ctx, botty, "helper", "#dev")
-	require.NoError(t, err)
+	require.Equal(t, domain.UnknownNickError{Nick: "helper", At: fixedTime}, err)
 	require.Equal(t, domain.SystemNotice{
 		Target: "#dev",
 		Text:   "no such nick: helper",
@@ -762,7 +1109,12 @@ func TestSendMessageAs_model_to_model_dispatches(t *testing.T) {
 
 		msgs := channelMessages(t, s, target)
 		require.Equal(t, []domain.Message{
-			{Target: target, From: "botty", InstanceID: testMemberID("botty"), Body: "hey there", At: fixedTime},
+			{
+				Source: domain.ClientSource(testMemberID("botty"), "botty"),
+				Target: target,
+				Body:   "hey there",
+				At:     fixedTime,
+			},
 		}, msgs)
 	})
 }
@@ -812,12 +1164,10 @@ func TestJoinAs_user_rejoin_preserves_join_time(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
-				Target:     "#general",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Created:    true,
-				At:         fixedTime,
-				Instance:   user,
+				Source:  domain.ClientSource(user.ID(), "testuser"),
+				Target:  "#general",
+				Created: true,
+				At:      fixedTime,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#general",
@@ -856,12 +1206,10 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Created:    true,
-				At:         fixedTime,
+				Source:  domain.ClientSource(user.ID(), "testuser"),
+				Target:  "#dev",
+				Created: true,
+				At:      fixedTime,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#dev",
@@ -906,11 +1254,16 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
+				Source:  domain.ClientSource(user.ID(), "testuser"),
+				Target:  "#dev",
+				Created: false,
+				At:      fixedTime,
+			},
+			domain.TopicInfo{
 				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Created:    false,
+				Topic:      "Go development",
+				TopicSetBy: "alice",
+				TopicSetAt: fixedTime.Add(-time.Hour),
 				At:         fixedTime,
 			},
 			domain.NamesReplyEvent{
@@ -921,13 +1274,6 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 			domain.NamesEnd{
 				Channel: "#dev",
 				At:      fixedTime,
-			},
-			domain.TopicInfo{
-				Target:     "#dev",
-				Topic:      "Go development",
-				TopicSetBy: "alice",
-				TopicSetAt: fixedTime.Add(-time.Hour),
-				At:         fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
 	})
@@ -952,12 +1298,10 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Instance:   user,
-				Created:    false,
-				At:         fixedTime,
+				Source:  domain.ClientSource(user.ID(), "testuser"),
+				Target:  "#dev",
+				Created: false,
+				At:      fixedTime,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#dev",
@@ -995,12 +1339,10 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Created:    false,
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				Target:  "#dev",
+				Created: false,
+				At:      fixedTime,
 			},
 		}, collectEmittedEvents(t, sess),
 			"NamesReplyEvent and TopicInfo are scoped to the joiner (the bot) and "+

@@ -1,13 +1,17 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 // v1DatabaseSchema is byte-identical to the pre-v2 `schema` const
@@ -126,6 +130,39 @@ func TestApplyMigrations_fresh_database_records_current_version(t *testing.T) {
 	require.Equal(t, SchemaVersion, got)
 }
 
+func TestApplyMigrations_scopes_private_replies_by_issuing_window(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	seedV1Database(t, db)
+
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES ('inst-botty', 'botty', '{}')`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO instance_replies (instance_id, type, data, at) VALUES
+		 ('inst-botty', 'list_reply', '{"type":"list_reply","data":{"channel":"#other","members":1,"at":"2025-01-15T10:30:00Z"}}', '2025-01-15T10:30:00Z'),
+		 ('inst-botty', 'whois', '{"type":"whois","data":{"channel":"#dev","nick":"alice","at":"2025-01-15T10:30:01Z"}}', '2025-01-15T10:30:01Z'),
+		 ('inst-botty', 'whois', '{"type":"whois","data":{"channel":"","nick":"the-user","at":"2025-01-15T10:30:02Z"}}', '2025-01-15T10:30:02Z')`)
+	require.NoError(t, err)
+
+	require.NoError(t, applyMigrations(ctx, db))
+
+	s := &SQLiteStore{db: db, tracerProvider: otel.GetTracerProvider()}
+	replies, err := s.InstanceRepliesBefore(ctx, "inst-botty", nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, []InstanceReplyRecord{{
+		ID:     2,
+		Window: protocol.ChannelWindowTarget("#dev"),
+		Event: domain.Whois{
+			Nick: "alice",
+			At:   time.Date(2025, 1, 15, 10, 30, 1, 0, time.UTC),
+		},
+	}}, replies)
+}
+
 func TestApplyMigrations_at_current_is_noop(t *testing.T) {
 	ctx := t.Context()
 	db, err := sql.Open("sqlite3", ":memory:")
@@ -143,6 +180,50 @@ func TestApplyMigrations_at_current_is_noop(t *testing.T) {
 	got, err := readSchemaVersion(ctx, db)
 	require.NoError(t, err)
 	require.Equal(t, SchemaVersion, got)
+}
+
+func TestApplyMigrations_v9_to_v10_adds_the_model_turn_journal(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	_, err = db.ExecContext(ctx, schema)
+	require.NoError(t, err)
+
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	for _, migration := range migrations {
+		if migration.Version >= 10 {
+			break
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '9')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	require.NoError(t, applyMigrations(ctx, db))
+
+	s := &SQLiteStore{db: db, tracerProvider: otel.GetTracerProvider()}
+	input := ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime}
+	turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: "inst-botty",
+		Window:     protocol.ChannelWindowTarget("#dev"),
+		ModelID:    "test/model",
+		StartedAt:  testTime,
+	}, input)
+	require.NoError(t, err)
+
+	got, err := s.ModelTurnEntries(ctx, turnID)
+	require.NoError(t, err)
+	require.Equal(t, []ModelTurnEntry{input}, got)
+
+	version, err := readSchemaVersion(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, SchemaVersion, version)
 }
 
 func TestApplyMigrations_newer_database_fails_loud(t *testing.T) {
@@ -357,9 +438,15 @@ func TestNewSQLiteStore_opens_existing_v1_database(t *testing.T) {
 
 	var indexName string
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_events_dm_thread'`,
+		`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_events_source_thread'`,
 	).Scan(&indexName))
-	require.Equal(t, "idx_events_dm_thread", indexName)
+	require.Equal(t, "idx_events_source_thread", indexName)
+
+	var oldIndexCount int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_events_dm_thread'`,
+	).Scan(&oldIndexCount))
+	require.Zero(t, oldIndexCount)
 
 	// The pre-existing DM message row survived the upgrade and its
 	// generated column resolves. The assertion reads it back through
@@ -370,13 +457,9 @@ func TestNewSQLiteStore_opens_existing_v1_database(t *testing.T) {
 	require.Equal(t, []domain.StoredEvent{
 		{
 			ID: 1,
-			Event: domain.Message{
-				Target:     "",
-				From:       "botty",
-				InstanceID: "inst-botty",
-				Body:       "hi",
-				At:         time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
-			},
+			Event: domain.Message{Source: domain.ClientSource(
+
+				"inst-botty", "botty"), Target: "", Body: "hi", At: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)},
 		},
 	}, events)
 }
@@ -483,6 +566,216 @@ func TestApplyMigrations_v5_to_v6_keeps_existing_instances_active(t *testing.T) 
 		pendingDeletion:       pendingDeletion,
 		pendingMemoryDeletion: pendingMemoryDeletion,
 	})
+}
+
+func TestApplyMigrations_backfills_safe_current_membership_scrollback(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	for _, migration := range migrations {
+		if migration.Version > 5 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '5')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	members := domain.NewMemberList()
+	members.AddIdentity("inst-botty", "botty")
+	channel, err := json.Marshal(channelRow{
+		Name: "#general", Kind: domain.KindChannel, Members: members,
+	})
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO channels (name, data) VALUES ('#general', ?)`, channel)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO events (channel, type, data, at) VALUES
+			('#general', 'join', ?, '2025-01-15T10:29:00Z'),
+			('#general', 'message', ?, '2025-01-15T10:30:00Z'),
+			('#general', 'message', ?, '2025-01-15T10:31:00Z')
+	`,
+		`{"type":"join","data":{"channel":"#general","nick":"botty","instance_id":"inst-botty","at":"2025-01-15T10:29:00Z"}}`,
+		`{"type":"message","data":{"channel":"#general","from":"alice","body":"old","at":"2025-01-15T10:30:00Z"}}`,
+		`{"type":"message","data":{"channel":"#general","from":"botty","instance_id":"inst-botty","body":"reply","at":"2025-01-15T10:31:00Z"}}`,
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, applyMigrations(ctx, db))
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT data FROM channel_scrollback ORDER BY id`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+
+	var got []domain.PersistableEvent
+	for rows.Next() {
+		var data string
+		require.NoError(t, rows.Scan(&data))
+		event, err := domain.UnmarshalPersistableEvent([]byte(data))
+		require.NoError(t, err)
+		got = append(got, event)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []domain.PersistableEvent{
+		domain.Message{
+			Source: domain.AnonymousSource(), Target: "#general", Body: "old",
+			At: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		domain.Message{
+			Source: domain.ClientSource("inst-botty", "botty"),
+			Target: "#general", Body: "reply",
+			At: time.Date(2025, 1, 15, 10, 31, 0, 0, time.UTC),
+		},
+	}, got)
+}
+
+func TestApplyMigrations_does_not_backfill_a_closed_membership_interval(t *testing.T) {
+	tests := []struct {
+		name          string
+		departureType string
+		departureData string
+		want          []domain.PersistableEvent
+	}{
+		{
+			name:          "part",
+			departureType: "part",
+			departureData: `{"type":"part","data":{"channel":"#general","nick":"botty","instance_id":"inst-botty","at":"2025-01-15T10:31:00Z"}}`,
+			want:          []domain.PersistableEvent{},
+		},
+		{
+			name:          "part without an old instance id",
+			departureType: "part",
+			departureData: `{"type":"part","data":{"channel":"#general","nick":"botty","at":"2025-01-15T10:31:00Z"}}`,
+			want:          []domain.PersistableEvent{},
+		},
+		{
+			name:          "kick",
+			departureType: "model_kicked",
+			departureData: `{"type":"model_kicked","data":{"channel":"#general","nick":"botty","by":"alice","by_instance_id":"inst-alice","at":"2025-01-15T10:31:00Z"}}`,
+			want:          []domain.PersistableEvent{},
+		},
+		{
+			name:          "quit",
+			departureType: "quit",
+			departureData: `{"type":"quit","data":{"nick":"botty","instance_id":"inst-botty","message":"gone","at":"2025-01-15T10:31:00Z"}}`,
+			want:          []domain.PersistableEvent{},
+		},
+		{
+			name:          "different identified actor with the same folded nick",
+			departureType: "part",
+			departureData: `{"type":"part","data":{"channel":"#general","nick":"Botty","instance_id":"inst-other","at":"2025-01-15T10:31:00Z"}}`,
+			want: []domain.PersistableEvent{
+				domain.Message{
+					Source: domain.AnonymousSource(), Target: "#general", Body: "before",
+					At: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
+				},
+				domain.Message{
+					Source: domain.AnonymousSource(), Target: "#general", Body: "after",
+					At: time.Date(2025, 1, 15, 10, 32, 0, 0, time.UTC),
+				},
+			},
+		},
+		{
+			name:          "identified user with the same folded nick",
+			departureType: "part",
+			departureData: `{"type":"part","data":{"channel":"#general","nick":"Botty","instance_id":"","at":"2025-01-15T10:31:00Z"}}`,
+			want: []domain.PersistableEvent{
+				domain.Message{
+					Source: domain.AnonymousSource(), Target: "#general", Body: "before",
+					At: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
+				},
+				domain.Message{
+					Source: domain.AnonymousSource(), Target: "#general", Body: "after",
+					At: time.Date(2025, 1, 15, 10, 32, 0, 0, time.UTC),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			db := seedV5ScrollbackDatabase(t)
+
+			_, err := db.ExecContext(ctx, `
+				INSERT INTO events (channel, type, data, at) VALUES
+					('#general', 'join', ?, '2025-01-15T10:29:00Z'),
+					('#general', 'message', ?, '2025-01-15T10:30:00Z'),
+					('#general', ?, ?, '2025-01-15T10:31:00Z'),
+					('#general', 'message', ?, '2025-01-15T10:32:00Z')
+			`,
+				`{"type":"join","data":{"channel":"#general","nick":"botty","instance_id":"inst-botty","at":"2025-01-15T10:29:00Z"}}`,
+				`{"type":"message","data":{"channel":"#general","from":"alice","body":"before","at":"2025-01-15T10:30:00Z"}}`,
+				tt.departureType,
+				tt.departureData,
+				`{"type":"message","data":{"channel":"#general","from":"alice","body":"after","at":"2025-01-15T10:32:00Z"}}`,
+			)
+			require.NoError(t, err)
+
+			require.NoError(t, applyMigrations(ctx, db))
+
+			rows, err := db.QueryContext(ctx,
+				`SELECT data FROM channel_scrollback ORDER BY id`)
+			require.NoError(t, err)
+			defer func() { _ = rows.Close() }()
+
+			got := []domain.PersistableEvent{}
+			for rows.Next() {
+				var data string
+				require.NoError(t, rows.Scan(&data))
+				event, err := domain.UnmarshalPersistableEvent([]byte(data))
+				require.NoError(t, err)
+				got = append(got, event)
+			}
+			require.NoError(t, rows.Err())
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func seedV5ScrollbackDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	ctx := context.Background()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	for _, migration := range migrations {
+		if migration.Version > 5 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '5')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	members := domain.NewMemberList()
+	members.AddIdentity("inst-botty", "botty")
+	channel, err := json.Marshal(channelRow{
+		Name: "#general", Kind: domain.KindChannel, Members: members,
+	})
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO channels (name, data) VALUES ('#general', ?)`, channel)
+	require.NoError(t, err)
+
+	return db
 }
 
 // TestNewSQLiteStore_opens_existing_v3_database is the regression

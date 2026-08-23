@@ -11,9 +11,10 @@ import (
 	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	storemod "github.com/laney/modeloff/internal/store"
 )
 
-func storedReplyEvents(replies []domain.StoredEvent) []domain.PersistableEvent {
+func storedReplyEvents(replies []storemod.InstanceReplyRecord) []domain.PersistableEvent {
 	events := make([]domain.PersistableEvent, len(replies))
 	for i, r := range replies {
 		events[i] = r.Event
@@ -33,16 +34,19 @@ func TestSession_whois_persists_to_issuer_reply_log(t *testing.T) {
 
 	seedInstance(t, sess, store, instanceSpec{Nick: "target", ModelID: "test/model"})
 
-	inst := domain.NewModelInstance("inst-asker", "asker", "test/model", "", nil)
+	inst := seedInstanceRow(t, store, instanceSpec{
+		Nick: "asker", ModelID: "test/model", Channels: testChannels("#dev"),
+	})
+	seedChannelWithMembers(t, sess, store, "#dev", "asker")
+	require.NoError(t, userJoin(ctx, t, sess, "#ops"))
 	model := newPlainClient(protocol.ClientID(inst.ID()))
-	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
+	_, err := subscribeTestClient(t.Context(), t, sess, model, protocol.SubscribeOptions{})
 	require.NoError(t, err)
 
-	resp, err := sess.Handle(ctx, model, protocol.Whois{Nick: "target", Channel: "#dev"})
+	resp, err := sess.Handle(ctx, model, protocol.Whois{Nick: "target", Window: protocol.ChannelWindowTarget("#dev")})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 	require.Equal(t, []domain.ProtocolEvent{domain.Whois{
-		Target:  "#dev",
 		Nick:    "target",
 		ModelID: "test/model",
 		At:      fixedTime,
@@ -51,20 +55,18 @@ func TestSession_whois_persists_to_issuer_reply_log(t *testing.T) {
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{domain.Whois{
-		Target:  "#dev",
 		Nick:    "target",
 		ModelID: "test/model",
 		At:      fixedTime,
 	}}, storedReplyEvents(replies))
 
-	userResp, err := sess.Handle(ctx, userClient(t, sess), protocol.Whois{Nick: "target", Channel: "#ops"})
+	userResp, err := sess.Handle(ctx, userClient(t, sess), protocol.Whois{Nick: "target", Window: protocol.ChannelWindowTarget("#ops")})
 	require.NoError(t, err)
 	require.NoError(t, userResp.Err)
 
 	userReplies, err := store.InstanceRepliesBefore(ctx, "", nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{domain.Whois{
-		Target:  "#ops",
 		Nick:    "target",
 		ModelID: "test/model",
 		At:      fixedTime,
@@ -80,81 +82,275 @@ func TestSession_list_persists_to_model_issuer(t *testing.T) {
 
 	require.NoError(t, userJoin(ctx, t, sess, "#dev"))
 
-	inst := domain.NewModelInstance("inst-asker", "asker", "test/model", "", nil)
+	inst := seedInstanceRow(t, store, instanceSpec{
+		Nick: "asker", ModelID: "test/model", Channels: testChannels("#dev"),
+	})
+	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
 	model := newPlainClient(protocol.ClientID(inst.ID()))
-	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
+	_, err := subscribeTestClient(t.Context(), t, sess, model, protocol.SubscribeOptions{})
 	require.NoError(t, err)
 
-	resp, err := sess.Handle(ctx, model, protocol.List{})
+	resp, err := sess.Handle(ctx, model, protocol.List{Window: protocol.ChannelWindowTarget("#dev")})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
-	require.Equal(t, []domain.PersistableEvent{
-		domain.ListReply{Channel: "#dev", Members: 1, At: fixedTime},
-	}, storedReplyEvents(replies))
+	require.Equal(t, []storemod.InstanceReplyRecord{{
+		ID:     1,
+		Window: protocol.ChannelWindowTarget("#dev"),
+		Event:  domain.ListReply{Channel: "#dev", Members: 2, At: fixedTime},
+	}}, replies)
 
 	// The reply is private: it never reaches the shared channel log.
 	require.Equal(t, []string{"join"}, channelEventTypes(t, store, "#dev"))
 }
 
+func TestSession_reply_commands_refuse_a_closed_issuing_window(t *testing.T) {
+	tests := []struct {
+		name    string
+		command protocol.Command
+	}{
+		{name: "whois", command: protocol.Whois{
+			Nick: "target", Window: protocol.ChannelWindowTarget("#dev"),
+		}},
+		{name: "list", command: protocol.List{
+			Window: protocol.ChannelWindowTarget("#dev"),
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess, eventStore := newTestSession(t)
+			ctx := t.Context()
+			asker := seedInstanceRow(t, eventStore, instanceSpec{
+				Nick: "asker", ModelID: "test/model", Channels: testChannels("#dev"),
+			})
+			seedInstance(t, sess, eventStore, instanceSpec{Nick: "target", ModelID: "test/model"})
+			seedChannelWithMembers(t, sess, eventStore, "#dev", "testuser", "asker")
+
+			client := newPlainClient(protocol.ClientID(asker.ID()))
+			_, err := subscribeTestClient(ctx, t, sess, client, protocol.SubscribeOptions{})
+			require.NoError(t, err)
+			partResponse, err := sess.Handle(ctx, client, protocol.Part{Channel: "#dev"})
+			require.NoError(t, err)
+			require.Equal(t, protocol.Response{}, partResponse)
+
+			response, err := sess.Handle(ctx, client, tt.command)
+			require.NoError(t, err)
+			replies, repliesErr := eventStore.InstanceRepliesBefore(ctx, asker.ID(), nil, 10)
+
+			require.Equal(t, struct {
+				Response     protocol.Response
+				Replies      []storemod.InstanceReplyRecord
+				RepliesError error
+			}{
+				Response: protocol.Response{Err: domain.NotOnChannelError{
+					Channel: "#dev", Command: tt.command.Name(), At: fixedTime,
+				}},
+			}, struct {
+				Response     protocol.Response
+				Replies      []storemod.InstanceReplyRecord
+				RepliesError error
+			}{
+				Response: response, Replies: replies, RepliesError: repliesErr,
+			})
+		})
+	}
+}
+
 // TestSession_failed_invite_persists_notice_to_issuer proves that a
-// refused INVITE against an unknown nick files its [domain.SystemNotice]
-// to the issuer's private reply log, so a model re-experiences the
-// refusal on replay. The notice never reaches the shared channel log.
+// refused INVITE returns its typed error and files its
+// [domain.SystemNotice] to the issuer's private reply log, so a model
+// re-experiences the refusal on replay. The notice never reaches the
+// shared channel log.
 func TestSession_failed_invite_persists_notice_to_issuer(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
 	inst := seedInstanceRow(t, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
-	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
+	seedChannelWithMembers(t, sess, store, "#Dev", "testuser", "asker")
 
 	model := newPlainClient(protocol.ClientID(inst.ID()))
-	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
+	_, err := subscribeTestClient(t.Context(), t, sess, model, protocol.SubscribeOptions{})
 	require.NoError(t, err)
 
-	resp, err := sess.Handle(ctx, model, protocol.Invite{Nick: "ghost", Channel: "#dev"})
+	resp, err := sess.Handle(ctx, model, protocol.Invite{Nick: "ghost", Channel: "#DEV"})
 	require.NoError(t, err)
-	require.NoError(t, resp.Err)
-	require.Equal(t, []domain.ProtocolEvent{domain.SystemNotice{
-		Target: "#dev",
-		Text:   "no such nick: ghost",
-		At:     fixedTime,
-	}}, resp.Events)
+	require.Equal(t, protocol.Response{
+		Events: []protocol.Event{domain.SystemNotice{
+			Target: "#Dev", Text: "no such nick: ghost", At: fixedTime,
+		}},
+		Err: domain.UnknownNickError{Nick: "ghost", At: fixedTime},
+	}, resp)
 
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{domain.SystemNotice{
-		Target: "#dev",
+		Target: "#Dev",
 		Text:   "no such nick: ghost",
 		At:     fixedTime,
 	}}, storedReplyEvents(replies))
+
+	resp, err = sess.Handle(ctx, model, protocol.Part{Channel: "#dev"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+	replies, err = store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
+	require.NoError(t, err)
+	require.Empty(t, replies)
 }
 
-// TestSession_successful_invite_not_in_issuer_reply_log proves that a
-// successful INVITE's [domain.Invited] envelope is channel
-// activity, not an issuer reply, so it is not filed to the issuer's
-// private reply log.
-func TestSession_successful_invite_not_in_issuer_reply_log(t *testing.T) {
+func TestSession_cross_channel_invite_persists_the_confirmation_in_the_issuing_window(t *testing.T) {
 	sess, store := newTestSession(t)
 	ctx := t.Context()
 
-	inst := seedInstanceRow(t, store, instanceSpec{Nick: "asker", ModelID: "test/model"})
-	seedInstance(t, sess, store, instanceSpec{Nick: "target", ModelID: "test/model"})
+	inst := seedInstanceRow(t, store, instanceSpec{
+		Nick: "asker", ModelID: "test/model", Channels: testChannels("#other", "#dev"),
+	})
+	target := seedInstance(t, sess, store, instanceSpec{Nick: "target", ModelID: "test/model"})
+	seedChannelWithMembers(t, sess, store, "#other", "testuser", "asker")
 	seedChannelWithMembers(t, sess, store, "#dev", "testuser", "asker")
 
 	model := newPlainClient(protocol.ClientID(inst.ID()))
-	_, err := sess.Subscribe(model, protocol.SubscribeOptions{Instance: inst})
+	_, err := subscribeTestClient(t.Context(), t, sess, model, protocol.SubscribeOptions{})
 	require.NoError(t, err)
 
-	resp, err := sess.Handle(ctx, model, protocol.Invite{Nick: "target", Channel: "#dev"})
+	resp, err := sess.Handle(ctx, model, protocol.Invite{
+		Nick: "target", Channel: "#dev",
+		Window: protocol.ChannelWindowTarget("#other"),
+	})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
-	require.Empty(t, replies)
+	window, windowErr := store.GetWindow(ctx, "#dev")
+	channel, ok := window.(*domain.ChannelWindow)
+	require.Equal(t, struct {
+		Response    protocol.Response
+		Replies     []storemod.InstanceReplyRecord
+		WindowError error
+		Invited     bool
+		ChannelOK   bool
+	}{
+		Response: protocol.Response{Events: []protocol.Event{domain.Inviting{
+			Target: "#dev", Invitee: "target", At: fixedTime,
+		}}},
+		Replies: []storemod.InstanceReplyRecord{{
+			ID:     1,
+			Window: protocol.ChannelWindowTarget("#other"),
+			Event: domain.Inviting{
+				Target: "#dev", Invitee: "target", At: fixedTime,
+			},
+		}},
+		Invited:   true,
+		ChannelOK: true,
+	}, struct {
+		Response    protocol.Response
+		Replies     []storemod.InstanceReplyRecord
+		WindowError error
+		Invited     bool
+		ChannelOK   bool
+	}{
+		Response:    resp,
+		Replies:     replies,
+		WindowError: windowErr,
+		Invited:     ok && channel.Invitations.Contains(target.ID()),
+		ChannelOK:   ok,
+	})
+}
+
+func TestSession_invite_refuses_a_foreign_issuing_window(t *testing.T) {
+	sess, eventStore := newTestSession(t)
+	ctx := t.Context()
+
+	asker := seedInstanceRow(t, eventStore, instanceSpec{
+		Nick: "asker", ModelID: "test/model", Channels: testChannels("#dev"),
+	})
+	target := seedInstance(t, sess, eventStore, instanceSpec{
+		Nick: "target", ModelID: "test/model",
+	})
+	seedChannelWithMembers(t, sess, eventStore, "#dev", "testuser", "asker")
+	seedChannelWithMembers(t, sess, eventStore, "#other", "testuser")
+
+	client := newPlainClient(protocol.ClientID(asker.ID()))
+	_, err := subscribeTestClient(ctx, t, sess, client, protocol.SubscribeOptions{})
+	require.NoError(t, err)
+
+	response, err := sess.Handle(ctx, client, protocol.Invite{
+		Nick: "target", Channel: "#dev",
+		Window: protocol.ChannelWindowTarget("#other"),
+	})
+	require.NoError(t, err)
+	replies, repliesErr := eventStore.InstanceRepliesBefore(ctx, asker.ID(), nil, 10)
+	window, windowErr := eventStore.GetWindow(ctx, "#dev")
+	channel, channelOK := window.(*domain.ChannelWindow)
+
+	require.Equal(t, struct {
+		Response     protocol.Response
+		Replies      []storemod.InstanceReplyRecord
+		RepliesError error
+		WindowError  error
+		ChannelOK    bool
+		Invited      bool
+	}{
+		Response: protocol.Response{Err: domain.NotOnChannelError{
+			Channel: "#other", Command: "INVITE", At: fixedTime,
+		}},
+		ChannelOK: true,
+	}, struct {
+		Response     protocol.Response
+		Replies      []storemod.InstanceReplyRecord
+		RepliesError error
+		WindowError  error
+		ChannelOK    bool
+		Invited      bool
+	}{
+		Response:     response,
+		Replies:      replies,
+		RepliesError: repliesErr,
+		WindowError:  windowErr,
+		ChannelOK:    channelOK,
+		Invited:      channelOK && channel.Invitations.Contains(target.ID()),
+	})
+}
+
+func TestSession_part_removes_only_the_closed_window_replies(t *testing.T) {
+	sess, eventStore := newTestSession(t)
+	ctx := t.Context()
+
+	asker := seedInstance(t, sess, eventStore, instanceSpec{
+		Nick:     "asker",
+		ModelID:  "test/model",
+		Channels: testChannels("#dev", "#other"),
+	})
+	seedChannelWithMembers(t, sess, eventStore, "#dev", "testuser", "asker")
+	seedChannelWithMembers(t, sess, eventStore, "#other", "testuser", "asker")
+
+	for _, reply := range []struct {
+		Window protocol.WindowTarget
+		Event  domain.IssuerReply
+	}{
+		{Window: protocol.ChannelWindowTarget("#dev"), Event: domain.TopicInfo{Target: "#dev", Topic: "private topic", At: fixedTime}},
+		{Window: protocol.ChannelWindowTarget("#other"), Event: domain.TopicInfo{Target: "#other", Topic: "other topic", At: fixedTime}},
+		{Window: protocol.ChannelWindowTarget("#dev"), Event: domain.ListReply{Channel: "#other", Members: 2, At: fixedTime}},
+		{Window: protocol.ChannelWindowTarget("#other"), Event: domain.ListReply{Channel: "#dev", Members: 2, At: fixedTime}},
+		{Event: domain.Whois{Nick: "target", ModelID: "test/model", At: fixedTime}},
+	} {
+		_, err := eventStore.AppendInstanceReply(ctx, asker.ID(), reply.Window, reply.Event)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, sess.partAs(ctx, asker, "#dev", "leaving"))
+
+	replies, err := eventStore.InstanceRepliesBefore(ctx, asker.ID(), nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, []domain.PersistableEvent{
+		domain.TopicInfo{Target: "#other", Topic: "other topic", At: fixedTime},
+		domain.ListReply{Channel: "#dev", Members: 2, At: fixedTime},
+		domain.Whois{Nick: "target", ModelID: "test/model", At: fixedTime},
+	}, storedReplyEvents(replies))
+
 }
 
 // TestSession_user_replies_do_not_pollute_channel_log proves that a
@@ -170,11 +366,11 @@ func TestSession_user_replies_do_not_pollute_channel_log(t *testing.T) {
 
 	user := userClient(t, sess)
 
-	whoisResp, err := sess.Handle(ctx, user, protocol.Whois{Nick: "target", Channel: "#dev"})
+	whoisResp, err := sess.Handle(ctx, user, protocol.Whois{Nick: "target", Window: protocol.ChannelWindowTarget("#dev")})
 	require.NoError(t, err)
 	require.NoError(t, whoisResp.Err)
 
-	listResp, err := sess.Handle(ctx, user, protocol.List{})
+	listResp, err := sess.Handle(ctx, user, protocol.List{Window: protocol.ChannelWindowTarget("#dev")})
 	require.NoError(t, err)
 	require.NoError(t, listResp.Err)
 
@@ -204,19 +400,20 @@ func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
 		// botty looked up "target" in an earlier connection; that reply
 		// is its own memory, and the write lands before the attach that
 		// restores it.
-		_, err := s.AppendInstanceReply(ctx, testMemberID("botty"), domain.Whois{
+		_, err := s.AppendInstanceReply(ctx, testMemberID("botty"), protocol.ChannelWindowTarget("#general"), domain.Whois{
 			Nick:    "target",
 			ModelID: "test/model",
 			At:      fixedTime,
 		})
 		require.NoError(t, err)
 
-		seedInstance(t, sess, s, instanceSpec{
+		botty := seedInstanceRow(t, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#general"),
 		})
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
+		attachModelClient(t, sess, botty)
 
 		dispatchUserMessage(ctx, t, sess, "#general", "hi")
 

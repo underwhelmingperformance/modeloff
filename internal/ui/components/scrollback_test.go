@@ -14,11 +14,10 @@ import (
 // tests. Only the body matters, so the assertions can name an event by
 // the number it was built with.
 func scrollbackEvent(i int) domain.Event {
-	return domain.Message{
-		Target: "#general",
-		From:   "alice",
-		Body:   fmt.Sprintf("message %d", i),
-	}
+	return domain.Message{Source: domain.LegacyClientSource(
+
+		"alice"), Target: "#general", Body: fmt.Sprintf("message %d", i)}
+
 }
 
 // scrollbackBodies reads the bodies out of a scrollback so a test can

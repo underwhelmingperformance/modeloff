@@ -401,23 +401,23 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 
 		require.Equal(t, []protocol.IRCMessage{{
 			Kind:   protocol.KindPrivMsg,
-			From:   "anonymous",
+			Source: domain.AnonymousSource(),
 			Target: "#chan",
 			Body:   "secret",
 			At:     fixedTime,
 		}}, triggers)
 
-		// The user-client holds echo-message; its own echoed line is
-		// anonymised too (RFC 2811 §4.2.1).
+		// The user-client holds echo-message. Its own copy retains its
+		// source because the actor already knows who sent it. The model's
+		// dispatch lifecycle is private to the model in this anonymous
+		// turn window.
 		require.Equal(t, []domain.Event{
 			domain.Message{
+				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
 				Target: "#chan",
-				From:   "anonymous",
 				Body:   "secret",
 				At:     fixedTime,
 			},
-			domain.ModelDispatchStarted{At: fixedTime},
-			domain.ModelDispatchDone{At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 	})
 }
@@ -433,7 +433,7 @@ func TestDirectoryChannels_shows_a_member_its_own_hidden_channels(t *testing.T) 
 
 		seedVisibilityChannels(t, sess)
 
-		entries, err := sess.DirectoryChannels(ctx, userInstance(t, sess))
+		entries, err := sess.directoryChannels(ctx, userInstance(t, sess))
 		require.NoError(t, err)
 
 		require.Equal(t, []domain.ChannelDirectoryEntry{

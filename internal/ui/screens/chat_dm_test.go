@@ -25,7 +25,7 @@ import (
 func seedInstance(t *testing.T, h *testHarness, id domain.InstanceID, nick domain.Nick) {
 	t.Helper()
 
-	require.NoError(t, h.sess.SaveInstance(t.Context(), domain.NewModelInstance(id, nick, "test/model", "", nil)))
+	require.NoError(t, h.store.SaveInstance(t.Context(), domain.NewModelInstance(id, nick, "test/model", "", nil)))
 }
 
 // altWindow returns the alt+<n> keypress that switches straight to
@@ -51,7 +51,7 @@ func TestChatScreen_inbound_dm_opens_a_query_window(t *testing.T) {
 
 	// The sender shares no channel with the user, so the sidebar
 	// entry can only have come from the DM itself.
-	bot := testclient.New("botty", h.sess, testclient.WithInstanceID("inst-botty"))
+	bot := testclient.NewStored("botty", h.sess, h.store, testclient.WithInstanceID("inst-botty"))
 	require.NoError(t, bot.Attach(t.Context()))
 	t.Cleanup(bot.Detach)
 
@@ -70,20 +70,21 @@ func TestChatScreen_inbound_dm_opens_a_query_window(t *testing.T) {
 	// sidebar entry is worth nothing if the message that opened it
 	// was dropped on the way. &modeloff, #general, botty.
 	tm.Send(altWindow(3))
-	tm.WaitForViewContains("psst, are you there?")
+	want := [][]string{
+		{"Channels", "&modeloff", "#general", "Queries", "▸botty"},
+		{"<botty> psst, are you there?", "testuser >"},
+		{"Nicks", "botty"},
+	}
+	view := waitForVisibleColumns(tm, want)
+	require.Equal(t, want, normalisedVisibleColumns(view))
 }
 
-// TestChatScreen_inbound_dm_from_a_deleted_instance_is_narrated
-// pins the one case where a delivered DM does not reach a window.
-// The window is built around the counterpart's handle, so a line
-// whose sender the store no longer holds has nowhere to go; a KILL
-// landing between the delivery and the lookup is how that happens.
-// The line is discarded, and `&modeloff` says so, naming the id: a
-// message the server delivered never disappears in silence.
-//
-// `/help` is what brings `&modeloff` into view on a session with no
-// channels, so the notice has somewhere to render.
-func TestChatScreen_inbound_dm_from_a_deleted_instance_is_narrated(t *testing.T) {
+// TestChatScreen_inbound_dm_from_a_deleted_instance_is_preserved
+// covers a sender that quits after the server has delivered its first
+// DM but before the chat-screen processes it. The delivered source
+// contains the identity observed at send time, so opening the window
+// does not depend on the instance row still existing.
+func TestChatScreen_inbound_dm_from_a_deleted_instance_is_preserved(t *testing.T) {
 	h := newTestSession(t)
 
 	tm := newChatApp(t, h)
@@ -92,15 +93,21 @@ func TestChatScreen_inbound_dm_from_a_deleted_instance_is_narrated(t *testing.T)
 	tm.Submit("/help")
 	tm.WaitFor("/query")
 
-	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{
-		Target:     domain.ChannelName(protocol.UserClientID),
-		From:       "ghost",
-		InstanceID: "inst-ghost",
-		Body:       "anybody there?",
-		At:         time.Now(),
-	}, nil)
+	screenstest.SendProtocolEvent(tm.TestModel, domain.Message{Source: domain.ClientSource(
 
-	tm.WaitFor("Dropped 1 line(s) from inst-ghost: no such instance.")
+		"inst-ghost", "ghost"), Target: domain.ChannelName(protocol.UserClientID), Body: "anybody there?", At: time.Now()},
+
+		nil)
+
+	tm.WaitForViewContains("ghost")
+	tm.Send(altWindow(2))
+	want := [][]string{
+		{"Channels", "&modeloff", "Queries", "▸ghost"},
+		{"<ghost> anybody there?", "testuser >"},
+		{"Nicks", "ghost"},
+	}
+	view := waitForVisibleColumns(tm, want)
+	require.Equal(t, want, normalisedVisibleColumns(view))
 }
 
 // TestChatScreen_inbound_dm_is_recorded_for_the_next_run pins that
@@ -113,7 +120,7 @@ func TestChatScreen_inbound_dm_is_recorded_for_the_next_run(t *testing.T) {
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)
 
-	bot := testclient.New("botty", h.sess, testclient.WithInstanceID("inst-botty"))
+	bot := testclient.NewStored("botty", h.sess, h.store, testclient.WithInstanceID("inst-botty"))
 	require.NoError(t, bot.Attach(t.Context()))
 	t.Cleanup(bot.Detach)
 
@@ -137,7 +144,9 @@ func TestChatScreen_inbound_dm_is_recorded_for_the_next_run(t *testing.T) {
 func TestChatScreen_Init_reopens_recorded_dm_windows(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
-	seedInstance(t, h, "inst-botty", "botty")
+	bot := testclient.NewStored("botty", h.sess, h.store, testclient.WithInstanceID("inst-botty"))
+	require.NoError(t, bot.Attach(t.Context()))
+	t.Cleanup(bot.Detach)
 	require.NoError(t, h.store.AddDMWindow(t.Context(), "inst-botty"))
 
 	tm := newChatApp(t, h)
@@ -154,7 +163,9 @@ func TestChatScreen_Init_lands_on_the_dm_window_left_open(t *testing.T) {
 	ctx := t.Context()
 
 	uitest.SeedChannel(t, h.user, "#general")
-	seedInstance(t, h, "inst-botty", "botty")
+	bot := testclient.NewStored("botty", h.sess, h.store, testclient.WithInstanceID("inst-botty"))
+	require.NoError(t, bot.Attach(t.Context()))
+	t.Cleanup(bot.Detach)
 	require.NoError(t, h.store.AddDMWindow(ctx, "inst-botty"))
 	require.NoError(t, h.store.SetLastWindow(ctx, domain.WindowKey("inst-botty")))
 
@@ -164,6 +175,58 @@ func TestChatScreen_Init_lands_on_the_dm_window_left_open(t *testing.T) {
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen), uitest.WithInitialTermSize(termWidth, termHeight))
 
 	tm.WaitForViewContains("▸botty")
+}
+
+func TestChatScreen_connection_restores_saved_dm_after_autojoin(t *testing.T) {
+	h := newTestSession(t)
+	ctx := t.Context()
+
+	uitest.SeedChannel(t, h.user, "#general")
+	bot := testclient.NewStored(
+		"botty", h.sess, h.store,
+		testclient.WithInstanceID("inst-botty"),
+	)
+	require.NoError(t, bot.Attach(ctx))
+	t.Cleanup(bot.Detach)
+	require.NoError(t, h.store.AddDMWindow(ctx, "inst-botty"))
+	require.NoError(t, h.store.SetLastWindow(ctx, domain.WindowKey("inst-botty")))
+
+	uitest.Quit(t, h.user, "")
+	uitest.DrainEvents(h.user)
+
+	chatScreen, err := screens.NewChatScreen(
+		t.Context, h.sess, h.mgr, h.user,
+		newFakeConfigStore(), h.store, domain.KindStatus,
+	)
+	require.NoError(t, err)
+
+	connection := screens.NewConnectionScreen(screens.ConnectionConfig{
+		HasAPIKey:    true,
+		ChannelCount: 1,
+		Nick:         string(h.user.Nick()),
+		Session:      h.sess,
+		User:         h.user,
+		BaseContext:  t.Context,
+	}, chatScreen)
+	tm := uitest.New(
+		t, uipkg.NewRoot(connection),
+		uitest.WithInitialTermSize(termWidth, termHeight),
+	)
+
+	for range 7 {
+		tm.Send(screens.ConnectionTickMsg{})
+	}
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "▸botty") &&
+			strings.Contains(view, "#general") &&
+			strings.Contains(view, "No messages yet") &&
+			strings.Contains(view, "Nicks")
+	})
+	require.Equal(t, [][]string{
+		{"Channels", "&modeloff", "#general", "Queries", "▸botty"},
+		{"No messages yet", "testuser >"},
+		{"Nicks", "botty"},
+	}, normalisedVisibleColumns(view))
 }
 
 func TestChatScreen_Init_lands_on_the_self_DM_window_left_open(t *testing.T) {
@@ -307,8 +370,8 @@ func requireOpenDMWindows(t *testing.T, h *testHarness, want ...domain.InstanceI
 func dmWindowID(t *testing.T, h *testHarness, nick domain.Nick) domain.InstanceID {
 	t.Helper()
 
-	inst, err := h.sess.ResolveNick(t.Context(), nick)
+	id, _, err := h.sess.ResolveNick(t.Context(), nick)
 	require.NoError(t, err)
 
-	return inst.ID()
+	return id
 }

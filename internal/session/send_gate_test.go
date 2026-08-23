@@ -47,7 +47,7 @@ func TestSession_privmsg_to_a_channel_that_does_not_exist(t *testing.T) {
 			require.Equal(t, domain.NoSuchChannelError{Channel: "#ghost", At: fixedTime}, missing)
 			require.Empty(t, resp.Events)
 
-			stored, err := sess.EventsBefore(ctx, "#ghost", nil, 10)
+			stored, err := sess.store.EventsBefore(ctx, "#ghost", nil, 10)
 			require.NoError(t, err)
 			require.Empty(t, stored, "a refused message is not filed")
 

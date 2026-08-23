@@ -25,9 +25,6 @@ func (s ChatScreen) routeInput(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 	case components.CommandSubmitMsg:
 		return s, s.handleCommand(msg), true
 
-	case chatcmd.PokeRequested:
-		return s, s.handlePoke(), true
-
 	case tea.KeyPressMsg:
 		if !ui.Matches(msg, s.keyMap.ToggleNickList) {
 			return s, nil, false
@@ -56,7 +53,6 @@ func (s ChatScreen) runContext() chatcmd.Context {
 		Manager: s.mgr,
 		Config:  s.cfgStore,
 		Active:  active,
-		Actor:   s.user.Instance(),
 		Client:  s.client,
 	}
 }
@@ -70,6 +66,9 @@ func errorEvent(target domain.ChannelName, operation string, err error) domain.E
 }
 
 func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
+	issuingWindow := activeWindowIdentity(s)
+	issuingRevision := activeWindowRevision(s)
+
 	// Redacted once up front so a command whose arguments carry a
 	// credential (/config api-key) never has that value reach the
 	// log, whether parsing succeeds or a malformed line fails after
@@ -84,15 +83,17 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 			"error", err,
 		)
 
-		return func() tea.Msg { return errorEvent(s.activeName(), "command", err) }
+		return commandResultCmd(issuingWindow, issuingRevision, func() tea.Msg {
+			return errorEvent(s.activeName(), "command", err)
+		})
 	}
 
 	cmd, ok := invocation.Leaf().(chatcmd.Command)
 	if !ok {
-		return func() tea.Msg {
+		return commandResultCmd(issuingWindow, issuingRevision, func() tea.Msg {
 			return errorEvent(s.activeName(), "command",
 				fmt.Errorf("parsed command %T does not implement the expected command interface", invocation.Leaf()))
-		}
+		})
 	}
 
 	slog.Default().InfoContext(s.baseContext(), "command executed",
@@ -105,13 +106,44 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 	rc := s.runContext()
 	rc.Invocation = invocation
 
-	return cmd.Run(s.baseContext(), rc)
+	return commandResultCmd(rc.Active, issuingRevision, cmd.Run(s.baseContext(), rc))
 }
 
-func (s ChatScreen) handlePoke() tea.Cmd {
+func commandResultCmd(window domain.Window, revision uint64, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+
+	return func() tea.Msg {
+		msg := cmd()
+		if msg == nil {
+			return nil
+		}
+
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			wrapped := make(tea.BatchMsg, len(batch))
+			for i, child := range batch {
+				wrapped[i] = commandResultCmd(window, revision, child)
+			}
+
+			return wrapped
+		}
+
+		return chatcmd.CommandResult{
+			IssuingWindow:         window,
+			IssuingWindowRevision: revision,
+			Message:               msg,
+		}
+	}
+}
+
+func (s ChatScreen) handlePoke(window domain.Window) tea.Cmd {
 	return func() tea.Msg {
 		if err := s.user.Poke(s.baseContext()); err != nil {
-			return errorEvent(s.activeName(), "poke", err)
+			return chatcmd.CommandResult{
+				IssuingWindow: window,
+				Message:       errorEvent(issuingWindowName(window), "poke", err),
+			}
 		}
 
 		return nil
@@ -157,7 +189,15 @@ func (s ChatScreen) handleMessageSubmit(msg components.MessageSubmitMsg) (ChatSc
 func (s ChatScreen) sendMessageCmd(operation string, target *Window, body string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := s.user.SendMessage(s.baseContext(), target.Window, body); err != nil {
-			return domain.ErrorEvent{Operation: operation, Err: err, Target: target.Name(), At: time.Now()}
+			return chatcmd.CommandResult{
+				IssuingWindow: target.Window,
+				Message: domain.ErrorEvent{
+					Operation: operation,
+					Err:       err,
+					Target:    target.Name(),
+					At:        time.Now(),
+				},
+			}
 		}
 
 		return nil

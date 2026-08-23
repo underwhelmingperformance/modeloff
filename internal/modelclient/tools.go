@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/laney/modeloff/internal/api"
@@ -18,8 +19,7 @@ import (
 // the chatcmd and modelclient packages stay independent of the
 // session package's symbol set.
 type SessionAPI interface {
-	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
-	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
+	ResolveNick(ctx context.Context, nick domain.Nick) (domain.InstanceID, domain.Nick, error)
 	Now() time.Time
 }
 
@@ -58,10 +58,8 @@ type ManagerAPI interface {
 }
 
 // ToolContext carries the backend context for a model tool call.
-// Actor is the `*domain.Instance` for the caller: models dispatched
-// by the session receive their own handle, and the user's own
-// `/`-command tool invocations receive the user handle. Client is
-// the protocol-side handle the tool dispatches commands through;
+// Client is the protocol-side handle the tool dispatches commands
+// through;
 // it is the model-client handle for model invocations and the
 // user-client for user-driven tool calls.
 //
@@ -76,25 +74,81 @@ type ManagerAPI interface {
 //
 // Callers must populate Client before invoking any tool whose
 // `RunTool` routes through the wire protocol; a nil Client crashes
-// with a nil-pointer dereference at `tc.Client.Send`.
+// with a nil-pointer dereference at `tc.Send`.
+//
+// The window authority a call runs under is a constructor argument
+// ([NewToolContext]), so a tool invocation always has one and a
+// caller cannot reach the wire by leaving it out.
 type ToolContext struct {
-	Session SessionAPI
-	Manager ManagerAPI
-	Actor   *domain.Instance
-	Target  protocol.MsgTarget
-	Client  protocol.Client
-	Pace    func(context.Context, string) error
+	Session    SessionAPI
+	Manager    ManagerAPI
+	Target     protocol.MsgTarget
+	Client     protocol.Client
+	Pace       func(context.Context, string) error
+	guard      protocol.WindowGuard
+	projection providerTargetProjection
+}
+
+// NewToolContext binds one tool invocation to the authority in
+// `guard`. Every command the invocation sends and every store
+// operation it runs is checked against that authority first.
+func NewToolContext(
+	guard protocol.WindowGuard,
+	session SessionAPI,
+	client protocol.Client,
+	target protocol.MsgTarget,
+) ToolContext {
+	return ToolContext{
+		Session: session,
+		Target:  target,
+		Client:  client,
+		guard:   guard,
+	}
 }
 
 // PaceMessage waits before one chat message when the caller supplied
 // a typing pacer. Direct tool invocations leave Pace nil and send
 // immediately.
 func (tc ToolContext) PaceMessage(ctx context.Context, body string) error {
-	if tc.Pace == nil {
-		return nil
+	if tc.Pace != nil {
+		if err := tc.Pace(ctx, body); err != nil {
+			return err
+		}
 	}
 
-	return tc.Pace(ctx, body)
+	return tc.authorise(ctx)
+}
+
+func (tc ToolContext) authorise(ctx context.Context) error {
+	if !tc.guard.Valid(ctx) {
+		return errDispatchWindowClosed
+	}
+
+	return nil
+}
+
+// Send submits a protocol command under the turn's window authority.
+func (tc ToolContext) Send(
+	ctx context.Context,
+	cmd protocol.Command,
+) (protocol.Response, error) {
+	cmd = tc.projection.bindCommand(cmd)
+
+	response, err := tc.guard.Send(ctx, tc.Client, cmd)
+	if errors.Is(err, protocol.ErrWindowAuthorityChanged) {
+		return protocol.Response{}, errDispatchWindowClosed
+	}
+
+	return response, err
+}
+
+func (tc ToolContext) runWithAuthority(ctx context.Context, operation func() error) error {
+	err := tc.guard.RunWithAuthority(ctx, operation)
+	if errors.Is(err, protocol.ErrWindowAuthorityChanged) {
+		return errDispatchWindowClosed
+	}
+
+	return err
 }
 
 // ToolResultPayload is the common tool result envelope returned to

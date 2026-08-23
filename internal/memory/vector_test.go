@@ -241,6 +241,109 @@ func TestIndexedStore_WriteAndRead(t *testing.T) {
 	require.Equal(t, entries, got)
 }
 
+func TestIndexedStore_PrepareWrite_defers_persistent_effect_and_reuses_the_embedding(t *testing.T) {
+	ctx := t.Context()
+	var rejectEmbedding atomic.Bool
+	embedder := func(context.Context, string) ([]float32, error) {
+		if rejectEmbedding.Load() {
+			return nil, fmt.Errorf("embedding unavailable")
+		}
+
+		return []float32{1, 0, 0}, nil
+	}
+	store := newTestIndexedStore(t, embedder)
+	id := domain.InstanceID("prepared")
+	entry := Entry{Key: "decision", Content: "ship it"}
+
+	prepared, err := store.PrepareWrite(ctx, id, entry)
+	require.NoError(t, err)
+	beforeCommit, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	require.Nil(t, store.db.GetCollection(string(id), nil))
+
+	rejectEmbedding.Store(true)
+	require.NoError(t, prepared.Commit(ctx))
+	afterCommit, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	require.Nil(t, store.db.GetCollection(string(id), nil))
+
+	prepared.Finish(ctx)
+	afterFinish, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	collection := store.db.GetCollection(string(id), nil)
+	require.NotNil(t, collection)
+	document, err := collection.GetByID(ctx, entry.Key)
+	require.NoError(t, err)
+
+	require.Equal(t, struct {
+		BeforeCommit []Entry
+		AfterCommit  []Entry
+		AfterFinish  []Entry
+		Document     chromem.Document
+	}{
+		BeforeCommit: []Entry{},
+		AfterCommit:  []Entry{entry},
+		AfterFinish:  []Entry{entry},
+		Document: chromem.Document{
+			ID:        entry.Key,
+			Metadata:  map[string]string{"at": "0001-01-01T00:00:00Z", "content": entry.Content, "key": entry.Key},
+			Embedding: []float32{1, 0, 0},
+			Content:   "decision: ship it",
+		},
+	}, struct {
+		BeforeCommit []Entry
+		AfterCommit  []Entry
+		AfterFinish  []Entry
+		Document     chromem.Document
+	}{
+		BeforeCommit: beforeCommit,
+		AfterCommit:  afterCommit,
+		AfterFinish:  afterFinish,
+		Document:     document,
+	})
+}
+
+func TestIndexedStore_PrepareWrite_embedding_failure_commits_only_the_source_of_truth(t *testing.T) {
+	ctx := t.Context()
+	var rejectEmbedding atomic.Bool
+	embedder := func(context.Context, string) ([]float32, error) {
+		if rejectEmbedding.Load() {
+			return nil, fmt.Errorf("embedding unavailable")
+		}
+
+		return []float32{1, 0, 0}, nil
+	}
+	store := newTestIndexedStore(t, embedder)
+	id := domain.InstanceID("prepared-fallback")
+	require.NoError(t, store.Write(ctx, id, Entry{Key: "mood", Content: "happy"}))
+
+	rejectEmbedding.Store(true)
+	prepared, err := store.PrepareWrite(ctx, id, Entry{Key: "mood", Content: "excited"})
+	require.NoError(t, err)
+	require.NoError(t, prepared.Commit(ctx))
+	prepared.Finish(ctx)
+
+	entries, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	collection := store.db.GetCollection(string(id), nil)
+	require.NotNil(t, collection)
+	_, indexedErr := collection.GetByID(ctx, "mood")
+
+	require.Equal(t, struct {
+		Entries      []Entry
+		IndexMissing bool
+	}{
+		Entries:      []Entry{{Key: "mood", Content: "excited"}},
+		IndexMissing: true,
+	}, struct {
+		Entries      []Entry
+		IndexMissing bool
+	}{
+		Entries:      entries,
+		IndexMissing: indexedErr != nil,
+	})
+}
+
 func TestIndexedStore_WriteOverwritesExistingKey(t *testing.T) {
 	ctx := t.Context()
 	store := newTestIndexedStore(t, trivialEmbedder())
@@ -277,6 +380,64 @@ func TestIndexedStore_Delete(t *testing.T) {
 		{Key: "first", Content: "one"},
 		{Key: "third", Content: "three"},
 	}, got)
+}
+
+func TestIndexedStore_PrepareDelete_separates_the_backing_commit_from_index_cleanup(t *testing.T) {
+	ctx := t.Context()
+	store := newTestIndexedStore(t, trivialEmbedder())
+	id := domain.InstanceID("prepared-delete")
+	entry := Entry{Key: "decision", Content: "ship it"}
+	require.NoError(t, store.Write(ctx, id, entry))
+
+	prepared, err := store.PrepareDelete(ctx, id, entry.Key)
+	require.NoError(t, err)
+	beforeCommit, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	collection := store.db.GetCollection(string(id), nil)
+	require.NotNil(t, collection)
+	beforeDocument, err := collection.GetByID(ctx, entry.Key)
+	require.NoError(t, err)
+
+	require.NoError(t, prepared.Commit(ctx))
+	afterCommit, err := store.Read(ctx, id)
+	require.NoError(t, err)
+	afterCommitDocument, err := collection.GetByID(ctx, entry.Key)
+	require.NoError(t, err)
+
+	prepared.Finish(ctx)
+	_, afterFinishErr := collection.GetByID(ctx, entry.Key)
+	wantDocument := chromem.Document{
+		ID:        entry.Key,
+		Metadata:  map[string]string{"at": "0001-01-01T00:00:00Z", "content": entry.Content, "key": entry.Key},
+		Embedding: []float32{1, 0, 0},
+		Content:   "decision: ship it",
+	}
+
+	require.Equal(t, struct {
+		BeforeCommit        []Entry
+		BeforeDocument      chromem.Document
+		AfterCommit         []Entry
+		AfterCommitDocument chromem.Document
+		IndexRemoved        bool
+	}{
+		BeforeCommit:        []Entry{entry},
+		BeforeDocument:      wantDocument,
+		AfterCommit:         []Entry{},
+		AfterCommitDocument: wantDocument,
+		IndexRemoved:        true,
+	}, struct {
+		BeforeCommit        []Entry
+		BeforeDocument      chromem.Document
+		AfterCommit         []Entry
+		AfterCommitDocument chromem.Document
+		IndexRemoved        bool
+	}{
+		BeforeCommit:        beforeCommit,
+		BeforeDocument:      beforeDocument,
+		AfterCommit:         afterCommit,
+		AfterCommitDocument: afterCommitDocument,
+		IndexRemoved:        afterFinishErr != nil,
+	})
 }
 
 func TestIndexedStore_DeleteNonexistent(t *testing.T) {

@@ -95,12 +95,8 @@ func TestUserJoin_NamesReply_is_terminated_by_NamesEnd(t *testing.T) {
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Created:    true,
-				At:         fixedTime,
-				Instance:   user,
+				Target: "#dev", Source: domain.ClientSource(user.ID(), domain.Nick("testuser")), Created: true,
+				At: fixedTime,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#dev",

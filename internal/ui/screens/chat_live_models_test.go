@@ -168,7 +168,7 @@ func TestChatScreen_handleLiveModelsLoadFailed(t *testing.T) {
 			// The notice is UI feedback, not channel activity: it
 			// lands only in the in-memory scrollback and never
 			// reaches the shared channel event log.
-			persisted, err := sess.EventsBefore(t.Context(), tc.expectedChannel, nil, 10)
+			persisted, err := sess.AuditEventsBefore(t.Context(), tc.expectedChannel, nil, 10)
 			require.NoError(t, err)
 			require.Empty(t, filterSystemNotices(persisted),
 				"a UI notice must not pollute the channel event log")

@@ -85,21 +85,21 @@ func (m ModelInfo) SupportsStructuredOutputs() bool {
 
 // Usage contains token and cost metadata returned by OpenRouter.
 type Usage struct {
-	PromptTokens          int64
-	CompletionTokens      int64
-	TotalTokens           int64
-	ReasoningTokens       int64
-	CachedTokens          int64
-	CacheWriteTokens      int64
-	CostCredits           float64
-	UpstreamInferenceCost float64
+	PromptTokens          int64   `json:"prompt_tokens"`
+	CompletionTokens      int64   `json:"completion_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	ReasoningTokens       int64   `json:"reasoning_tokens"`
+	CachedTokens          int64   `json:"cached_tokens"`
+	CacheWriteTokens      int64   `json:"cache_write_tokens"`
+	CostCredits           float64 `json:"cost_credits"`
+	UpstreamInferenceCost float64 `json:"upstream_inference_cost"`
 }
 
 // ToolDefinition describes a model-callable tool.
 type ToolDefinition struct {
-	Name        string
-	Description string
-	Parameters  map[string]any
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 // SystemPrompt separates reusable application instructions from
@@ -107,8 +107,8 @@ type ToolDefinition struct {
 // content-block boundary. Dynamic follows in a later message so providers
 // that normalise system content can still reuse the fixed instructions.
 type SystemPrompt struct {
-	Fixed   string
-	Dynamic string
+	Fixed   string `json:"fixed"`
+	Dynamic string `json:"dynamic"`
 }
 
 // Text returns the prompt as providers without content-block caching read it.
@@ -119,16 +119,16 @@ func (p SystemPrompt) Text() string {
 // PendingToolCall represents a tool call from the model that requires
 // execution before the conversation can continue.
 type PendingToolCall struct {
-	ID   string
-	Name string
-	Args json.RawMessage
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
 }
 
 // ToolResult carries the outcome of executing a pending tool call,
 // ready to be sent back to the model as a tool response message.
 type ToolResult struct {
-	ToolCallID string
-	Content    string
+	ToolCallID string `json:"tool_call_id"`
+	Content    string `json:"content"`
 }
 
 // Conversation is an opaque handle to the accumulated messages in a
@@ -140,13 +140,17 @@ type Conversation struct {
 	messages       []openai.ChatCompletionMessageParamUnion
 }
 
-// CompletionResult contains the model's tool calls (if any)
-// alongside request metadata. An empty PendingToolCalls slice with
-// a nil Conversation signals silence: the model emitted nothing to
-// continue with. When PendingToolCalls is non-empty, Conversation
-// carries the message state the next turn appends to.
+// CompletionResult contains the model's tool calls and raw text (if
+// any) alongside request metadata. AssistantText is retained for the
+// turn journal but does not make text model output actionable. An
+// empty PendingToolCalls slice with a nil Conversation signals
+// silence. When PendingToolCalls is non-empty, Conversation carries
+// the message state the next turn appends to.
 type CompletionResult struct {
 	PendingToolCalls []PendingToolCall
+	AssistantText    string
+	Refusal          string
+	ResponseReceived bool
 	Conversation     *Conversation
 	RequestID        string
 	Usage            Usage
@@ -192,6 +196,25 @@ type NickReasonGenerator interface {
 type Client interface {
 	// ListModels fetches available models from the OpenRouter API.
 	ListModels(ctx context.Context) ([]ModelInfo, error)
+
+	// RenderEventRequest returns the non-secret request evidence for a
+	// SendEvents call without sending it.
+	RenderEventRequest(
+		modelID domain.ModelID,
+		selfInstanceID domain.InstanceID,
+		systemPrompt SystemPrompt,
+		history []protocol.IRCMessage,
+		events []protocol.IRCMessage,
+		tools ...ToolDefinition,
+	) (RenderedEventRequest, error)
+
+	// RenderToolResultRequest returns the non-secret request evidence
+	// for a ContinueWithToolResults call without sending it.
+	RenderToolResultRequest(
+		conv *Conversation,
+		results []ToolResult,
+		tools ...ToolDefinition,
+	) (RenderedEventRequest, error)
 
 	// SendEvents sends a batch of protocol events to a model and
 	// returns its response. The system prompt and conversation

@@ -1,9 +1,12 @@
 package protocol_test
 
 import (
-	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"sort"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -11,151 +14,194 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 )
 
-func TestCommand_sum_membership(t *testing.T) {
+func TestCommand_dispatcher_covers_the_sealed_sum(t *testing.T) {
 	t.Parallel()
 
-	channel := domain.ChannelName("#general")
-	nick := domain.Nick("alice")
+	sealed := methodReceiverNames(t, "commands.go", "isCommand")
+	dispatched := typeSwitchSelectorNames(t, "../session/handler.go", "dispatchCommand", "protocol")
 
-	cases := []struct {
-		name string
-		cmd  protocol.Command
-	}{
-		{"join", protocol.Join{Channels: []domain.ChannelName{channel}}},
-		{"part", protocol.Part{Channel: channel, Reason: "bye"}},
-		{"privmsg", protocol.PrivMsg{Target: protocol.ChannelTarget(channel), Body: "hello"}},
-		{"action", protocol.Action{Target: protocol.ChannelTarget(channel), Body: "waves"}},
-		{"topic", protocol.Topic{Channel: channel, Body: "discuss"}},
-		{"invite", protocol.Invite{Nick: nick, Channel: channel}},
-		{"kick", protocol.Kick{Nick: nick, Channel: channel}},
-		{"nick", protocol.Nick{New: nick}},
-		{"whois", protocol.Whois{Nick: nick}},
-		{"list", protocol.List{}},
-		{"addmodel", protocol.AddModel{Model: "anthropic/claude", Persona: "p"}},
-		{"quit", protocol.Quit{Reason: "gone"}},
-		{"kill", protocol.Kill{Nick: nick, Reason: "spam"}},
-		{"oper", protocol.Oper{User: "name", Password: "pw"}},
-		{"channelmode", protocol.ChannelMode{Channel: channel, Changes: []protocol.ChannelModeChange{
-			{Flag: domain.ModeOperator, Add: true, Target: nick},
-		}}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			switch tc.cmd.(type) {
-			case protocol.Join,
-				protocol.Part,
-				protocol.PrivMsg,
-				protocol.Action,
-				protocol.Topic,
-				protocol.Invite,
-				protocol.Kick,
-				protocol.Nick,
-				protocol.Whois,
-				protocol.List,
-				protocol.AddModel,
-				protocol.Quit,
-				protocol.Kill,
-				protocol.Oper,
-				protocol.ChannelMode:
-				// member of the sum
-			default:
-				t.Fatalf("command %T is not a member of the protocol Command sum", tc.cmd)
-			}
-		})
-	}
+	require.Equal(t, sealed, dispatched)
 }
 
-func TestEvent_sum_membership(t *testing.T) {
+func TestMsgTarget_consumers_cover_the_sealed_sum(t *testing.T) {
 	t.Parallel()
 
-	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	channel := domain.ChannelName("#general")
-	nick := domain.Nick("alice")
-
-	cases := []struct {
-		name  string
-		event protocol.Event
-	}{
-		{"message", domain.Message{Target: channel, From: nick, Body: "hi", At: at}},
-		{"join", domain.Join{Target: channel, Nick: nick, At: at}},
-		{"part", domain.Part{Target: channel, Nick: nick, At: at}},
-		{"quit", domain.Quit{Nick: nick, At: at}},
-		{"topic_change", domain.TopicChange{Target: channel, Topic: "t", By: nick, At: at}},
-		{"channel_mode_change", domain.ChannelModeChange{Target: channel, Nick: nick, Flag: domain.ModeOperator, Add: true, By: nick, At: at}},
-		{"user_mode_change", domain.UserModeChange{Nick: nick, Flag: domain.ModeOperator, Add: true, By: nick, At: at}},
-		{"invited", domain.Invited{Target: channel, Nick: nick, By: nick, At: at}},
-		{"kicked", domain.Kicked{Target: channel, Nick: nick, By: nick, At: at}},
-		{"nick_change", domain.NickChange{OldNick: nick, NewNick: "ally", At: at}},
-		{"whois", domain.Whois{Target: channel, Nick: nick, At: at}},
-		{"list_reply", domain.ListReply{Channel: channel, Members: 1, At: at}},
-		{"list_end", domain.ListEnd{At: at}},
-		{"system_notice", domain.SystemNotice{Target: channel, Text: "n", At: at}},
-		{"model_dispatch_started", domain.ModelDispatchStarted{At: at}},
-		{"model_dispatch_done", domain.ModelDispatchDone{At: at}},
-		{"names_reply", domain.NamesReplyEvent{Channel: channel, At: at}},
-		{"names_end", domain.NamesEnd{Channel: channel, At: at}},
-		{"welcome", domain.Welcome{ServerName: "modeloff", Nick: nick, At: at}},
-		{"reconnected", domain.Reconnected{At: at}},
-		{"model_unavailable_error", domain.ModelUnavailableError{Channel: channel, Nick: nick, At: at}},
-		{"unknown_nick_error", domain.UnknownNickError{Nick: nick}},
-		{"no_such_channel_error", domain.NoSuchChannelError{Channel: channel}},
-		{"nick_in_use_error", domain.NickInUseError{Nick: nick}},
-		{"not_on_channel_error", domain.NotOnChannelError{Channel: channel, Command: "PART"}},
-		{"user_not_in_channel_error", domain.UserNotInChannelError{Nick: nick, Channel: channel, Command: "KICK"}},
-		{"user_on_channel_error", domain.UserOnChannelError{Nick: nick, Channel: channel}},
-		{"not_operator_error", domain.NotOperatorError{Command: "ADDMODEL"}},
-		{"unknown_command_error", domain.UnknownCommandError{Name: "typo"}},
-		{"unknown_config_key_error", domain.UnknownConfigKeyError{Key: "bogus"}},
-		{"invalid_duration_error", domain.InvalidDurationError{Input: "5xq", Err: fmt.Errorf("bad")}},
-		{"unsupported_model_error", domain.UnsupportedModelError{ModelID: "test/model"}},
+	sealed := methodReceiverNames(t, "target.go", "isMsgTarget")
+	consumers := map[string][]string{
+		"WindowName":            typeSwitchSelectorNames(t, "target.go", "WindowName", ""),
+		"resolveMsgTarget":      typeSwitchSelectorNames(t, "../session/handler.go", "resolveMsgTarget", "protocol"),
+		"toolAvailableInWindow": typeSwitchSelectorNames(t, "../modelclient/api.go", "toolAvailableInWindow", "protocol"),
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	require.Equal(t, map[string][]string{
+		"WindowName":            sealed,
+		"resolveMsgTarget":      sealed,
+		"toolAvailableInWindow": sealed,
+	}, consumers)
+}
 
-			switch tc.event.(type) {
-			case domain.Message,
-				domain.Join,
-				domain.Part,
-				domain.Quit,
-				domain.TopicChange,
-				domain.ChannelModeChange,
-				domain.UserModeChange,
-				domain.Invited,
-				domain.Kicked,
-				domain.NickChange,
-				domain.Whois,
-				domain.ListReply,
-				domain.ListEnd,
-				domain.SystemNotice,
-				domain.ModelDispatchStarted,
-				domain.ModelDispatchDone,
-				domain.NamesReplyEvent,
-				domain.NamesEnd,
-				domain.Welcome,
-				domain.Reconnected,
-				domain.ModelUnavailableError,
-				domain.UnknownNickError,
-				domain.NoSuchChannelError,
-				domain.NickInUseError,
-				domain.NotOnChannelError,
-				domain.UserNotInChannelError,
-				domain.UserOnChannelError,
-				domain.NotOperatorError,
-				domain.UnknownCommandError,
-				domain.UnknownConfigKeyError,
-				domain.InvalidDurationError,
-				domain.UnsupportedModelError:
-				// member of the sum
-			default:
-				t.Fatalf("event %T is not a member of the protocol Event sum", tc.event)
+func parseFile(t *testing.T, name string) *ast.File {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+	require.NoError(t, err)
+
+	return file
+}
+
+func methodReceiverNames(t *testing.T, name, method string) []string {
+	t.Helper()
+
+	var names []string
+	for _, declaration := range parseFile(t, name).Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != method || function.Recv == nil || len(function.Recv.List) != 1 {
+			continue
+		}
+
+		receiver, ok := typeName(function.Recv.List[0].Type)
+		require.True(t, ok, "receiver for %s must be a named type", method)
+		names = append(names, receiver)
+	}
+	sort.Strings(names)
+
+	return names
+}
+
+func typeName(expression ast.Expr) (string, bool) {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression.Name, true
+	case *ast.StarExpr:
+		return typeName(expression.X)
+	}
+
+	return "", false
+}
+
+func typeSwitchSelectorNames(
+	t *testing.T,
+	name, functionName, packageName string,
+) []string {
+	t.Helper()
+
+	function := functionDeclaration(t, name, functionName)
+	var names []string
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		typeSwitch, ok := node.(*ast.TypeSwitchStmt)
+		if !ok {
+			return true
+		}
+
+		names = append(names, typeSwitchCaseNames(typeSwitch, packageName)...)
+		return false
+	})
+	sort.Strings(names)
+
+	return names
+}
+
+func functionDeclaration(t *testing.T, name, functionName string) *ast.FuncDecl {
+	t.Helper()
+
+	for _, declaration := range parseFile(t, name).Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == functionName {
+			return function
+		}
+	}
+
+	require.FailNow(t, "function declaration not found", functionName)
+	return nil
+}
+
+func typeSwitchCaseNames(typeSwitch *ast.TypeSwitchStmt, packageName string) []string {
+	var names []string
+	for _, clauseNode := range typeSwitch.Body.List {
+		clause := clauseNode.(*ast.CaseClause)
+		for _, expression := range clause.List {
+			if name, ok := typeCaseName(expression, packageName); ok {
+				names = append(names, name)
 			}
+		}
+	}
+
+	return names
+}
+
+func typeCaseName(expression ast.Expr, packageName string) (string, bool) {
+	identifier, ok := expression.(*ast.Ident)
+	if ok && packageName == "" {
+		return identifier.Name, true
+	}
+
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+
+	qualifier, ok := selector.X.(*ast.Ident)
+	if !ok || qualifier.Name != packageName {
+		return "", false
+	}
+
+	return selector.Sel.Name, true
+}
+
+func TestEvent_sum_does_not_expose_mutable_actor_handles(t *testing.T) {
+	t.Parallel()
+
+	members := methodReceiverNames(t, "../domain/protocol_events.go", "isProtocolEvent")
+	typeDeclarations := make(map[string]ast.Expr)
+	paths, err := filepath.Glob("../domain/*.go")
+	require.NoError(t, err)
+	for _, path := range paths {
+		for _, declaration := range parseFile(t, path).Decls {
+			general, ok := declaration.(*ast.GenDecl)
+			if !ok || general.Tok != token.TYPE {
+				continue
+			}
+			for _, specification := range general.Specs {
+				typeSpec := specification.(*ast.TypeSpec)
+				typeDeclarations[typeSpec.Name.Name] = typeSpec.Type
+			}
+		}
+	}
+
+	var missing []string
+	var mutable []string
+	for _, member := range members {
+		declaration, ok := typeDeclarations[member]
+		if !ok {
+			missing = append(missing, member)
+			continue
+		}
+		ast.Inspect(declaration, func(node ast.Node) bool {
+			pointer, ok := node.(*ast.StarExpr)
+			if !ok {
+				return true
+			}
+			name, ok := typeName(pointer.X)
+			if ok && name == "Instance" {
+				mutable = append(mutable, member)
+			}
+
+			return true
 		})
 	}
+	sort.Strings(missing)
+	sort.Strings(mutable)
+
+	require.Equal(t, struct {
+		MissingDeclarations []string
+		MutableActorHandles []string
+	}{}, struct {
+		MissingDeclarations []string
+		MutableActorHandles []string
+	}{
+		MissingDeclarations: missing,
+		MutableActorHandles: mutable,
+	})
 }
 
 func TestNotOperatorError_implements_error(t *testing.T) {

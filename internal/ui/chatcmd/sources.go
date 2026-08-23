@@ -12,15 +12,11 @@ import (
 // materialise the data they need, and always see the latest state.
 //
 // `Instances` iterates every known model instance across the whole
-// session — used by commands whose target is any model (/invite,
-// /msg, /whois, /add-model reuse). `ChannelMembers` iterates only
-// members of the currently-active channel — used by commands whose
-// target must already be present in the active channel (/kick,
-// inline @nick mentions).
+// session, for commands whose target is any model (/invite, /msg,
+// /whois, /add-model reuse).
 type CompletionContext struct {
 	Channels        func() iter.Seq[domain.Window]
-	Instances       func() iter.Seq[*domain.Instance]
-	ChannelMembers  func() iter.Seq[*domain.Instance]
+	Instances       func() iter.Seq[domain.InstanceDirectoryEntry]
 	ActiveMembers   func() iter.Seq[domain.Nick]
 	ActiveChannel   func() domain.ChannelName
 	UserNick        func() domain.Nick
@@ -108,8 +104,8 @@ func instancesSource(ctx CompletionContext, _ command.InvocationState[Completion
 
 	for inst := range ctx.Instances() {
 		suggestions = append(suggestions, command.Suggestion{
-			Value:  string(inst.Nick()),
-			Label:  string(inst.Nick()),
+			Value:  string(inst.Nick),
+			Label:  string(inst.Nick),
 			Detail: string(inst.ModelID),
 		})
 	}

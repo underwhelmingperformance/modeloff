@@ -9,9 +9,7 @@ package modelclient
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -23,6 +21,7 @@ import (
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/store"
 )
 
 // Session is the dependency surface a [ModelClient] needs from the
@@ -34,7 +33,7 @@ type Session interface {
 
 	// Subscribe registers the client with the session and returns
 	// the per-client delivery handle.
-	Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error)
+	Subscribe(ctx context.Context, c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error)
 
 	// Handle is the wire dispatcher's entry point.
 	Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error)
@@ -44,44 +43,33 @@ type Session interface {
 	// its subscription is reaped and its model-client released. It
 	// is how the server closes a connection it can no longer serve,
 	// leaving nothing half-present behind it.
-	Disconnect(ctx context.Context, id protocol.ClientID, reason string)
+	DisconnectDeadClient(ctx context.Context, id protocol.ClientID, reason string)
 
-	// EventsBefore returns up to `n` channel events strictly
-	// before `before` (most recent if nil), in chronological
-	// order. Used at attach-time history seeding.
-	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
+	// BeginModelDispatch reports the start of a turn and captures the
+	// recipients that must receive its completion.
+	BeginModelDispatch(
+		ctx context.Context,
+		guard protocol.WindowGuard,
+		window protocol.WindowTarget,
+		event domain.ModelDispatchStarted,
+	) protocol.ModelDispatch
 
-	// DMEventsBefore returns up to `n` DM events strictly before
-	// `before` between `self` and `peer`. Used at lazy DM history
-	// seeding.
-	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
-
-	// InstanceRepliesBefore returns up to `n` of the instance's own
-	// point-to-point replies (WHOIS, LIST) strictly before `before`,
-	// in chronological order. These are the instance's private memory
-	// of replies it received, merged into its prompt transcript.
-	InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
-
-	// LoadChannelWindow loads the addressable `*ChannelWindow` row
-	// the prompt-assembly and instance-resolution paths use.
-	LoadChannelWindow(ctx context.Context, name domain.ChannelName) (*domain.ChannelWindow, error)
-
-	// Emit fans out a [domain.ProtocolEvent] on the per-subscription
-	// bus.
-	Emit(ctx context.Context, evt domain.ProtocolEvent)
-
-	// ResolveInstanceByID returns the canonical `*domain.Instance`
-	// for the given id.
-	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
-
-	// LookupClient returns the registered [protocol.Client] for
-	// the given identity, or nil if none is registered.
-	LookupClient(id protocol.ClientID) protocol.Client
+	// EmitModelFailure reports a failed turn to the operator bus.
+	EmitModelFailure(
+		ctx context.Context,
+		window protocol.WindowTarget,
+		event domain.ModelUnavailableError,
+	)
 
 	// ClientCaps reports the capabilities granted to a registered
 	// subscription. [ModelClient.Caps] delegates to it, so the tool
 	// registry is filtered by the modes the session holds.
 	ClientCaps(id protocol.ClientID) command.CapabilityHolder
+
+	// ResolveInstanceByID returns the connected client's current nick.
+	// Provider projection uses it to render a stable DM target as IRC
+	// presentation state without storing that state in the window.
+	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (domain.Nick, error)
 
 	// TracerProvider returns the OTel tracer provider used for
 	// modelclient-side spans.
@@ -102,6 +90,7 @@ type Session interface {
 // client's lifetime.
 type ModelClient struct {
 	instance     *domain.Instance
+	attachment   *protocol.Attachment
 	sess         Session
 	apiFn        func() api.Client
 	memStore     memory.Store
@@ -109,8 +98,10 @@ type ModelClient struct {
 	ensure       EnsureStructuredOutputModel
 	contextLenFn func(domain.ModelID) int
 	pacer        *Pacer
+	journal      TurnJournal
 
-	baseContext func() context.Context
+	dispatchContext context.Context
+	journalQueue    *journalQueue
 
 	hist *history
 
@@ -124,68 +115,108 @@ type ModelClient struct {
 	retry      retryPolicy
 	redispatch chan *turnBatch
 
-	// mu guards the subscription handle and the released flag.
-	mu       sync.Mutex
-	sub      protocol.Subscription
-	cancel   context.CancelFunc
-	released bool
-	wg       sync.WaitGroup
+	// mu guards the subscription handle, lifetime cancellation, active
+	// turn cancellation and the released flag.
+	mu         sync.Mutex
+	sub        protocol.Subscription
+	cancel     context.CancelFunc
+	activeTurn *activeTurn
+	released   bool
+	wg         sync.WaitGroup
 }
 
-// New returns an unattached `ModelClient` for `inst`. The client is
+type activeTurn struct {
+	window domain.ChannelName
+	cancel context.CancelFunc
+}
+
+// TurnJournal is the actor-bound model-turn surface used by a
+// ModelClient.
+type TurnJournal interface {
+	BeginModelTurn(
+		ctx context.Context,
+		guard protocol.WindowGuard,
+		turn store.ModelTurn,
+		input store.ModelTurnEntry,
+	) (store.ModelTurnRecorder, error)
+}
+
+// Config contains the lifetime dependencies of a [ModelClient].
+type Config struct {
+	Instance        *domain.Instance
+	Attachment      *protocol.Attachment
+	Session         Session
+	APIClient       func() api.Client
+	Memory          memory.Store
+	Tools           *ToolRegistry
+	EnsureModel     EnsureStructuredOutputModel
+	ContextLen      func(domain.ModelID) int
+	LifetimeContext func() context.Context
+	JournalContext  context.Context
+	Pacer           *Pacer
+	Journal         TurnJournal
+}
+
+// New returns an unattached `ModelClient` for cfg.Instance. The client is
 // inert until [ModelClient.Attach] runs.
 //
-// `apiFn` is consulted once per dispatch turn to obtain the current
+// Config.APIClient is consulted once per dispatch turn to obtain the current
 // [api.Client], so a manager-driven `SetAPIKey` rebuild propagates
-// to the next turn without reattach. A nil return from `apiFn` means
+// to the next turn without reattach. A nil return means
 // no API key is configured: the turn ends without calling upstream,
 // raising a [domain.ModelUnavailableError] so the user is told why
 // their models have gone quiet.
 //
-// `baseContext` supplies the long-lived context the dispatch
+// Config.LifetimeContext supplies the long-lived context the dispatch
 // goroutine derives its lifetime from; cancelling it (and calling
 // [ModelClient.Detach]) is how the goroutine is woken at shutdown.
 //
-// `contextLenFn` reports the live catalogue-cached context length
+// Config.JournalContext bounds evidence writes separately from dispatch.
+// A manager keeps it alive while cancelled turns unwind, then cancels it
+// before the store can close.
+//
+// Config.ContextLen reports the live catalogue-cached context length
 // for a model id. It is consulted at the top of every dispatch burst
 // (see [ModelClient.runDispatchLoop]), so the transcript token
 // budget stays current with whatever the catalogue holds across the
 // client's whole lifetime. A zero return — including from a nil
-// `contextLenFn` — disables the budget for that burst, leaving
+// function — disables the budget for that burst, leaving
 // [modelHistorySize]'s event-count ring as the only bound.
 //
-// `pacer` adds a typing delay before each chat-tool emit so bots
-// don't fire at machine speed; a nil `pacer` disables pacing.
-func New(
-	inst *domain.Instance,
-	sess Session,
-	apiFn func() api.Client,
-	memStore memory.Store,
-	tools *ToolRegistry,
-	ensure EnsureStructuredOutputModel,
-	contextLenFn func(domain.ModelID) int,
-	baseContext func() context.Context,
-	pacer *Pacer,
-) *ModelClient {
-	if ensure == nil {
-		ensure = noEnsure
+// Config.Pacer adds a typing delay before each chat-tool emit so bots
+// don't fire at machine speed; a nil value disables pacing.
+func New(cfg Config) *ModelClient {
+	if cfg.EnsureModel == nil {
+		cfg.EnsureModel = noEnsure
 	}
-	if contextLenFn == nil {
-		contextLenFn = noContextLen
+	if cfg.ContextLen == nil {
+		cfg.ContextLen = noContextLen
+	}
+	dispatchContext := context.Background()
+	if cfg.LifetimeContext != nil {
+		if lifetimeContext := cfg.LifetimeContext(); lifetimeContext != nil {
+			dispatchContext = lifetimeContext
+		}
+	}
+	if cfg.JournalContext == nil {
+		cfg.JournalContext = dispatchContext
 	}
 	return &ModelClient{
-		instance:     inst,
-		sess:         sess,
-		apiFn:        apiFn,
-		memStore:     memStore,
-		tools:        tools,
-		ensure:       ensure,
-		contextLenFn: contextLenFn,
-		pacer:        pacer,
-		baseContext:  baseContext,
-		hist:         newHistory(),
-		retry:        defaultRetryPolicy(),
-		redispatch:   make(chan *turnBatch),
+		instance:        cfg.Instance,
+		attachment:      cfg.Attachment,
+		sess:            cfg.Session,
+		apiFn:           cfg.APIClient,
+		memStore:        cfg.Memory,
+		tools:           cfg.Tools,
+		ensure:          cfg.EnsureModel,
+		contextLenFn:    cfg.ContextLen,
+		pacer:           cfg.Pacer,
+		journal:         cfg.Journal,
+		dispatchContext: dispatchContext,
+		journalQueue:    newJournalQueue(cfg.JournalContext),
+		hist:            newHistory(),
+		retry:           defaultRetryPolicy(),
+		redispatch:      make(chan *turnBatch),
 	}
 }
 
@@ -197,9 +228,6 @@ func New(
 // existed.
 func noContextLen(domain.ModelID) int { return 0 }
 
-// Instance returns the canonical actor handle.
-func (mc *ModelClient) Instance() *domain.Instance { return mc.instance }
-
 // Identity reports the client's stable id, equal to the instance's
 // id by construction.
 func (mc *ModelClient) Identity() protocol.ClientID {
@@ -207,47 +235,46 @@ func (mc *ModelClient) Identity() protocol.ClientID {
 }
 
 // Send routes `cmd` through the session's dispatcher with this
-// client as the issuing actor and files the dispatcher's synchronous
-// reply events into the model's local memory:
-//
-//   - [domain.Message] events go to the rolling buffer for the window
-//     [domain.Message.RoutingKey] places them in, which is the same
-//     buffer the incoming half of a DM lands in; the
-//     originator-suppression rule (RFC 2812 §3.3.1) keeps them off
-//     the bus, so this is the only path that feeds the model its own
-//     chat traffic.
-//   - the model's own point-to-point replies ([domain.Whois],
-//     [domain.ListReply], and the [domain.SystemNotice] a refused
-//     INVITE answers with) go to the private replies ring. These are
-//     exactly the [domain.IssuerReply] events the dispatcher persists
-//     to the instance-reply log, so the local ring stays in step with
-//     the log it loads at attach: a model meets its own refusal on
-//     the turn that caused it, not only after a reattach. The wire-
-//     terminator [domain.ListEnd] carries no transcript line and the
-//     dispatcher does not persist it, so it is not filed.
+// client as the issuing actor. It files the model's synchronous
+// point-to-point replies ([domain.Whois], [domain.ListReply],
+// [domain.TopicInfo], and the [domain.SystemNotice] a refused INVITE
+// answers with) in the private replies ring. These are exactly the
+// [domain.IssuerReply] events the dispatcher persists to the
+// instance-reply log. The local ring stays in step with the log it
+// loads at attach. A model therefore meets its own refusal during the
+// turn that caused it and after a reattach. The wire terminator
+// [domain.ListEnd] carries no transcript line and the dispatcher does
+// not persist it, so it is not filed.
 func (mc *ModelClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
 	resp, err := mc.sess.Handle(ctx, mc, cmd)
-	if err != nil || resp.Err != nil {
+	if err != nil {
 		return resp, err
 	}
 
-	selfID := mc.instance.ID()
-
 	for _, evt := range resp.Events {
 		switch e := evt.(type) {
-		case domain.Message:
-			key, ok := e.RoutingKey(selfID)
-			if !ok {
-				continue
-			}
-
-			mc.hist.append(ctx, mc.sess, selfID, domain.StoredEvent{Event: e}, key)
-		case domain.Whois, domain.ListReply, domain.SystemNotice:
-			mc.hist.appendReply(domain.StoredEvent{Event: e.(domain.PersistableEvent)})
+		case domain.Whois, domain.ListReply, domain.TopicInfo, domain.Inviting, domain.SystemNotice:
+			mc.hist.appendReply(protocol.CommandWindow(cmd), domain.StoredEvent{Event: e.(domain.PersistableEvent)})
 		}
 	}
 
 	return resp, nil
+}
+
+// nick returns the nick the server currently holds for this client.
+// A NICK rename is server state, and the subscription is where the
+// client reads it back. A released client has no subscription left
+// to ask and answers with the nick it attached under.
+func (mc *ModelClient) nick() domain.Nick {
+	mc.mu.Lock()
+	sub := mc.sub
+	mc.mu.Unlock()
+
+	if sub == nil {
+		return mc.instance.Nick()
+	}
+
+	return sub.Nick()
 }
 
 // Events returns the per-subscription delivery stream, or nil if
@@ -277,13 +304,17 @@ func (mc *ModelClient) Caps() command.CapabilityHolder {
 // connection has already ended. A released client is spent: QUIT and
 // KILL end a client for good, and the instance behind it is deleted,
 // so a fresh connection means a fresh `ModelClient`.
-var ErrReleased = errors.New("modelclient: client has been released")
+var ErrReleased = fmt.Errorf(
+	"modelclient: client has been released: %w",
+	protocol.ErrSubscriptionClosed,
+)
 
 // Attach registers the client with its session, loads its local
 // memory (the join-scoped per-channel transcript and its own private
 // replies) from the persisted logs, and starts the dispatch
-// goroutine. Returns the registration error from [Session.Subscribe];
-// the client remains inert on failure.
+// goroutine. Returns the registration error from [Session.Subscribe],
+// a history-load error, or [ErrReleased] if teardown wins while
+// history is loading. The client remains inert on failure.
 //
 // Attach is idempotent: a repeat call on an already-attached
 // client returns nil. It returns [ErrReleased] once the client's
@@ -301,16 +332,20 @@ func (mc *ModelClient) Attach(ctx context.Context) error {
 		return nil
 	}
 
-	sub, err := mc.sess.Subscribe(mc, protocol.SubscribeOptions{Instance: mc.instance})
+	sub, err := mc.sess.Subscribe(ctx, mc, protocol.SubscribeOptions{
+		Attachment:    mc.attachment,
+		ReplayHistory: true,
+	})
 	if err != nil {
 		mc.mu.Unlock()
 		return fmt.Errorf("attach model client %q: %w", mc.instance.ID(), err)
 	}
 
-	loopCtx, cancel := context.WithCancel(mc.baseContext())
+	loopCtx, cancel := context.WithCancel(mc.dispatchContext)
 
 	mc.sub = sub
 	mc.cancel = cancel
+	mc.hist.bind(sub)
 
 	// The dispatch goroutine joins the wait group before the lock is
 	// released, so a `Release` landing during the history load below
@@ -326,7 +361,11 @@ func (mc *ModelClient) Attach(ctx context.Context) error {
 	// the way out, where leaving it parked would hang every later
 	// `Wait`, shutdown's included.
 	loaded := make(chan struct{})
-	defer close(loaded)
+	var loadGate sync.Once
+	finishLoad := func() {
+		loadGate.Do(func() { close(loaded) })
+	}
+	defer finishLoad()
 
 	mc.wg.Go(func() {
 		<-loaded
@@ -336,7 +375,29 @@ func (mc *ModelClient) Attach(ctx context.Context) error {
 
 	mc.mu.Unlock()
 
-	mc.loadHistory(ctx)
+	historyErr := mc.loadHistory(ctx, sub)
+
+	mc.mu.Lock()
+	if mc.released || mc.sub != sub {
+		mc.mu.Unlock()
+		return fmt.Errorf("attach model client %q: %w", mc.instance.ID(), ErrReleased)
+	}
+	if historyErr != nil {
+		mc.sub = nil
+		mc.cancel = nil
+		mc.released = true
+		mc.mu.Unlock()
+
+		cancel()
+		sub.Unsubscribe()
+		finishLoad()
+		mc.Wait()
+
+		return fmt.Errorf("attach model client %q: load history: %w", mc.instance.ID(), historyErr)
+	}
+
+	sub.Activate()
+	mc.mu.Unlock()
 
 	mc.mu.Lock()
 	released := mc.released
@@ -358,11 +419,16 @@ func (mc *ModelClient) Release() {
 	mc.mu.Lock()
 	sub := mc.sub
 	cancel := mc.cancel
+	turn := mc.activeTurn
 	mc.sub = nil
 	mc.cancel = nil
+	mc.activeTurn = nil
 	mc.released = true
 	mc.mu.Unlock()
 
+	if turn != nil {
+		turn.cancel()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -372,12 +438,46 @@ func (mc *ModelClient) Release() {
 	}
 }
 
-// Wait blocks until the dispatch goroutine has exited. Call it only
-// from a goroutine that owns the client's lifetime — shutdown, or a
-// test's cleanup. Calling it from the dispatch goroutine would be
+// InterruptTurn cancels the current upstream turn without ending the
+// dispatch loop. Connection teardown uses it after revoking command
+// authority so the loop can resume consuming its accepted terminal
+// delivery prefix before [ModelClient.Release] closes the subscription.
+func (mc *ModelClient) InterruptTurn() {
+	mc.mu.Lock()
+	turn := mc.activeTurn
+	mc.mu.Unlock()
+
+	if turn != nil {
+		turn.cancel()
+	}
+}
+
+// InterruptWindow cancels an upstream turn only when it belongs to
+// `window`. The dispatch loop remains attached and can continue with
+// traffic from the model's other windows.
+func (mc *ModelClient) InterruptWindow(window domain.ChannelName) {
+	mc.mu.Lock()
+	turn := mc.activeTurn
+	mc.mu.Unlock()
+
+	if turn != nil && turn.window == window {
+		turn.cancel()
+	}
+}
+
+// Wait blocks until the dispatch goroutine has exited and every
+// journal entry that goroutine produced has been written. Call it
+// only from a goroutine that owns the client's lifetime: shutdown, or
+// a test's cleanup. Calling it from the dispatch goroutine would be
 // that goroutine waiting on itself.
+//
+// The dispatch goroutine is the journal queue's only producer, which
+// is why the queue is closed after that goroutine is joined and not
+// by [ModelClient.Release]: a turn unwinding after its release still
+// records how it ended.
 func (mc *ModelClient) Wait() {
 	mc.wg.Wait()
+	mc.journalQueue.stop()
 }
 
 // Detach releases the connection and joins the dispatch goroutine.
@@ -391,62 +491,49 @@ func (mc *ModelClient) Detach() {
 // loadHistory loads both of the model's local memories at attach: the
 // per-channel shared transcript and the model's own private replies.
 //
-// Each channel buffer is join-scoped: only events at or after the
-// instance's recorded join time are kept, and a channel with a
-// zero/unknown join time loads nothing. Reaction to history is
-// avoided purely by order of operations — this load runs before the
-// dispatch loop starts, so loaded events are never delivered as
-// triggers. DM targets are not loaded here; they lazy-seed in
-// [history.append] on first event arrival.
-func (mc *ModelClient) loadHistory(ctx context.Context) {
-	logger := slog.Default()
-
+// Each channel buffer comes from the actor-bound subscription. The
+// session checks current membership and starts the result at the
+// latest matching JOIN row. Reaction to history is avoided purely by
+// order of operations: this load runs before the dispatch loop starts,
+// so loaded events are never delivered as triggers. DM targets are not
+// loaded here; they lazy-seed in [history.snapshot] on the first turn.
+func (mc *ModelClient) loadHistory(ctx context.Context, sub protocol.Subscription) error {
 	if channels := mc.instance.Channels(); channels != nil {
 		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-			ch, joinedAt := pair.Key, pair.Value
-			if joinedAt.IsZero() {
-				continue
-			}
+			ch := pair.Key
 
-			// The channel log records activity in arrival order, so
-			// this single bounded read returns the n most-recent
-			// rows. Command replies route to the per-instance reply
-			// log and notices render transiently, so the rows kept at
-			// or after the join time are the model's join-scoped view.
-			seed, err := mc.sess.EventsBefore(ctx, ch, nil, modelHistorySize)
+			seed, err := sub.Scrollback(ctx, protocol.ChannelWindowTarget(ch), modelHistorySize)
 			if err != nil {
-				logger.ErrorContext(ctx, "load model channel history",
-					"component", "modelclient",
-					"instance_id", mc.instance.ID(),
-					"channel", ch,
-					"error", err,
-				)
-				continue
+				return fmt.Errorf("load channel %q scrollback: %w", ch, err)
 			}
 
-			kept := seed[:0:0]
-			for _, se := range seed {
-				if domain.EventTime(se.Event).Before(joinedAt) {
-					continue
-				}
-				kept = append(kept, se)
+			replies, err := sub.Replies(ctx, protocol.ChannelWindowTarget(ch), modelHistorySize)
+			if err != nil {
+				return fmt.Errorf("load channel %q replies: %w", ch, err)
 			}
 
-			mc.hist.seedChannel(ch, kept)
+			mc.hist.seedChannel(ch, storedScrollback(seed))
+			mc.hist.seedReplies(protocol.ChannelWindowTarget(ch), replies)
 		}
 	}
 
-	replies, err := mc.sess.InstanceRepliesBefore(ctx, mc.instance.ID(), nil, modelHistorySize)
+	replies, err := sub.Replies(ctx, nil, modelHistorySize)
 	if err != nil {
-		logger.ErrorContext(ctx, "load model replies",
-			"component", "modelclient",
-			"instance_id", mc.instance.ID(),
-			"error", err,
-		)
-		return
+		return fmt.Errorf("load model replies: %w", err)
 	}
 
-	mc.hist.seedReplies(replies)
+	mc.hist.seedReplies(nil, replies)
+
+	return nil
+}
+
+func storedScrollback(entries []protocol.ScrollbackEntry) []domain.StoredEvent {
+	stored := make([]domain.StoredEvent, 0, len(entries))
+	for _, entry := range entries {
+		stored = append(stored, domain.StoredEvent{Event: entry.Event})
+	}
+
+	return stored
 }
 
 // inSpan brackets fn with a span and result-recording on the

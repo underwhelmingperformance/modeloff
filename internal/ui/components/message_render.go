@@ -50,13 +50,16 @@ func renderChannelEvent[C command.KindProvider](
 		return wrap.Render(theme.SystemEvent.Render("*** " + channelModeChangeText(e)))
 	case domain.Invited:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s invited %s to %s", e.By, e.Nick, e.Target)))
+			fmt.Sprintf("*** %s invited %s to %s", e.Source.Nick(), e.Invitee, e.Target)))
+	case domain.Inviting:
+		return wrap.Render(theme.SystemEvent.Render(
+			fmt.Sprintf("*** Invited %s to %s", e.Invitee, e.Target)))
 	case domain.Kicked:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s was kicked from %s by %s", e.Nick, e.Target, e.By)))
+			fmt.Sprintf("*** %s was kicked from %s by %s", e.Subject, e.Target, e.Source.Nick())))
 	case domain.NickChange:
 		return wrap.Render(theme.SystemEvent.Render(
-			fmt.Sprintf("*** %s is now known as %s", e.OldNick, e.NewNick)))
+			fmt.Sprintf("*** %s is now known as %s", e.Source.Nick(), e.NewNick)))
 	case domain.TopicInfo:
 		return wrap.Render(theme.SystemEvent.Render("*** " + topicInfoText(e, timestampFormat, locale)))
 	case domain.Help:
@@ -91,13 +94,13 @@ func renderChannelEvent[C command.KindProvider](
 // mention on their own words.
 func renderMessage(e domain.Message, highlightWords []string, userNick domain.Nick, timestampFormat *string, locale language.Tag) string {
 	ts := timestampPrefixText(e.At, timestampFormat, locale)
-	highlighted := e.InstanceID != "" && ContainsHighlightWord(e.Body, highlightWords, userNick)
+	highlighted := !e.AuthoredBy("") && ContainsHighlightWord(e.Body, highlightWords, userNick)
 	body := renderIRCBody(e.Body)
 	style := nickStyleFor(e)
 
-	nickText := fmt.Sprintf("<%s>", string(e.From))
+	nickText := fmt.Sprintf("<%s>", string(e.Source.Nick()))
 	if e.Action {
-		nickText = string(e.From)
+		nickText = string(e.Source.Nick())
 	}
 
 	if highlighted {
@@ -147,22 +150,23 @@ var anonymousNickStyle = theme.Dim.Bold(true)
 // event keeps the real origin for audit; the renderer must not seed
 // the colour hash from it once the line is masked.
 func nickStyleFor(e domain.Message) lipgloss.Style {
-	if e.From == domain.AnonymousNick {
+	if e.Source.Kind() == domain.SourceAnonymous {
 		return anonymousNickStyle
 	}
 
-	return theme.NickStyle(string(e.InstanceID))
+	id, _ := e.Source.InstanceID()
+	return theme.NickStyle(string(id))
 }
 
 func joinText(e domain.Join) string {
 	if e.Created {
 		return fmt.Sprintf("Created channel %s", e.Target)
 	}
-	return fmt.Sprintf("%s has joined %s", e.Nick, e.Target)
+	return fmt.Sprintf("%s has joined %s", e.Source.Nick(), e.Target)
 }
 
 func partText(e domain.Part) string {
-	text := fmt.Sprintf("%s has left %s", e.Nick, e.Target)
+	text := fmt.Sprintf("%s has left %s", e.Source.Nick(), e.Target)
 	if e.Message != "" {
 		text += fmt.Sprintf(" (%s)", e.Message)
 	}
@@ -170,7 +174,7 @@ func partText(e domain.Part) string {
 }
 
 func quitText(e domain.Quit) string {
-	text := fmt.Sprintf("%s has quit", e.Nick)
+	text := fmt.Sprintf("%s has quit", e.Source.Nick())
 	if e.Message != "" {
 		text += fmt.Sprintf(" (%s)", e.Message)
 	}
@@ -179,16 +183,16 @@ func quitText(e domain.Quit) string {
 
 func topicChangeText(e domain.TopicChange) string {
 	if e.Topic == "" {
-		return fmt.Sprintf("topic for %s cleared by %s", e.Target, e.By)
+		return fmt.Sprintf("topic for %s cleared by %s", e.Target, e.Source.Nick())
 	}
-	if e.By != "" {
-		return fmt.Sprintf("topic for %s set by %s: %s", e.Target, e.By, e.Topic)
+	if e.Source.Kind() != domain.SourceInvalid {
+		return fmt.Sprintf("topic for %s set by %s: %s", e.Target, e.Source.Nick(), e.Topic)
 	}
 	return fmt.Sprintf("topic for %s set to: %s", e.Target, e.Topic)
 }
 
 func channelModeChangeText(e domain.ChannelModeChange) string {
-	issuer := string(e.By)
+	issuer := string(e.Source.Nick())
 	if e.ServerIssued() {
 		issuer = "server"
 	}
@@ -210,7 +214,7 @@ func channelModeChangeOperand(e domain.ChannelModeChange) string {
 	if e.Param != "" {
 		return e.Param
 	}
-	return string(e.Nick)
+	return string(e.Subject)
 }
 
 func topicInfoText(e domain.TopicInfo, timestampFormat *string, locale language.Tag) string {

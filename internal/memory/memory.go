@@ -50,6 +50,23 @@ type Store interface {
 	Reset(ctx context.Context) error
 }
 
+// PreparedMutation is a memory mutation whose slow preparation has
+// already finished. Commit changes the source-of-truth backing store.
+// Finish updates derived index state after the authorised commit. The
+// implementation logs index failures because the index is best-effort.
+type PreparedMutation interface {
+	Commit(ctx context.Context) error
+	Finish(ctx context.Context)
+}
+
+// MutationPreparer separates slow work from the source-of-truth commit.
+// Indexed stores use write preparation for embedding calls and Finish for
+// best-effort derived index maintenance.
+type MutationPreparer interface {
+	PrepareWrite(ctx context.Context, id domain.InstanceID, entry Entry) (PreparedMutation, error)
+	PrepareDelete(ctx context.Context, id domain.InstanceID, key string) (PreparedMutation, error)
+}
+
 // Searcher is an optional interface that a Store can implement to
 // provide semantic search over memories. Search is structurally
 // present on any type that implements it regardless of whether its

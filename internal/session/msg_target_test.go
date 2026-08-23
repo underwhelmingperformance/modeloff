@@ -95,13 +95,9 @@ func TestSession_PrivMsg_resolves_its_target(t *testing.T) {
 			}
 
 			require.NoError(t, resp.Err)
-			require.Equal(t, []protocol.Event{domain.Message{
-				Target:     tc.want,
-				From:       userNick(t, sess),
-				InstanceID: "",
-				Body:       "hello",
-				At:         fixedTime,
-			}}, resp.Events)
+			require.Equal(t, []protocol.Event{domain.Message{Source: domain.ClientSource(
+
+				"", userNick(t, sess)), Target: tc.want, Body: "hello", At: fixedTime}}, resp.Events)
 		})
 	}
 }
@@ -115,7 +111,7 @@ func TestSession_PrivMsg_to_an_unresolvable_nick_logs_nothing(t *testing.T) {
 
 	botty := seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 
-	client := sess.LookupClient(protocol.ClientID(botty.ID()))
+	client := sess.clientOwner(protocol.ClientID(botty.ID()))
 	require.NotNil(t, client)
 
 	resp, err := client.Send(ctx, protocol.PrivMsg{

@@ -72,7 +72,7 @@ func TestSession_flood_penalty_paces_a_burst(t *testing.T) {
 			6 * time.Second,
 		}, offsets)
 
-		events, err := sess.EventsBefore(ctx, "#busy", nil, 100)
+		events, err := sess.store.EventsBefore(ctx, "#busy", nil, 100)
 		require.NoError(t, err)
 
 		var bodies []string
@@ -350,7 +350,7 @@ func TestSession_throttle_notice_is_not_persisted(t *testing.T) {
 
 		require.Equal(t, []domain.Event{throttleNotice()}, floodNotices(t, client))
 
-		replies, err := sess.InstanceRepliesBefore(ctx, talker.ID(), nil, 100)
+		replies, err := s.InstanceRepliesBefore(ctx, talker.ID(), nil, 100)
 		require.NoError(t, err)
 		require.Empty(t, replies)
 	})

@@ -14,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/testclient"
 	uipkg "github.com/laney/modeloff/internal/ui"
@@ -25,6 +26,31 @@ import (
 type stubAPI struct{}
 
 func (stubAPI) ListModels(context.Context) ([]api.ModelInfo, error) { return nil, nil }
+
+func (stubAPI) RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt api.SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	return api.RenderEventRequest(
+		modelID, selfInstanceID, systemPrompt, history, events, tools...,
+	)
+}
+
+func (stubAPI) RenderToolResultRequest(
+	conv *api.Conversation,
+	results []api.ToolResult,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	if conv == nil {
+		return api.RenderedEventRequest{}, nil
+	}
+
+	return api.RenderToolResultRequest(conv, results, tools...)
+}
 
 func (stubAPI) SendEvents(
 	context.Context,
@@ -58,9 +84,19 @@ func (stubAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.Perso
 func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager, *userclient.UserClient) {
 	t.Helper()
 
+	sess, mgr, user, _ := newTestSessionWithStore(t)
+	return sess, mgr, user
+}
+
+func newTestSessionWithStore(
+	t *testing.T,
+) (*session.Session, *modelmanager.Manager, *userclient.UserClient, *store.SQLiteStore) {
+	t.Helper()
+
 	s := storetest.NewMemoryStore(t)
 	apiClient := stubAPI{}
-	return uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	return sess, mgr, user, s
 }
 
 // newScreenFixture returns a ChatScreen built over a fresh
@@ -259,9 +295,9 @@ func TestChatScreen_second_quit_request_escalates_to_tea_quit(t *testing.T) {
 // joining it, so it exists in the directory without the user ever
 // being a member.
 func TestChatScreen_join_completion_offers_unjoined_directory_channel(t *testing.T) {
-	sess, mgr, user := newTestSession(t)
+	sess, mgr, user, eventStore := newTestSessionWithStore(t)
 
-	bot := testclient.New("bot", sess)
+	bot := testclient.NewStored("bot", sess, eventStore)
 	require.NoError(t, bot.Attach(t.Context()))
 	t.Cleanup(bot.Detach)
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 const schema = `
@@ -312,7 +313,7 @@ func (s *SQLiteStore) Close() error {
 // channelRow is the on-disk JSON shape of a row in the `channels`
 // table. It is a persistence detail of the SQLite store and never
 // leaves the package: callers receive the typed concrete
-// `*StatusWindow` / `*ChannelWindow` / `*DMWindow` constructed from
+// `*StatusWindow` or `*ChannelWindow` constructed from
 // the row by `rowToWindow`. Per-kind state that doesn't apply to a
 // given row is left zero (a status row carries no members or
 // topic; a DM row's member list is empty and `Name` is the
@@ -336,10 +337,9 @@ type channelRow struct {
 	Created     time.Time
 }
 
-// resolveChannelMembers rewrites the stub `*Instance` handles in
-// the row's member list (set by MemberList.UnmarshalJSON) to
-// canonical pointers from the registry, loading any missing
-// instances from SQLite in a single batch. Member rows that refer
+// resolveChannelMembers checks the identities in a channel member
+// list against the instance registry, loading any missing instances
+// from SQLite in a single batch. Member rows that refer
 // to an instance with no backing row are dropped from the list and
 // logged — a leftover from a previous session where the instance
 // was deleted but the channel's membership record still carried
@@ -350,14 +350,14 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, row *channelRow
 		return nil
 	}
 
-	// Gather the ids carried by stubs that aren't already in the
-	// registry. Every client has an instances row, so the empty id
+	// Gather ids that are not already in the registry. Every client
+	// has an instances row, so the empty id
 	// the user-client registers under is looked up like any other.
 	var missing []domain.InstanceID
 	seen := make(map[domain.InstanceID]struct{})
 
 	for m := range row.Members.All() {
-		id := m.Instance.ID()
+		id := m.InstanceID
 
 		if _, ok := seen[id]; ok {
 			continue
@@ -378,17 +378,17 @@ func (s *SQLiteStore) resolveChannelMembers(ctx context.Context, row *channelRow
 		}
 	}
 
-	// Rewrite stubs; any id that still resolves to nil references a
-	// deleted instance and is dropped.
+	// Any id that still resolves to nil references a deleted instance
+	// and is dropped.
 	dropped := make([]domain.InstanceID, 0)
-	row.Members.ResolveInstances(func(id domain.InstanceID) *domain.Instance {
-		canonical := s.resolveInstance(id)
-		if canonical == nil {
-			dropped = append(dropped, id)
+	for member := range row.Members.All() {
+		if s.resolveInstance(member.InstanceID) == nil {
+			dropped = append(dropped, member.InstanceID)
 		}
-
-		return canonical
-	})
+	}
+	for _, id := range dropped {
+		row.Members.RemoveID(id)
+	}
 
 	if len(dropped) > 0 {
 		slog.Default().WarnContext(ctx,
@@ -437,31 +437,10 @@ func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.Instan
 	return nil
 }
 
-// resolveDMCounterpart resolves a DM window's stored
-// `InstanceID` to the canonical `*Instance` handle through the
-// store's registry, so pointer comparison against handles held
-// by other paths stays valid. Returns nil for unknown ids;
-// `rowToWindow` promotes nil into a typed error so the caller
-// can drop the row and log.
-func (s *SQLiteStore) resolveDMCounterpart(ctx context.Context, id domain.InstanceID) *domain.Instance {
-	if cached := s.resolveInstance(id); cached != nil {
-		return cached
-	}
-
-	inst, err := s.GetInstanceByID(ctx, id)
-	if err != nil {
-		return nil
-	}
-
-	return inst
-}
-
 // rowToWindow projects a decoded on-disk row to its matching
-// concrete `Window`. DMs resolve their counterpart `*Instance`
-// through the registry; an unresolved counterpart returns
-// `domain.MissingDMCounterpartError` so the caller can drop the
-// row and log.
-func (s *SQLiteStore) rowToWindow(ctx context.Context, row channelRow) (domain.Window, error) {
+// concrete [domain.Window]. Legacy DM rows are ignored because
+// direct-message windows are client-owned UI state.
+func (s *SQLiteStore) rowToWindow(row channelRow) (domain.Window, error) {
 	switch row.Kind {
 	case domain.KindStatus:
 		return domain.NewStatusWindow(row.Created), nil
@@ -477,13 +456,7 @@ func (s *SQLiteStore) rowToWindow(ctx context.Context, row channelRow) (domain.W
 		return cw, nil
 
 	case domain.KindDM:
-		counterpart := s.resolveDMCounterpart(ctx, domain.InstanceID(row.Name))
-		if counterpart == nil {
-			return nil, domain.MissingDMCounterpartError{InstanceID: domain.InstanceID(row.Name)}
-		}
-
-		dm := domain.NewDMWindow(counterpart, row.Created)
-		return dm, nil
+		return nil, domain.MissingDMCounterpartError{InstanceID: domain.InstanceID(row.Name)}
 
 	default:
 		return nil, domain.UnknownChannelKindError{Kind: row.Kind}
@@ -514,9 +487,9 @@ func rowFromWindow(w domain.Window) channelRow {
 }
 
 // ListWindows implements Store. The returned slice carries one
-// concrete `Window` per row in `channels`. Rows whose DM
-// counterpart no longer resolves are dropped from the result and
-// logged.
+// concrete `Window` per channel or status row in `channels`. Legacy
+// DM rows are dropped and logged because direct-message windows are
+// client-owned UI state.
 func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) {
 	var windows []domain.Window
 	err := s.inSpan(ctx, "store.sqlite.list_windows", nil, func(ctx context.Context, _ trace.Span) error {
@@ -534,7 +507,7 @@ func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) 
 				return err
 			}
 
-			w, err := s.rowToWindow(ctx, rows[i])
+			w, err := s.rowToWindow(rows[i])
 			if err != nil {
 				// `MissingDMCounterpartError` is the expected race
 				// (instance row deleted before the DM row); log as
@@ -566,11 +539,11 @@ func (s *SQLiteStore) ListWindows(ctx context.Context) ([]domain.Window, error) 
 	return windows, err
 }
 
-// GetWindow implements Store. Returns the typed concrete `Window`
-// for the given name. DMs come back with their `Counterpart`
-// resolved through the canonical registry; a missing counterpart
-// surfaces as an error so the caller can decide whether to recover
-// or surface to the user.
+// GetWindow implements Store. It returns the concrete channel or
+// status window for the given name. A DM row returns
+// [domain.MissingDMCounterpartError], because direct-message windows
+// are client state and [SQLiteStore.SaveWindow] refuses to persist
+// one.
 //
 // The name is matched under NOCASE, which folds `A`-`Z` onto `a`-`z`
 // and nothing else, the same fold [domain.KeyForChannel] applies, so
@@ -599,7 +572,7 @@ func (s *SQLiteStore) GetWindow(ctx context.Context, name domain.ChannelName) (d
 				return err
 			}
 
-			w, err = s.rowToWindow(ctx, row)
+			w, err = s.rowToWindow(row)
 			return err
 		})
 
@@ -628,6 +601,176 @@ func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
 		})
 }
 
+// ChannelJoin is the durable state transition for one successful JOIN.
+// Scrollback contains each replay-capable recipient's projected JOIN.
+// ResetContext removes data from an earlier membership interval. An invited
+// turn remains valid across the JOIN that consumes its invitation.
+type ChannelJoin struct {
+	Window        *domain.ChannelWindow
+	Instance      *domain.Instance
+	Event         domain.Join
+	Scrollback    []ChannelScrollbackRecord
+	ResetContext  bool
+	PreserveTurns bool
+}
+
+type channelJoinData struct {
+	window   []byte
+	instance []byte
+	event    []byte
+}
+
+// CommitChannelJoin writes both sides of a channel membership, its JOIN event,
+// each recipient projection and any actor-context reset in one transaction. A
+// failed transaction leaves the earlier membership interval unchanged.
+func (s *SQLiteStore) CommitChannelJoin(
+	ctx context.Context,
+	join ChannelJoin,
+) (CommittedChannelEvent, error) {
+	var committed CommittedChannelEvent
+	err := s.inSpan(ctx, "store.sqlite.commit_channel_join",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrChannel, string(join.Window.Name())),
+			attribute.String(observability.AttrInstanceID, string(join.Instance.ID())),
+		}, func(ctx context.Context, _ trace.Span) error {
+			data, err := marshalChannelJoin(join)
+			if err != nil {
+				return err
+			}
+			scrollbackData, err := encodeChannelScrollback(join.Scrollback)
+			if err != nil {
+				return err
+			}
+
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			if err := resetChannelJoinContext(ctx, tx, join); err != nil {
+				return err
+			}
+
+			committed.EventID, err = writeChannelJoin(ctx, tx, join, data)
+			if err != nil {
+				return err
+			}
+			committed.ScrollbackIDs, err = appendChannelScrollbackTx(
+				ctx, tx, join.Scrollback, scrollbackData,
+			)
+			if err != nil {
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+
+			return nil
+		})
+	if err != nil {
+		return CommittedChannelEvent{}, err
+	}
+
+	s.instancesMu.Lock()
+	if _, ok := s.instances[join.Instance.ID()]; !ok {
+		s.instances[join.Instance.ID()] = join.Instance
+	}
+	s.instancesMu.Unlock()
+
+	return committed, nil
+}
+
+func marshalChannelJoin(join ChannelJoin) (channelJoinData, error) {
+	window, err := json.Marshal(rowFromWindow(join.Window))
+	if err != nil {
+		return channelJoinData{}, fmt.Errorf("marshal channel: %w", err)
+	}
+
+	instance, err := json.Marshal(join.Instance)
+	if err != nil {
+		return channelJoinData{}, fmt.Errorf("marshal instance: %w", err)
+	}
+
+	event, err := domain.MarshalPersistableEvent(join.Event)
+	if err != nil {
+		return channelJoinData{}, fmt.Errorf("marshal join event: %w", err)
+	}
+
+	return channelJoinData{window: window, instance: instance, event: event}, nil
+}
+
+func resetChannelJoinContext(ctx context.Context, tx *sql.Tx, join ChannelJoin) error {
+	if !join.ResetContext {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM channel_scrollback WHERE instance_id = ? AND channel = ?`,
+		join.Instance.ID(), join.Window.Name()); err != nil {
+		return fmt.Errorf("reset channel scrollback: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM instance_replies
+		WHERE instance_id = ? AND window_kind = 1 AND window_key = ?
+	`, join.Instance.ID(), join.Window.Name()); err != nil {
+		return fmt.Errorf("reset channel replies: %w", err)
+	}
+
+	if join.PreserveTurns {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM model_turns
+		WHERE instance_id = ? AND window_kind = 1 AND window_key = ?
+	`, join.Instance.ID(), join.Window.Name()); err != nil {
+		return fmt.Errorf("reset model turns: %w", err)
+	}
+
+	return nil
+}
+
+func writeChannelJoin(
+	ctx context.Context,
+	tx *sql.Tx,
+	join ChannelJoin,
+	data channelJoinData,
+) (int64, error) {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO channels (name, data) VALUES (?, ?)
+		 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
+		join.Window.Name(), string(data.window)); err != nil {
+		return 0, fmt.Errorf("save channel: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
+		 ON CONFLICT (instance_id) DO UPDATE SET
+		     nick = excluded.nick,
+		     data = excluded.data`,
+		string(join.Instance.ID()), string(join.Instance.Nick()), string(data.instance)); err != nil {
+		return 0, fmt.Errorf("save instance: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+		join.Window.Name(), domain.EventType(join.Event), string(data.event),
+		domain.EventTime(join.Event).Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("append join event: %w", err)
+	}
+
+	eventID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("read join event id: %w", err)
+	}
+
+	return eventID, nil
+}
+
 // DeleteWindow implements Store. The name is matched under NOCASE,
 // the collation [SQLiteStore.GetWindow] reads with, so destroying a
 // channel destroys every spelling of it.
@@ -644,13 +787,31 @@ func (s *SQLiteStore) SaveWindow(ctx context.Context, w domain.Window) error {
 // The shadow's `events` rows outlive it, because the event log is
 // keyed by channel name under BINARY and the session only ever asks
 // for the spelling `ChannelWindow.Name()` gave it. Nothing reads
-// those rows again; what to do with them is a retention question
-// filed with C3.
+// those rows again; retention removes them later. Model-turn rows
+// are actor-visible context, so this operation deletes every turn
+// for the channel in the same transaction as the channel itself.
 func (s *SQLiteStore) DeleteWindow(ctx context.Context, name domain.ChannelName) error {
 	return s.inSpan(ctx, "store.sqlite.delete_window",
 		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(name))},
 		func(ctx context.Context, _ trace.Span) error {
-			return execMutation(ctx, s.db, `DELETE FROM channels WHERE name = ? COLLATE NOCASE`, name)
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM model_turns
+				WHERE window_kind = 1 AND window_key = ? COLLATE NOCASE
+			`, name); err != nil {
+				return fmt.Errorf("delete channel model turns: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM channels WHERE name = ? COLLATE NOCASE`, name); err != nil {
+				return err
+			}
+
+			return tx.Commit()
 		})
 }
 
@@ -672,6 +833,711 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, ev
 		})
 
 	return id, err
+}
+
+// ChannelAuditEvent is one canonical channel event and the channel
+// whose audit log receives it.
+type ChannelAuditEvent struct {
+	Channel domain.ChannelName
+	Event   domain.ChannelActivity
+}
+
+type encodedChannelAuditEvent struct {
+	channel   domain.ChannelName
+	eventType string
+	data      []byte
+	at        time.Time
+}
+
+func encodeChannelAuditEvents(events []ChannelAuditEvent) ([]encodedChannelAuditEvent, error) {
+	encoded := make([]encodedChannelAuditEvent, len(events))
+	for i, event := range events {
+		data, err := domain.MarshalPersistableEvent(event.Event)
+		if err != nil {
+			return nil, fmt.Errorf("marshal audit event for %q: %w", event.Channel, err)
+		}
+
+		encoded[i] = encodedChannelAuditEvent{
+			channel:   event.Channel,
+			eventType: domain.EventType(event.Event),
+			data:      data,
+			at:        domain.EventTime(event.Event),
+		}
+	}
+
+	return encoded, nil
+}
+
+func appendChannelAuditEvents(
+	ctx context.Context,
+	tx *sql.Tx,
+	events []encodedChannelAuditEvent,
+) error {
+	for _, event := range events {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+			event.channel, event.eventType, string(event.data),
+			event.at.Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("append audit event for %q: %w", event.channel, err)
+		}
+	}
+
+	return nil
+}
+
+func canonicaliseChannelAuditEvents(
+	ctx context.Context,
+	tx *sql.Tx,
+	events []ChannelAuditEvent,
+) ([]ChannelAuditEvent, error) {
+	canonical := make([]ChannelAuditEvent, len(events))
+	for i, event := range events {
+		channel := event.Channel
+		err := tx.QueryRowContext(ctx,
+			`SELECT name FROM channels WHERE name = ? COLLATE NOCASE ORDER BY name LIMIT 1`,
+			channel,
+		).Scan(&channel)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("resolve audit channel %q: %w", event.Channel, err)
+		}
+
+		activity := event.Event
+		if part, ok := activity.(domain.Part); ok {
+			part.Target = channel
+			activity = part
+		}
+		canonical[i] = ChannelAuditEvent{Channel: channel, Event: activity}
+	}
+
+	return canonical, nil
+}
+
+// ActorRename is the durable state transition for one NICK command.
+type ActorRename struct {
+	Instance   *domain.Instance
+	Windows    []*domain.ChannelWindow
+	Events     []ChannelAuditEvent
+	Scrollback []ChannelScrollbackRecord
+}
+
+// CommitActorRename writes the renamed instance, every supplied channel
+// member snapshot, all canonical NICK events and every recipient's projected
+// scrollback in one transaction.
+func (s *SQLiteStore) CommitActorRename(
+	ctx context.Context,
+	rename ActorRename,
+) (CommittedActorRename, error) {
+	var committed CommittedActorRename
+	err := s.inSpan(ctx, "store.sqlite.commit_actor_rename",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(rename.Instance.ID())),
+			attribute.String(observability.AttrNick, string(rename.Instance.Nick())),
+		}, func(ctx context.Context, _ trace.Span) error {
+			instanceData, err := json.Marshal(rename.Instance)
+			if err != nil {
+				return fmt.Errorf("marshal instance: %w", err)
+			}
+
+			type encodedWindow struct {
+				name domain.ChannelName
+				data []byte
+			}
+			windows := make([]encodedWindow, len(rename.Windows))
+			for i, window := range rename.Windows {
+				data, err := json.Marshal(rowFromWindow(window))
+				if err != nil {
+					return fmt.Errorf("marshal channel %q: %w", window.Name(), err)
+				}
+				windows[i] = encodedWindow{name: window.Name(), data: data}
+			}
+
+			events, err := encodeChannelAuditEvents(rename.Events)
+			if err != nil {
+				return err
+			}
+			scrollback, err := encodeChannelScrollback(rename.Scrollback)
+			if err != nil {
+				return err
+			}
+
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
+				 ON CONFLICT (instance_id) DO UPDATE SET
+				     nick = excluded.nick,
+				     data = excluded.data`,
+				string(rename.Instance.ID()), string(rename.Instance.Nick()),
+				string(instanceData)); err != nil {
+				return fmt.Errorf("save instance: %w", err)
+			}
+
+			for _, window := range windows {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO channels (name, data) VALUES (?, ?)
+					 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
+					window.name, string(window.data)); err != nil {
+					return fmt.Errorf("save channel %q: %w", window.name, err)
+				}
+			}
+
+			if err := appendChannelAuditEvents(ctx, tx, events); err != nil {
+				return err
+			}
+			committed.ScrollbackIDs, err = appendChannelScrollbackTx(
+				ctx, tx, rename.Scrollback, scrollback,
+			)
+			if err != nil {
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+
+			return nil
+		})
+	if err != nil {
+		return CommittedActorRename{}, err
+	}
+
+	s.instancesMu.Lock()
+	if _, ok := s.instances[rename.Instance.ID()]; !ok {
+		s.instances[rename.Instance.ID()] = rename.Instance
+	}
+	s.instancesMu.Unlock()
+
+	return committed, nil
+}
+
+// CommittedActorRename contains the internal row identifiers for the projected
+// scrollback rows written by [SQLiteStore.CommitActorRename].
+type CommittedActorRename struct {
+	ScrollbackIDs []int64
+}
+
+// ChannelScrollbackRecord is one recipient-specific channel event.
+// Event has already passed through the same visibility projection as
+// the live delivery.
+type ChannelScrollbackRecord struct {
+	InstanceID domain.InstanceID
+	Channel    domain.ChannelName
+	Event      domain.PersistableEvent
+}
+
+// ChannelDeparture is the durable state transition for one PART or KICK.
+type ChannelDeparture struct {
+	Window     *domain.ChannelWindow
+	Instance   *domain.Instance
+	Event      domain.ChannelDepartureEvent
+	Scrollback []ChannelScrollbackRecord
+}
+
+// CommittedChannelEvent identifies the audit event and each projected
+// scrollback row written by one channel transition.
+type CommittedChannelEvent struct {
+	EventID       int64
+	ScrollbackIDs []int64
+}
+
+// ChannelEvent is one canonical channel event and the recipient projections
+// derived from it.
+type ChannelEvent struct {
+	Channel    domain.ChannelName
+	Event      domain.ChannelActivity
+	Scrollback []ChannelScrollbackRecord
+}
+
+// CommitChannelEvent writes a canonical channel event and each projected
+// scrollback row in one transaction.
+func (s *SQLiteStore) CommitChannelEvent(
+	ctx context.Context,
+	event ChannelEvent,
+) (CommittedChannelEvent, error) {
+	var committed CommittedChannelEvent
+	err := s.inSpan(ctx, "store.sqlite.commit_channel_event",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrChannel, string(event.Channel)),
+		}, func(ctx context.Context, _ trace.Span) error {
+			eventData, err := domain.MarshalPersistableEvent(event.Event)
+			if err != nil {
+				return fmt.Errorf("marshal channel event: %w", err)
+			}
+			scrollbackData, err := encodeChannelScrollback(event.Scrollback)
+			if err != nil {
+				return err
+			}
+
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			committed.EventID, err = appendChannelEvent(
+				ctx, tx, event.Channel, event.Event, eventData,
+			)
+			if err != nil {
+				return err
+			}
+			committed.ScrollbackIDs, err = appendChannelScrollbackTx(
+				ctx, tx, event.Scrollback, scrollbackData,
+			)
+			if err != nil {
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+
+			return nil
+		})
+
+	return committed, err
+}
+
+// ChannelUpdate is one channel-state mutation and the event that announces it.
+type ChannelUpdate struct {
+	Window     *domain.ChannelWindow
+	Event      domain.ChannelActivity
+	Scrollback []ChannelScrollbackRecord
+}
+
+// CommitChannelUpdate writes channel state, its audit event and each projected
+// scrollback row in one transaction.
+func (s *SQLiteStore) CommitChannelUpdate(
+	ctx context.Context,
+	update ChannelUpdate,
+) (CommittedChannelEvent, error) {
+	var committed CommittedChannelEvent
+	err := s.inSpan(ctx, "store.sqlite.commit_channel_update",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrChannel, string(update.Window.Name())),
+		}, func(ctx context.Context, _ trace.Span) error {
+			windowData, err := json.Marshal(rowFromWindow(update.Window))
+			if err != nil {
+				return fmt.Errorf("marshal channel: %w", err)
+			}
+			eventData, err := domain.MarshalPersistableEvent(update.Event)
+			if err != nil {
+				return fmt.Errorf("marshal channel event: %w", err)
+			}
+			scrollbackData, err := encodeChannelScrollback(update.Scrollback)
+			if err != nil {
+				return err
+			}
+
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO channels (name, data) VALUES (?, ?)
+				 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
+				update.Window.Name(), string(windowData)); err != nil {
+				return fmt.Errorf("save channel: %w", err)
+			}
+
+			committed.EventID, err = appendChannelEvent(
+				ctx, tx, update.Window.Name(), update.Event, eventData,
+			)
+			if err != nil {
+				return err
+			}
+			committed.ScrollbackIDs, err = appendChannelScrollbackTx(
+				ctx, tx, update.Scrollback, scrollbackData,
+			)
+			if err != nil {
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+
+			return nil
+		})
+
+	return committed, err
+}
+
+type channelDepartureData struct {
+	instance   []byte
+	window     []byte
+	event      []byte
+	scrollback [][]byte
+}
+
+// CommitChannelDeparture writes a departure event, both membership
+// representations, actor-scoped context deletion and the remaining
+// recipients' projected scrollback in one transaction.
+func (s *SQLiteStore) CommitChannelDeparture(
+	ctx context.Context,
+	departure ChannelDeparture,
+) (CommittedChannelEvent, error) {
+	var committed CommittedChannelEvent
+	err := s.inSpan(ctx, "store.sqlite.commit_channel_departure",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrChannel, string(departure.Window.Name())),
+			attribute.String(observability.AttrInstanceID, string(departure.Instance.ID())),
+		}, func(ctx context.Context, _ trace.Span) error {
+			data, err := encodeChannelDeparture(departure)
+			if err != nil {
+				return err
+			}
+
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			committed, err = commitChannelDepartureTx(ctx, tx, departure, data)
+			if err != nil {
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+
+			return nil
+		})
+
+	return committed, err
+}
+
+func encodeChannelDeparture(departure ChannelDeparture) (channelDepartureData, error) {
+	instance, err := json.Marshal(departure.Instance)
+	if err != nil {
+		return channelDepartureData{}, fmt.Errorf("marshal instance: %w", err)
+	}
+
+	event, err := domain.MarshalPersistableEvent(departure.Event)
+	if err != nil {
+		return channelDepartureData{}, fmt.Errorf("marshal departure event: %w", err)
+	}
+
+	var window []byte
+	if departure.Window.Members.Len() > 0 {
+		window, err = json.Marshal(rowFromWindow(departure.Window))
+		if err != nil {
+			return channelDepartureData{}, fmt.Errorf("marshal channel: %w", err)
+		}
+	}
+
+	scrollback := make([][]byte, len(departure.Scrollback))
+	for i, record := range departure.Scrollback {
+		scrollback[i], err = domain.MarshalPersistableEvent(record.Event)
+		if err != nil {
+			return channelDepartureData{}, fmt.Errorf("marshal projected event: %w", err)
+		}
+	}
+
+	return channelDepartureData{
+		instance: instance, window: window, event: event, scrollback: scrollback,
+	}, nil
+}
+
+func commitChannelDepartureTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	departure ChannelDeparture,
+	data channelDepartureData,
+) (CommittedChannelEvent, error) {
+	if err := saveChannelDepartureState(ctx, tx, departure, data); err != nil {
+		return CommittedChannelEvent{}, err
+	}
+
+	eventID, err := appendDepartureEvent(ctx, tx, departure, data.event)
+	if err != nil {
+		return CommittedChannelEvent{}, err
+	}
+	if err := deleteDepartedActorContext(ctx, tx, departure); err != nil {
+		return CommittedChannelEvent{}, err
+	}
+
+	scrollbackIDs, err := appendDepartureScrollback(ctx, tx, departure, data.scrollback)
+	if err != nil {
+		return CommittedChannelEvent{}, err
+	}
+
+	return CommittedChannelEvent{EventID: eventID, ScrollbackIDs: scrollbackIDs}, nil
+}
+
+func saveChannelDepartureState(
+	ctx context.Context,
+	tx *sql.Tx,
+	departure ChannelDeparture,
+	data channelDepartureData,
+) error {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
+		 ON CONFLICT (instance_id) DO UPDATE SET
+		     nick = excluded.nick,
+		     data = excluded.data`,
+		string(departure.Instance.ID()), string(departure.Instance.Nick()),
+		string(data.instance)); err != nil {
+		return fmt.Errorf("save instance: %w", err)
+	}
+
+	if len(data.window) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO channels (name, data) VALUES (?, ?)
+			 ON CONFLICT (name) DO UPDATE SET data = excluded.data`,
+			departure.Window.Name(), string(data.window)); err != nil {
+			return fmt.Errorf("save channel: %w", err)
+		}
+
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM model_turns
+		WHERE window_kind = 1 AND window_key = ? COLLATE NOCASE
+	`, departure.Window.Name()); err != nil {
+		return fmt.Errorf("delete channel model turns: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM channels WHERE name = ? COLLATE NOCASE`,
+		departure.Window.Name()); err != nil {
+		return fmt.Errorf("delete channel: %w", err)
+	}
+
+	return nil
+}
+
+func appendDepartureEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	departure ChannelDeparture,
+	data []byte,
+) (int64, error) {
+	return appendChannelEvent(ctx, tx, departure.Window.Name(), departure.Event, data)
+}
+
+func appendChannelEvent(
+	ctx context.Context,
+	tx *sql.Tx,
+	channel domain.ChannelName,
+	event domain.ChannelActivity,
+	data []byte,
+) (int64, error) {
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+		channel, domain.EventType(event), string(data),
+		domain.EventTime(event).Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("append channel event: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("read channel event id: %w", err)
+	}
+
+	return id, nil
+}
+
+func deleteDepartedActorContext(
+	ctx context.Context,
+	tx *sql.Tx,
+	departure ChannelDeparture,
+) error {
+	windowKind, windowKey := windowColumns(
+		protocol.ChannelWindowTarget(departure.Window.Name()),
+	)
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM channel_scrollback
+		WHERE instance_id = ? AND channel = ?
+	`, departure.Instance.ID(), departure.Window.Name()); err != nil {
+		return fmt.Errorf("delete channel scrollback: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM instance_replies
+		WHERE instance_id = ? AND window_kind = ? AND window_key = ?
+	`, departure.Instance.ID(), windowKind, windowKey); err != nil {
+		return fmt.Errorf("delete channel replies: %w", err)
+	}
+
+	return nil
+}
+
+func appendDepartureScrollback(
+	ctx context.Context,
+	tx *sql.Tx,
+	departure ChannelDeparture,
+	data [][]byte,
+) ([]int64, error) {
+	return appendChannelScrollbackTx(ctx, tx, departure.Scrollback, data)
+}
+
+func encodeChannelScrollback(records []ChannelScrollbackRecord) ([][]byte, error) {
+	data := make([][]byte, len(records))
+	for i, record := range records {
+		encoded, err := domain.MarshalPersistableEvent(record.Event)
+		if err != nil {
+			return nil, fmt.Errorf("marshal projected event: %w", err)
+		}
+		data[i] = encoded
+	}
+
+	return data, nil
+}
+
+func appendChannelScrollbackTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	records []ChannelScrollbackRecord,
+	data [][]byte,
+) ([]int64, error) {
+	ids := make([]int64, 0, len(records))
+	for i, record := range records {
+		result, err := tx.ExecContext(ctx, `
+			INSERT INTO channel_scrollback
+				(instance_id, channel, type, data, at)
+			VALUES (?, ?, ?, ?, ?)
+		`, record.InstanceID, record.Channel, domain.EventType(record.Event),
+			string(data[i]), domain.EventTime(record.Event).Format(time.RFC3339Nano))
+		if err != nil {
+			return nil, fmt.Errorf("append projected event: %w", err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("read projected event id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+
+	return ids, nil
+}
+
+// AppendChannelScrollback records projected channel deliveries in
+// input order and returns their internal row identifiers in the same
+// order.
+func (s *SQLiteStore) AppendChannelScrollback(
+	ctx context.Context,
+	records []ChannelScrollbackRecord,
+) ([]int64, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, 0, len(records))
+	err := s.inSpan(ctx, "store.sqlite.append_channel_scrollback", nil,
+		func(ctx context.Context, _ trace.Span) error {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			for _, record := range records {
+				data, err := domain.MarshalPersistableEvent(record.Event)
+				if err != nil {
+					return fmt.Errorf("marshal event: %w", err)
+				}
+
+				result, err := tx.ExecContext(ctx, `
+					INSERT INTO channel_scrollback
+						(instance_id, channel, type, data, at)
+					VALUES (?, ?, ?, ?, ?)
+				`, record.InstanceID, record.Channel, domain.EventType(record.Event),
+					string(data), domain.EventTime(record.Event).Format(time.RFC3339Nano))
+				if err != nil {
+					return err
+				}
+
+				id, err := result.LastInsertId()
+				if err != nil {
+					return fmt.Errorf("read inserted row id: %w", err)
+				}
+				ids = append(ids, id)
+			}
+
+			return tx.Commit()
+		})
+
+	return ids, err
+}
+
+// ChannelScrollback returns the most recent projected events that
+// the actor received in its current membership interval.
+func (s *SQLiteStore) ChannelScrollback(
+	ctx context.Context,
+	actor domain.InstanceID,
+	ch domain.ChannelName,
+	n int,
+) ([]domain.StoredEvent, error) {
+	return s.ChannelScrollbackBefore(ctx, actor, ch, nil, n)
+}
+
+// ChannelScrollbackBefore returns the most recent projected events
+// strictly before `before`, or the latest events when it is nil.
+func (s *SQLiteStore) ChannelScrollbackBefore(
+	ctx context.Context,
+	actor domain.InstanceID,
+	ch domain.ChannelName,
+	before *int64,
+	n int,
+) ([]domain.StoredEvent, error) {
+	var events []domain.StoredEvent
+	err := s.inSpan(ctx, "store.sqlite.channel_scrollback",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrChannel, string(ch)),
+			attribute.String(observability.AttrInstanceID, string(actor)),
+		},
+		func(ctx context.Context, _ trace.Span) error {
+			query, args := `SELECT id, data FROM (
+				SELECT id, data FROM channel_scrollback
+				WHERE instance_id = ? AND channel = ?
+				ORDER BY id DESC LIMIT ?
+			) ORDER BY id ASC`, []any{actor, ch, n}
+			if before != nil {
+				query, args = `SELECT id, data FROM (
+					SELECT id, data FROM channel_scrollback
+					WHERE instance_id = ? AND channel = ? AND id < ?
+					ORDER BY id DESC LIMIT ?
+				) ORDER BY id ASC`, []any{actor, ch, *before, n}
+			}
+
+			got, err := queryEventRows(ctx, s.db, query, args)
+			if err != nil {
+				return err
+			}
+
+			events = got
+			return nil
+		})
+
+	return events, err
+}
+
+// DeleteChannelScrollback removes every projected event for one
+// actor and channel. PART, KICK and a later JOIN use this operation
+// to make membership intervals disjoint.
+func (s *SQLiteStore) DeleteChannelScrollback(
+	ctx context.Context,
+	actor domain.InstanceID,
+	ch domain.ChannelName,
+) error {
+	return s.inSpan(ctx, "store.sqlite.delete_channel_scrollback",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrChannel, string(ch)),
+			attribute.String(observability.AttrInstanceID, string(actor)),
+		},
+		func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db,
+				`DELETE FROM channel_scrollback WHERE instance_id = ? AND channel = ?`,
+				actor, ch)
+		})
 }
 
 // EventsBefore implements Store. The query takes the last `n`
@@ -712,7 +1578,12 @@ func (s *SQLiteStore) EventsBefore(ctx context.Context, ch domain.ChannelName, b
 // the instance's private reply log. This is the instance's own
 // memory: it replays only into that instance's prompt, never into
 // the shared channel log where other instances would read it.
-func (s *SQLiteStore) AppendInstanceReply(ctx context.Context, id domain.InstanceID, event domain.IssuerReply) (int64, error) {
+func (s *SQLiteStore) AppendInstanceReply(
+	ctx context.Context,
+	id domain.InstanceID,
+	window protocol.WindowTarget,
+	event domain.IssuerReply,
+) (int64, error) {
 	var rowID int64
 	err := s.inSpan(ctx, "store.sqlite.append_instance_reply",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
@@ -722,9 +1593,12 @@ func (s *SQLiteStore) AppendInstanceReply(ctx context.Context, id domain.Instanc
 				return fmt.Errorf("marshal event: %w", err)
 			}
 
+			kind, key := windowColumns(window)
 			rowID, err = execInsert(ctx, s.db,
-				`INSERT INTO instance_replies (instance_id, type, data, at) VALUES (?, ?, ?, ?)`,
-				id, domain.EventType(event), string(data), domain.EventTime(event).Format(time.RFC3339Nano))
+				`INSERT INTO instance_replies
+				 (instance_id, window_kind, window_key, type, data, at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				id, kind, key, domain.EventType(event), string(data), domain.EventTime(event).Format(time.RFC3339Nano))
 			return err
 		})
 
@@ -734,23 +1608,28 @@ func (s *SQLiteStore) AppendInstanceReply(ctx context.Context, id domain.Instanc
 // InstanceRepliesBefore returns up to `n` of the instance's own
 // replies strictly before `before` (or the most recent when `before`
 // is nil), in chronological order.
-func (s *SQLiteStore) InstanceRepliesBefore(ctx context.Context, id domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
-	var events []domain.StoredEvent
+func (s *SQLiteStore) InstanceRepliesBefore(
+	ctx context.Context,
+	id domain.InstanceID,
+	before *int64,
+	n int,
+) ([]InstanceReplyRecord, error) {
+	var events []InstanceReplyRecord
 	err := s.inSpan(ctx, "store.sqlite.instance_replies_before",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			query, args := `SELECT id, data FROM (
-					SELECT id, data FROM instance_replies WHERE instance_id = ?
+			query, args := `SELECT id, window_kind, window_key, data FROM (
+					SELECT id, window_kind, window_key, data FROM instance_replies WHERE instance_id = ?
 					ORDER BY id DESC LIMIT ?
 				) ORDER BY id ASC`, []any{id, n}
 			if before != nil {
-				query, args = `SELECT id, data FROM (
-						SELECT id, data FROM instance_replies WHERE instance_id = ? AND id < ?
+				query, args = `SELECT id, window_kind, window_key, data FROM (
+						SELECT id, window_kind, window_key, data FROM instance_replies WHERE instance_id = ? AND id < ?
 						ORDER BY id DESC LIMIT ?
 					) ORDER BY id ASC`, []any{id, *before, n}
 			}
 
-			got, err := queryEventRows(ctx, s.db, query, args)
+			got, err := queryInstanceReplyRows(ctx, s.db, query, args)
 			if err != nil {
 				return err
 			}
@@ -762,16 +1641,429 @@ func (s *SQLiteStore) InstanceRepliesBefore(ctx context.Context, id domain.Insta
 	return events, err
 }
 
-// DMEventsBefore implements Store. Returns the DM thread
-// between `self` and `peer`: bidirectional message rows plus
-// peer's actor-scoped events from any channel, deduped by
-// `(instance_id, type, at)`. Either id may be the empty string
-// (the user). `dm_instance_id` is a generated column carrying
-// `json_extract(data, '$.data.instance_id')` as a real, indexable
-// value — an absent field (the `omitzero` shape for empty ids) reads
-// the same as a present empty string; `type` is the event's own
-// stored column, not a JSON extraction. Rows come back chronological
-// via inner-desc / outer-asc.
+// InstanceRepliesForWindowBefore returns one instance's replies for
+// exactly `window`, up to `n` rows strictly before `before`. A nil
+// window selects session-wide replies only.
+func (s *SQLiteStore) InstanceRepliesForWindowBefore(
+	ctx context.Context,
+	id domain.InstanceID,
+	window protocol.WindowTarget,
+	before *int64,
+	n int,
+) ([]InstanceReplyRecord, error) {
+	kind, key := windowColumns(window)
+	var events []InstanceReplyRecord
+	err := s.inSpan(ctx, "store.sqlite.instance_replies_for_window_before",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			query, args := `SELECT id, window_kind, window_key, data FROM (
+					SELECT id, window_kind, window_key, data FROM instance_replies
+					WHERE instance_id = ? AND window_kind = ? AND window_key = ?
+					ORDER BY id DESC LIMIT ?
+				) ORDER BY id ASC`, []any{id, kind, key, n}
+			if before != nil {
+				query, args = `SELECT id, window_kind, window_key, data FROM (
+						SELECT id, window_kind, window_key, data FROM instance_replies
+						WHERE instance_id = ? AND window_kind = ? AND window_key = ? AND id < ?
+						ORDER BY id DESC LIMIT ?
+					) ORDER BY id ASC`, []any{id, kind, key, *before, n}
+			}
+
+			got, err := queryInstanceReplyRows(ctx, s.db, query, args)
+			if err != nil {
+				return err
+			}
+
+			events = got
+			return nil
+		})
+
+	return events, err
+}
+
+// DeleteInstanceRepliesForWindow removes private reply lines that
+// belonged to a window whose current client view has closed.
+func (s *SQLiteStore) DeleteInstanceRepliesForWindow(
+	ctx context.Context,
+	id domain.InstanceID,
+	window protocol.WindowTarget,
+) error {
+	kind, key := windowColumns(window)
+	return s.inSpan(ctx, "store.sqlite.delete_instance_replies_for_window",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(id)),
+			attribute.String(observability.AttrChannel, key),
+		}, func(ctx context.Context, _ trace.Span) error {
+			_, err := s.db.ExecContext(ctx,
+				`DELETE FROM instance_replies
+				 WHERE instance_id = ?
+				   AND window_kind = ?
+				   AND window_key = ?`,
+				id, kind, key)
+			return err
+		})
+}
+
+// BeginModelTurn creates the durable envelope for one provider turn
+// and runs the actor's retention pass. Admission is the one point in
+// a turn where retention runs: the turn's own entries do not exist
+// yet, so the pass cannot delete the turn it has just admitted, and a
+// turn that appends a dozen entries pays for the pass once.
+func (s *SQLiteStore) BeginModelTurn(
+	ctx context.Context,
+	turn ModelTurn,
+	input ModelTurnEntry,
+) (ModelTurnID, error) {
+	if turn.Window == nil {
+		return 0, fmt.Errorf("begin model turn: window is required")
+	}
+	if input.Kind != ModelTurnInput || !json.Valid(input.Data) {
+		return 0, fmt.Errorf("begin model turn: valid input entry is required")
+	}
+
+	var turnID ModelTurnID
+	err := s.inSpan(ctx, "store.sqlite.begin_model_turn",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(turn.InstanceID))},
+		func(ctx context.Context, _ trace.Span) error {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin transaction: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			kind, key := windowColumns(turn.Window)
+			result, err := tx.ExecContext(ctx, `
+				INSERT INTO model_turns
+					(instance_id, window_kind, window_key, model_id, started_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, turn.InstanceID, kind, key, turn.ModelID, turn.StartedAt.Format(time.RFC3339Nano))
+			if err != nil {
+				return err
+			}
+			id, err := result.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("read model turn id: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO model_turn_entries (turn_id, seq, kind, data, at)
+				VALUES (?, ?, ?, ?, ?)
+			`, id, input.Seq, input.Kind, string(input.Data),
+				input.At.Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+			if err := trimModelTurns(
+				ctx, tx, turn.InstanceID,
+				modelTurnRetentionHeadroom, modelTurnRetentionBytes,
+			); err != nil {
+				return fmt.Errorf("trim model turns: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+
+			turnID = ModelTurnID(id)
+			return nil
+		})
+
+	return turnID, err
+}
+
+// AppendModelTurnEntry appends one JSON record to a model turn.
+// Retention runs at [BeginModelTurn], so an append writes one row and
+// nothing else.
+func (s *SQLiteStore) AppendModelTurnEntry(
+	ctx context.Context,
+	turnID ModelTurnID,
+	entry ModelTurnEntry,
+) error {
+	if !json.Valid(entry.Data) {
+		return fmt.Errorf("append model turn entry: invalid JSON")
+	}
+
+	return s.inSpan(ctx, "store.sqlite.append_model_turn_entry", nil,
+		func(ctx context.Context, _ trace.Span) error {
+			result, err := s.db.ExecContext(ctx, `
+				INSERT INTO model_turn_entries (turn_id, seq, kind, data, at)
+				SELECT id, ?, ?, ?, ? FROM model_turns WHERE id = ?
+			`, entry.Seq, entry.Kind, string(entry.Data),
+				entry.At.Format(time.RFC3339Nano), turnID)
+			if err != nil {
+				return err
+			}
+			rows, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if rows == 0 {
+				return ErrModelTurnClosed
+			}
+
+			return nil
+		})
+}
+
+type modelTurnExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func trimModelTurns(
+	ctx context.Context,
+	executor modelTurnExecutor,
+	actor domain.InstanceID,
+	maxTurns int,
+	maxBytes int64,
+) error {
+	_, err := executor.ExecContext(ctx, `
+		WITH turn_sizes AS (
+			SELECT turn.id,
+				COALESCE(SUM(length(CAST(entry.data AS BLOB))), 0) AS bytes
+			FROM model_turns AS turn
+			LEFT JOIN model_turn_entries AS entry ON entry.turn_id = turn.id
+			WHERE turn.instance_id = ?
+			GROUP BY turn.id
+		), ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (ORDER BY id DESC) AS position,
+				SUM(bytes) OVER (ORDER BY id DESC) AS retained_bytes
+			FROM turn_sizes
+		)
+		DELETE FROM model_turns WHERE id IN (
+			SELECT id FROM ranked
+			WHERE position > ? OR (position > 1 AND retained_bytes > ?)
+		)
+	`, actor, maxTurns, maxBytes)
+
+	return err
+}
+
+// ModelTurnsForInstanceBefore returns the newest `n` turns an actor
+// recorded before `before`, oldest first. A nil cursor starts at the
+// newest turn.
+func (s *SQLiteStore) ModelTurnsForInstanceBefore(
+	ctx context.Context,
+	id domain.InstanceID,
+	before *ModelTurnID,
+	n int,
+) ([]ModelTurnRecord, error) {
+	var turns []ModelTurnRecord
+	err := s.inSpan(ctx, "store.sqlite.model_turns_for_instance_before",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			query, args := `SELECT id, window_kind, window_key, model_id, started_at FROM (
+					SELECT id, window_kind, window_key, model_id, started_at
+					FROM model_turns
+					WHERE instance_id = ?
+					ORDER BY id DESC LIMIT ?
+				) ORDER BY id ASC`, []any{id, n}
+			if before != nil {
+				query, args = `SELECT id, window_kind, window_key, model_id, started_at FROM (
+						SELECT id, window_kind, window_key, model_id, started_at
+						FROM model_turns
+						WHERE instance_id = ? AND id < ?
+						ORDER BY id DESC LIMIT ?
+					) ORDER BY id ASC`, []any{id, *before, n}
+			}
+
+			got, err := queryModelTurnRows(ctx, s.db, id, query, args)
+			if err != nil {
+				return err
+			}
+
+			turns = got
+			return nil
+		})
+
+	return turns, err
+}
+
+func queryModelTurnRows(
+	ctx context.Context,
+	db *sql.DB,
+	id domain.InstanceID,
+	query string,
+	args []any,
+) ([]ModelTurnRecord, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var turns []ModelTurnRecord
+	for rows.Next() {
+		var turn ModelTurnRecord
+		var windowKind int
+		var windowKey, startedAt string
+		if err := rows.Scan(
+			&turn.ID, &windowKind, &windowKey, &turn.ModelID, &startedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		window, err := windowFromColumns(windowKind, windowKey)
+		if err != nil {
+			return nil, fmt.Errorf("read model turn window: %w", err)
+		}
+		parsedStartedAt, err := time.Parse(time.RFC3339Nano, startedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse model turn start time: %w", err)
+		}
+
+		turn.InstanceID = id
+		turn.Window = window
+		turn.StartedAt = parsedStartedAt
+		turns = append(turns, turn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return turns, nil
+}
+
+// ModelTurnEntries returns a turn's records in the order its writer
+// produced them.
+func (s *SQLiteStore) ModelTurnEntries(ctx context.Context, turnID ModelTurnID) ([]ModelTurnEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT kind, seq, data, at
+		FROM model_turn_entries
+		WHERE turn_id = ?
+		ORDER BY seq
+	`, turnID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []ModelTurnEntry
+	for rows.Next() {
+		var entry ModelTurnEntry
+		var data, at string
+		if err := rows.Scan(&entry.Kind, &entry.Seq, &data, &at); err != nil {
+			return nil, err
+		}
+
+		parsedAt, err := time.Parse(time.RFC3339Nano, at)
+		if err != nil {
+			return nil, fmt.Errorf("parse model turn entry time: %w", err)
+		}
+		entry.Data = json.RawMessage(data)
+		entry.At = parsedAt
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+// DeleteModelTurnsForWindow removes every recorded turn whose model
+// could see a window that has now closed.
+func (s *SQLiteStore) DeleteModelTurnsForWindow(
+	ctx context.Context,
+	id domain.InstanceID,
+	window protocol.WindowTarget,
+) error {
+	kind, key := windowColumns(window)
+	return s.inSpan(ctx, "store.sqlite.delete_model_turns_for_window",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(id)),
+			attribute.String(observability.AttrChannel, key),
+		}, func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db, `
+				DELETE FROM model_turns
+				WHERE instance_id = ? AND window_kind = ? AND window_key = ?
+			`, id, kind, key)
+		})
+}
+
+func windowColumns(window protocol.WindowTarget) (int, string) {
+	switch protocol.WindowTargetKind(window) {
+	case domain.KindChannel:
+		return 1, string(protocol.WindowKey(window))
+	case domain.KindDM:
+		return 2, string(protocol.WindowKey(window))
+	}
+
+	// No target is the status window, `&modeloff`, where an issuer's
+	// own replies are filed. It has no server-side conversation, so
+	// the row holds no window.
+	return 0, ""
+}
+
+func windowFromColumns(kind int, key string) (protocol.WindowTarget, error) {
+	switch kind {
+	case 0:
+		return nil, nil
+	case 1:
+		return protocol.ChannelWindowTarget(domain.ChannelName(key)), nil
+	case 2:
+		return protocol.DirectWindowTarget(domain.InstanceID(key)), nil
+	default:
+		return nil, fmt.Errorf("unknown instance reply window kind %d", kind)
+	}
+}
+
+func queryInstanceReplyRows(
+	ctx context.Context,
+	db *sql.DB,
+	query string,
+	args []any,
+) ([]InstanceReplyRecord, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var replies []InstanceReplyRecord
+	for rows.Next() {
+		var (
+			id   int64
+			kind int
+			key  string
+			data string
+		)
+		if err := rows.Scan(&id, &kind, &key, &data); err != nil {
+			return nil, err
+		}
+
+		event, err := domain.UnmarshalPersistableEvent([]byte(data))
+		if errors.Is(err, domain.ErrUnknownEventType) {
+			slog.Default().WarnContext(ctx, "skipping unrecognised instance-reply row",
+				"id", id, "error", err)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		reply, ok := event.(domain.IssuerReply)
+		if !ok {
+			return nil, fmt.Errorf("instance reply row %d contains %T", id, event)
+		}
+		window, err := windowFromColumns(kind, key)
+		if err != nil {
+			return nil, fmt.Errorf("instance reply row %d: %w", id, err)
+		}
+
+		replies = append(replies, InstanceReplyRecord{ID: id, Window: window, Event: reply})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return replies, nil
+}
+
+// DMEventsBefore implements Store. Returns the bidirectional message
+// thread between `self` and `peer`. Either id may be the empty string
+// (the user). `source_instance_id` is a generated column carrying
+// the event source's instance id as a real, indexable value. An
+// absent field reads the same as a present empty string; `type` is
+// the event's own stored column, not a JSON extraction. Rows come
+// back chronological via inner-desc / outer-asc.
 func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error) {
 	var events []domain.StoredEvent
 	err := s.inSpan(ctx, "store.sqlite.dm_events_before",
@@ -781,40 +2073,25 @@ func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.Inst
 		},
 		func(ctx context.Context, _ trace.Span) error {
 			// Bidirectional message rows: peer→self and self→peer.
-			// idx_events_dm_thread (dm_instance_id, type, channel, id)
+			// idx_events_source_thread (source_instance_id, type, channel, id)
 			// covers both branches of the OR.
 			const messageRows = `SELECT id, data FROM events WHERE
-				(channel = ? AND dm_instance_id = ?)
+				(channel = ? AND source_instance_id = ?)
 				OR
-				(channel = ? AND dm_instance_id = ?)
+				(channel = ? AND source_instance_id = ?)
 			`
-
-			// Peer's actor-scoped events anywhere, deduped by
-			// (instance_id, type, at). Per-channel persistence
-			// (one row per channel the actor was in at event
-			// time) collapses to one representative row via
-			// MIN(id). idx_events_dm_thread narrows this to the
-			// peer's own rows before the JSON extraction the
-			// GROUP BY still needs for `at`.
-			const actorEventRows = `SELECT MIN(id) AS id, data FROM events
-				WHERE dm_instance_id = ?
-					AND type IN ('quit', 'nick_change')
-				GROUP BY dm_instance_id, type, json_extract(data, '$.data.at')
-			`
-
-			union := `(` + messageRows + ` UNION ` + actorEventRows + `)`
 
 			query, args := `SELECT id, data FROM (
-					SELECT id, data FROM `+union+` AS thread
+					SELECT id, data FROM (`+messageRows+`) AS thread
 					ORDER BY id DESC LIMIT ?
 				) ORDER BY id ASC`,
-				[]any{string(peer), string(self), string(self), string(peer), string(peer), n}
+				[]any{string(peer), string(self), string(self), string(peer), n}
 			if before != nil {
 				query, args = `SELECT id, data FROM (
-						SELECT id, data FROM `+union+` AS thread WHERE id < ?
+						SELECT id, data FROM (`+messageRows+`) AS thread WHERE id < ?
 						ORDER BY id DESC LIMIT ?
 					) ORDER BY id ASC`,
-					[]any{string(peer), string(self), string(self), string(peer), string(peer), *before, n}
+					[]any{string(peer), string(self), string(self), string(peer), *before, n}
 			}
 
 			got, err := queryEventRows(ctx, s.db, query, args)
@@ -890,17 +2167,8 @@ func (s *SQLiteStore) CountEventsFrom(ctx context.Context, ch domain.ChannelName
 // the peer's id and the peer's answer under `self`'s, so counting one
 // key alone answers for one direction, which for the user's DM with a
 // model is the direction the user sent and never the one it is
-// waiting to read. The `dm_instance_id` generated column carries the
-// sender, so `idx_events_dm_thread` covers both branches of the OR.
-//
-// The peer's actor-scoped events (`quit`, `nick_change`) are part of
-// the thread `DMEventsBefore` reads back, and this leaves them out.
-// The `channel` predicate is what excludes them: those rows are
-// written once per channel the actor was in, so their `channel`
-// column is a channel name and matches neither side of the pair. That
-// is the right answer for a badge, which counts what somebody said in
-// this conversation, and those rows already count towards the channel
-// they were logged under.
+// waiting to read. The `source_instance_id` generated column carries the
+// sender, so `idx_events_source_thread` covers both branches of the OR.
 func (s *SQLiteStore) CountDMEventsFrom(ctx context.Context, self, peer domain.InstanceID, from *int64) (int, error) {
 	var count int
 	err := s.inSpan(ctx, "store.sqlite.count_dm_events_from",
@@ -911,9 +2179,9 @@ func (s *SQLiteStore) CountDMEventsFrom(ctx context.Context, self, peer domain.I
 		func(ctx context.Context, _ trace.Span) error {
 			const thread = `SELECT count(*) FROM events WHERE
 				(
-					(channel = ? AND dm_instance_id = ?)
+					(channel = ? AND source_instance_id = ?)
 					OR
-					(channel = ? AND dm_instance_id = ?)
+					(channel = ? AND source_instance_id = ?)
 				)`
 
 			query, args := thread, []any{string(peer), string(self), string(self), string(peer)}
@@ -1069,12 +2337,45 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 		})
 }
 
-// DeleteInstanceByID implements Store. Evicts the instance row and
-// its `memories` rows from SQLite in the same transaction, records
-// the indexed-memory deletion still due, and removes the handle from
-// the canonical registry.
+// InstanceDeletion is the durable state transition for one client
+// connection ending. Events contains the canonical per-channel
+// departure audit rows, and Scrollback contains each surviving
+// recipient's projected departure rows.
+type InstanceDeletion struct {
+	InstanceID domain.InstanceID
+	Events     []ChannelAuditEvent
+	Scrollback []ChannelScrollbackRecord
+}
+
+// CommittedInstanceDeletion contains the canonical projected
+// scrollback and its row identifiers from
+// [SQLiteStore.CommitInstanceDeletion].
+type CommittedInstanceDeletion struct {
+	ScrollbackIDs []int64
+	Scrollback    []ChannelScrollbackRecord
+}
+
+// DeleteInstanceByID implements Store.
 func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
-	return s.inSpan(ctx, "store.sqlite.delete_instance_by_id",
+	_, err := s.CommitInstanceDeletion(ctx, InstanceDeletion{InstanceID: id})
+
+	return err
+}
+
+// CommitInstanceDeletion evicts the instance row and its `memories`
+// and `instance_replies` rows, removes its channel memberships, records
+// the indexed-memory deletion still due, and appends every supplied
+// canonical departure event and recipient projection in one
+// transaction. The empty user id is reused across sessions, so its
+// private replies remain available after the connection ends.
+func (s *SQLiteStore) CommitInstanceDeletion(
+	ctx context.Context,
+	deletion InstanceDeletion,
+) (CommittedInstanceDeletion, error) {
+	id := deletion.InstanceID
+	var committed CommittedInstanceDeletion
+
+	err := s.inSpan(ctx, "store.sqlite.delete_instance_by_id",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
 			tx, err := s.db.BeginTx(ctx, nil)
@@ -1084,35 +2385,188 @@ func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.Instance
 
 			defer func() { _ = tx.Rollback() }()
 
-			// The empty instance id belongs to the user, which never has
-			// a model memory collection.
-			if id != "" {
-				if _, err := tx.ExecContext(ctx,
-					`INSERT OR IGNORE INTO pending_memory_deletions (instance_id) VALUES (?)`,
-					string(id),
-				); err != nil {
-					return fmt.Errorf("record pending memory deletion: %w", err)
-				}
-			}
-
-			if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ?`, string(id)); err != nil {
-				return fmt.Errorf("delete memories: %w", err)
-			}
-			if err := deleteInstanceChannelMemberships(ctx, tx, id); err != nil {
+			committed, err = commitInstanceDeletionTx(ctx, tx, deletion)
+			if err != nil {
 				return err
-			}
-
-			if _, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
-				return fmt.Errorf("delete instance: %w", err)
 			}
 
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit: %w", err)
 			}
 
-			s.forgetInstance(id)
 			return nil
 		})
+	if err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+
+	s.forgetInstance(id)
+
+	return committed, nil
+}
+
+func commitInstanceDeletionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	deletion InstanceDeletion,
+) (CommittedInstanceDeletion, error) {
+	id := deletion.InstanceID
+	if err := recordPendingMemoryDeletion(ctx, tx, id); err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+	if err := deleteInstanceOwnedContext(ctx, tx, id); err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+	if err := deleteDirectPeerContext(ctx, tx, id); err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+	if err := deleteInstanceChannelMemberships(ctx, tx, id); err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+	if err := appendCanonicalChannelAuditEvents(ctx, tx, deletion.Events); err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+
+	canonicalScrollback, err := canonicaliseChannelScrollback(ctx, tx, deletion.Scrollback)
+	if err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+	scrollback, err := encodeChannelScrollback(canonicalScrollback)
+	if err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+	scrollbackIDs, err := appendChannelScrollbackTx(ctx, tx, canonicalScrollback, scrollback)
+	if err != nil {
+		return CommittedInstanceDeletion{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
+		return CommittedInstanceDeletion{}, fmt.Errorf("delete instance: %w", err)
+	}
+
+	return CommittedInstanceDeletion{
+		ScrollbackIDs: scrollbackIDs,
+		Scrollback:    canonicalScrollback,
+	}, nil
+}
+
+func canonicaliseChannelScrollback(
+	ctx context.Context,
+	tx *sql.Tx,
+	records []ChannelScrollbackRecord,
+) ([]ChannelScrollbackRecord, error) {
+	canonical := make([]ChannelScrollbackRecord, len(records))
+	for i, record := range records {
+		channel := record.Channel
+		err := tx.QueryRowContext(ctx,
+			`SELECT name FROM channels WHERE name = ? COLLATE NOCASE ORDER BY name LIMIT 1`,
+			channel,
+		).Scan(&channel)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("resolve projected channel %q: %w", record.Channel, ErrNoSuchChannel)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolve projected channel %q: %w", record.Channel, err)
+		}
+
+		record.Channel = channel
+		if part, ok := record.Event.(domain.Part); ok {
+			part.Target = channel
+			record.Event = part
+		}
+		canonical[i] = record
+	}
+
+	return canonical, nil
+}
+
+func recordPendingMemoryDeletion(
+	ctx context.Context,
+	tx *sql.Tx,
+	id domain.InstanceID,
+) error {
+	// The empty instance id belongs to the user, which never has a
+	// model memory collection.
+	if id == "" {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO pending_memory_deletions (instance_id) VALUES (?)`,
+		string(id),
+	); err != nil {
+		return fmt.Errorf("record pending memory deletion: %w", err)
+	}
+
+	return nil
+}
+
+func deleteInstanceOwnedContext(
+	ctx context.Context,
+	tx *sql.Tx,
+	id domain.InstanceID,
+) error {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM memories WHERE instance_id = ?`, string(id)); err != nil {
+		return fmt.Errorf("delete memories: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM channel_scrollback WHERE instance_id = ?`, string(id)); err != nil {
+		return fmt.Errorf("delete channel scrollback: %w", err)
+	}
+
+	if id == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM instance_replies WHERE instance_id = ?`, string(id)); err != nil {
+		return fmt.Errorf("delete instance replies: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM model_turns WHERE instance_id = ?`, string(id)); err != nil {
+		return fmt.Errorf("delete model turns: %w", err)
+	}
+
+	return nil
+}
+
+func deleteDirectPeerContext(
+	ctx context.Context,
+	tx *sql.Tx,
+	id domain.InstanceID,
+) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM instance_replies
+		WHERE window_kind = 2 AND window_key = ? AND instance_id != ?
+	`, string(id), string(id)); err != nil {
+		return fmt.Errorf("delete direct-window instance replies: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM model_turns
+		WHERE window_kind = 2 AND window_key = ? AND instance_id != ?
+	`, string(id), string(id)); err != nil {
+		return fmt.Errorf("delete direct-window model turns: %w", err)
+	}
+
+	return nil
+}
+
+func appendCanonicalChannelAuditEvents(
+	ctx context.Context,
+	tx *sql.Tx,
+	events []ChannelAuditEvent,
+) error {
+	canonical, err := canonicaliseChannelAuditEvents(ctx, tx, events)
+	if err != nil {
+		return err
+	}
+	encoded, err := encodeChannelAuditEvents(canonical)
+	if err != nil {
+		return err
+	}
+
+	return appendChannelAuditEvents(ctx, tx, encoded)
 }
 
 // deleteInstanceChannelMemberships removes an instance from every
@@ -1150,7 +2604,7 @@ func channelMembershipGroups(
 		row := &rows[index]
 		changed := false
 		for member := range row.Members.All() {
-			if member.Instance.ID() != id {
+			if member.InstanceID != id {
 				continue
 			}
 
@@ -1185,6 +2639,12 @@ func applyChannelMembershipGroup(
 	}
 
 	if !membersRemain {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM model_turns
+				WHERE window_kind = 1 AND window_key = ? COLLATE NOCASE
+		`, group[0].row.Name); err != nil {
+			return fmt.Errorf("delete channel model turns for %q: %w", group[0].row.Name, err)
+		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM channels WHERE name = ? COLLATE NOCASE`, group[0].row.Name,
 		); err != nil {
@@ -1473,6 +2933,8 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 			`DELETE FROM events`,
 			`DELETE FROM dm_windows`,
 			`DELETE FROM instance_replies`,
+			`DELETE FROM model_turn_entries`,
+			`DELETE FROM model_turns`,
 			`DELETE FROM pending_memory_deletions`,
 			`DELETE FROM instances`,
 			`DELETE FROM memories`,

@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/laney/modeloff/internal/api"
@@ -26,12 +27,10 @@ const (
 	maxMemoryBytes   = 4000
 )
 
-// capMemoriesForPrompt returns the prefix of entries that fits within
-// [maxMemoryEntries] and [maxMemoryBytes] of combined key+content
-// text, and reports whether anything was left out. Entries are kept
-// in the order the store returns them; memory.Entry carries no
-// timestamp today, so that order is not a recency ordering — see
-// [github.com/laney/modeloff/internal/memory.Entry].
+// capMemoriesForPrompt returns the most recent entries that fit within
+// [maxMemoryEntries] and [maxMemoryBytes] of combined key+content text,
+// and reports whether anything was left out. Keys order entries written
+// at the same time, including legacy entries with no write timestamp.
 //
 // A single entry bigger than maxMemoryBytes on its own is kept, with
 // its content truncated to fit — dropping it outright would leave
@@ -40,7 +39,15 @@ const (
 func capMemoriesForPrompt(entries []memory.Entry) ([]memory.Entry, bool) {
 	truncated := false
 
-	capped := entries
+	capped := slices.Clone(entries)
+	slices.SortStableFunc(capped, func(a, b memory.Entry) int {
+		if byTime := b.At.Compare(a.At); byTime != 0 {
+			return byTime
+		}
+
+		return strings.Compare(a.Key, b.Key)
+	})
+
 	if len(capped) > maxMemoryEntries {
 		capped = capped[:maxMemoryEntries]
 		truncated = true
@@ -109,14 +116,11 @@ func PersonaLine(persona string) string {
 // holds `+o`. Credentialed promotion through `OPER` would widen that
 // to whoever the authenticator admits, which is a question for the
 // commit that implements it.
-//
-// The function is only ever called from the dispatch path, which
-// never fires for the status window, so `window` is a
-// `*domain.ChannelWindow` or a `*domain.DMWindow`; the addressing
-// line uses the window's `DisplayName()` either way, which is the
-// channel name for a channel and the counterpart's nick for a DM —
-// `Name()` would give the counterpart's `InstanceID` instead.
-func buildSystemPrompt(window domain.Window, inst *domain.Instance) api.SystemPrompt {
+func buildSystemPrompt(
+	window protocol.WindowContext,
+	nick domain.Nick,
+	persona string,
+) api.SystemPrompt {
 	var b strings.Builder
 
 	b.WriteString(`You communicate exclusively through tools. Any plain text you produce outside of a tool call is discarded.
@@ -169,10 +173,15 @@ The first message after these instructions is a CURRENT_INSTANCE_STATE record su
 `)
 
 	var dynamic strings.Builder
-	fmt.Fprintf(&dynamic, "CURRENT_INSTANCE_STATE\nYou are %s on %s. You are an IRC regular — you've been here a while and you fit in naturally.",
-		inst.Nick(), window.DisplayName())
+	location := string(protocol.WindowKey(window.Target()))
+	if protocol.WindowTargetKind(window.Target()) == domain.KindDM {
+		location = "a direct message"
+	}
 
-	if persona := inst.Persona(); persona != "" {
+	fmt.Fprintf(&dynamic, "CURRENT_INSTANCE_STATE\nYou are %s in %s. You are an IRC regular — you've been here a while and you fit in naturally.",
+		nick, location)
+
+	if persona != "" {
 		dynamic.WriteString(PersonaLine(persona))
 	}
 	dynamic.WriteByte('\n')
@@ -198,18 +207,17 @@ The first message after these instructions is a CURRENT_INSTANCE_STATE record su
 //
 // A DM window has no topic, so a DM turn carries the memory line
 // alone.
-func contextReplies(window domain.Window, memories []memory.Entry) []protocol.IRCMessage {
+func contextReplies(window protocol.WindowContext, memories []memory.Entry) []protocol.IRCMessage {
 	var replies []protocol.IRCMessage
 
-	if cw, ok := window.(*domain.ChannelWindow); ok && cw.Topic != "" {
-		replies = append(replies, topicReply(cw))
+	if topic, ok := window.Topic(); ok {
+		replies = append(replies, topicReply(topic))
 	}
 
 	if body, ok := memoryReplyBody(memories); ok {
 		replies = append(replies, protocol.IRCMessage{
-			Kind:   protocol.KindServerReply,
-			Target: window.DisplayName(),
-			Body:   body,
+			Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+			Target: string(protocol.WindowKey(window.Target())), Body: body,
 		})
 	}
 
@@ -220,17 +228,16 @@ func contextReplies(window domain.Window, memories []memory.Entry) []protocol.IR
 // answers with RPL_TOPIC (RFC 2812 numeric 332), naming the member
 // who set it as RPL_TOPICWHOTIME (333) does. `At` is the time the
 // topic was set, which is the only time this line describes.
-func topicReply(cw *domain.ChannelWindow) protocol.IRCMessage {
+func topicReply(topic domain.TopicInfo) protocol.IRCMessage {
 	setter := ""
-	if cw.TopicSetBy != "" {
-		setter = ", set by " + string(cw.TopicSetBy)
+	if topic.TopicSetBy != "" {
+		setter = ", set by " + string(topic.TopicSetBy)
 	}
 
 	return protocol.IRCMessage{
-		Kind:   protocol.KindServerReply,
-		Target: string(cw.Name()),
-		Body:   fmt.Sprintf("topic for %s%s: %s", cw.Name(), setter, cw.Topic),
-		At:     cw.TopicSetAt,
+		Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+		Target: string(topic.Target),
+		Body:   fmt.Sprintf("topic for %s%s: %s", topic.Target, setter, topic.Topic), At: topic.TopicSetAt,
 	}
 }
 

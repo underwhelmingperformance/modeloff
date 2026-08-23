@@ -176,6 +176,11 @@ type ConnectionScreen struct {
 // receives every message until the animation completes, at which
 // point Root swaps it in as the active screen.
 func NewConnectionScreen(cfg ConnectionConfig, chatScreen ui.Component) ConnectionScreen {
+	if chat, ok := chatScreen.(ChatScreen); ok && cfg.Session != nil {
+		chat.autojoinPending = true
+		chatScreen = chat
+	}
+
 	steps := []connectionStep{
 		{label: "Connecting to modeloff", gate: gateConnect},
 		{label: "Checking configuration"},

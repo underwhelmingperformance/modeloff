@@ -32,8 +32,6 @@ import (
 // without faking the whole store interface.
 type UIStateStore interface {
 	GetLastWindow(ctx context.Context) (domain.Window, error)
-	SetLastWindow(ctx context.Context, window domain.Window) error
-	ClearLastWindow(ctx context.Context) error
 }
 
 // SessionReader is the read-only slice of the session the chat-screen
@@ -43,27 +41,18 @@ type UIStateStore interface {
 // satisfies it; holding the interface keeps the frontend off the
 // concrete backend type.
 type SessionReader interface {
-	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
-	ResolveNick(ctx context.Context, nick domain.Nick) (*domain.Instance, error)
+	ResolveNick(ctx context.Context, nick domain.Nick) (domain.InstanceID, domain.Nick, error)
 
 	// ResolveInstanceByID answers with the canonical handle for an
 	// instance id. A DM window is addressed by its counterpart's id,
 	// so this is what turns a window key back into the instance the
 	// window is built around: for a DM arriving from someone the user
 	// has no window for, and for the windows reopened at bootstrap.
-	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
+	ResolveInstanceByID(ctx context.Context, id domain.InstanceID) (domain.Nick, error)
 	Now() time.Time
 	UnreadCount(ctx context.Context, ch domain.ChannelName) (int, error)
-	Instances(ctx context.Context) iter.Seq[*domain.Instance]
+	Instances(ctx context.Context) iter.Seq[domain.InstanceDirectoryEntry]
 	ConnectedAt() time.Time
-
-	// DirectoryChannels answers with the channels `issuer` may be
-	// told exist, the same [Session.channelVisibleTo] predicate
-	// `/list` answers under. `completionSet` calls it with the
-	// user's own instance so `/join` completion can offer a channel
-	// the user has not joined without bypassing that predicate; the
-	// user-client holds `+o`, so in practice it sees every channel.
-	DirectoryChannels(ctx context.Context, issuer *domain.Instance) ([]domain.ChannelDirectoryEntry, error)
 }
 
 // ChatScreen is the main screen that composes Sidebar, ChatView, and
@@ -97,25 +86,29 @@ type ChatScreen struct {
 	pacedQueue map[domain.ChannelName][]domain.Message
 
 	// pendingDM holds the events of a DM window the chat-screen has
-	// no entry for yet, keyed by the counterpart's id. A DM names its
-	// counterpart by id and the window is built around the instance
-	// handle, which is a store read, so the first line of a
-	// conversation arrives before there is anywhere to put it. It
-	// waits here, in arrival order, until
+	// no entry for yet, keyed by the counterpart's id. It waits here,
+	// in arrival order, until
 	// [ChatScreen.handleDMWindowResolved] moves the whole queue into
 	// the new window's scrollback. A map value is never stored empty:
 	// a queue that was empty is what schedules the resolve, so one
 	// lookup runs however many lines arrive behind it.
 	pendingDM map[domain.ChannelName][]domain.Event
 
-	// dispatching tracks the model instances currently in a turn.
-	// Membership is per-instance so the nick list's thinking
-	// indicator stays on for every concurrently-dispatching model
-	// until each one completes. The map's lifetime matches
+	// dispatching tracks each model turn by actor and conversation.
+	// The nick list therefore shows activity only in the window that
+	// caused the turn. The map's lifetime matches
 	// `ChatScreen`'s; mutations from value-receiver Update
 	// handlers are visible to subsequent calls because maps are
 	// reference types.
-	dispatching map[*domain.Instance]bool
+	dispatching map[dispatchWindowKey]domain.Nick
+
+	// protocolEffects serialises the messages that one protocol
+	// delivery produces for the component tree. Protocol reads continue
+	// while a command is running, and later effects wait here until the
+	// earlier delivery has finished updating the components.
+	protocolEffects       []tea.Cmd
+	protocolEffectRunning bool
+	nickListRevision      uint64
 
 	// active is the canonical window the user is looking at. Nil
 	// means the welcome state has no window selected. A non-nil DM
@@ -129,6 +122,23 @@ type ChatScreen struct {
 	// built from. [ChatScreen.focus] writes it and `active`
 	// together and is the only writer of either.
 	visible *visibleWindow
+
+	// focusAt records the newest focus or focus-clear action even
+	// when the welcome screen has no active window. Async startup
+	// restoration uses it to avoid overriding later navigation.
+	focusAt time.Time
+
+	// pendingJoinFocus retains a command's focus intent until the
+	// matching JOIN reply sequence has populated the channel window.
+	pendingJoinFocus map[domain.ChannelName]time.Time
+	joinReplyDone    map[domain.ChannelName]bool
+
+	// Startup restores DM windows and rejoins channels concurrently.
+	// Focus restoration waits until both operations report their results.
+	dmRestoreDone     bool
+	autojoinPending   bool
+	restoredLanding   domain.Window
+	restoredLandingAt time.Time
 
 	obs       *observability.Runtime
 	metrics   observability.MetricsSnapshot
@@ -204,24 +214,26 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 	apiKeyChanges := make(chan bool, 1)
 
 	cs := ChatScreen{
-		baseContext:     baseContext,
-		sess:            sess,
-		mgr:             mgr,
-		user:            user,
-		client:          user,
-		cfgStore:        cfgStore,
-		uiState:         uiState,
-		channels:        channels,
-		visible:         visible,
-		liveModelsState: command.SuggestionStateReady,
-		layout:          layout,
-		keyMap:          components.DefaultChatScreenKeyMap,
-		checklist:       newWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
-		apiKeyMissing:   !mgr.HasAPIKey(),
-		apiKeyChanges:   apiKeyChanges,
-		pacedQueue:      map[domain.ChannelName][]domain.Message{},
-		pendingDM:       map[domain.ChannelName][]domain.Event{},
-		dispatching:     map[*domain.Instance]bool{},
+		baseContext:      baseContext,
+		sess:             sess,
+		mgr:              mgr,
+		user:             user,
+		client:           user,
+		cfgStore:         cfgStore,
+		uiState:          uiState,
+		channels:         channels,
+		visible:          visible,
+		liveModelsState:  command.SuggestionStateReady,
+		layout:           layout,
+		keyMap:           components.DefaultChatScreenKeyMap,
+		checklist:        newWelcomeChecklist(user.Nick(), mgr.HasAPIKey()),
+		apiKeyMissing:    !mgr.HasAPIKey(),
+		apiKeyChanges:    apiKeyChanges,
+		pacedQueue:       map[domain.ChannelName][]domain.Message{},
+		pendingDM:        map[domain.ChannelName][]domain.Event{},
+		dispatching:      map[dispatchWindowKey]domain.Nick{},
+		pendingJoinFocus: map[domain.ChannelName]time.Time{},
+		joinReplyDone:    map[domain.ChannelName]bool{},
 	}
 
 	cs.unsubscribeAPIKeyChanges = watchAPIKey(cfgStore, apiKeyChanges)
@@ -312,7 +324,8 @@ func (s ChatScreen) Init() tea.Cmd {
 	// arbiter in `handleChannelFocus` has somewhere to compare
 	// against before the protocol bus has caught up with the
 	// listener.
-	cmds = append(cmds, s.bootstrapFromSession()...)
+	s.markCurrentJoinRepliesComplete()
+	cmds = append(cmds, tea.Sequence(s.bootstrapFromSession(false)...))
 	cmds = append(cmds, s.restoreDMWindows())
 
 	if s.obs != nil {
@@ -322,14 +335,25 @@ func (s ChatScreen) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// bootstrapFromSession pre-seeds the channel cache and emits a focus
-// event for the window the user should land in. The Window's
-// `UserTime` is the session's recorded join time, so a focus event
-// arriving later from the protocol bus with the same timestamp
-// neither steals the focus nor loses it — the user's most recent
-// deliberate channel wins.
-func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
-	channels := s.user.Instance().Channels()
+// bootstrapFromSession synchronises the channel cache with the
+// user's current memberships and emits a focus event for the window
+// the user should land in. Each Window's `UserTime` is the join time
+// recorded by the session. A later focus event with the same time
+// cannot supersede a focus action that the screen has already
+// accepted.
+func (s ChatScreen) markCurrentJoinRepliesComplete() {
+	channels := s.user.Channels()
+	if channels == nil {
+		return
+	}
+
+	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
+		s.joinReplyDone[pair.Key] = true
+	}
+}
+
+func (s ChatScreen) bootstrapFromSession(restoreFocus bool) []tea.Cmd {
+	channels := s.user.Channels()
 	if channels == nil || channels.Len() == 0 {
 		return nil
 	}
@@ -342,11 +366,13 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 	)
 
 	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
-		cw := domain.NewChannelWindow(pair.Key, pair.Value)
-		w := newWindow(cw)
-		w.UserTime = pair.Value
-		s.channels.Insert(w)
-		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: cw}))
+		if _, open := s.windowByName(pair.Key); !open {
+			cw := domain.NewChannelWindow(pair.Key, pair.Value)
+			w := newWindow(cw)
+			w.UserTime = pair.Value
+			s.channels.Insert(w)
+			cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: cw}))
+		}
 
 		joined[pair.Key] = pair.Value
 
@@ -356,39 +382,38 @@ func (s ChatScreen) bootstrapFromSession() []tea.Cmd {
 		}
 	}
 
-	// The window the user left open last session is their standing
-	// preference, so it beats the join times: it is stamped `now`,
-	// which outranks every join-time-stamped proposal the autojoin
-	// NAMES replies will make as the protocol bus drains. Anything
-	// the user is not currently in falls back to the freshest join —
-	// a first run with nothing recorded, or a channel since parted.
-	// The fallback carries its own join time, so the matching NAMES
-	// reply neither steals the focus nor loses it. A DM window is
-	// not among the channels read here at all;
-	// [ChatScreen.handleDMWindowsRestored] lands on one when that is
-	// where the user left off.
+	// The window the user left open last session takes precedence over
+	// the join times. If the saved window is no longer open, use the
+	// most recently joined channel. DM windows are restored separately
+	// by [ChatScreen.handleDMWindowsRestored].
 	landing, at := newestName, newestTime
 
-	if last, ok := s.restoredWindow(); ok && last.Kind() == domain.KindChannel {
-		if _, open := joined[last.Name()]; open {
-			landing, at = last.Name(), time.Now()
+	if s.dmRestoreDone && s.restoredLanding != nil {
+		switch s.restoredLanding.Kind() {
+		case domain.KindChannel:
+			if _, open := joined[s.restoredLanding.Name()]; open {
+				landing, at = s.restoredLanding.Name(), s.restoredLandingAt
+			}
+		case domain.KindDM:
+			if _, open := s.windowByName(s.restoredLanding.Name()); open {
+				landing = ""
+			}
 		}
 	}
 
-	if landing != "" {
-		cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{Channel: landing, At: at}))
+	if restoreFocus && landing != "" {
+		cmds = append(cmds, msgCmd(chatcmd.ChannelJoinFocusMsg{Channel: landing, At: at}))
 	}
 
 	return cmds
 }
 
-// restoredWindow reads the window the user had open when they last
-// quit. A screen built without a [UIStateStore] has no preference to
-// restore, and a read failure is reported and treated the same way:
-// the caller falls back to the freshest join.
-func (s ChatScreen) restoredWindow() (domain.Window, bool) {
+// loadRestoredWindow reads the window the user had open when they
+// last quit. It runs as part of the asynchronous DM restoration
+// command, so the Update goroutine never waits for this store read.
+func (s ChatScreen) loadRestoredWindow() domain.Window {
 	if s.uiState == nil {
-		return nil, false
+		return nil
 	}
 
 	last, err := s.uiState.GetLastWindow(s.baseContext())
@@ -399,10 +424,10 @@ func (s ChatScreen) restoredWindow() (domain.Window, bool) {
 			"error", err,
 		)
 
-		return nil, false
+		return nil
 	}
 
-	return last, last != nil
+	return last
 }
 
 // Update implements ui.Component. It adapts the concrete screen the
@@ -437,7 +462,6 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 //     chat_dm.go);
 //   - routeInput: what the user typed (chat_commands.go);
 //   - routeReplies: what a command answered (chat_replies.go);
-//   - routeConfigResults: what a setting changed to (chat_config.go);
 //   - routeCatalogue: the model list (chat_catalogue.go);
 //   - routeLifecycle: quitting and the API key (chat_lifecycle.go);
 //   - routeObservability: the log drawer (chat_observability.go).
@@ -462,7 +486,7 @@ func (s ChatScreen) route(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		return next, cmd
 	}
 
-	if next, cmd, ok := s.routeConfigResults(msg); ok {
+	if next, cmd, ok := s.routeConfigResults(activeWindowIdentity(s), msg); ok {
 		return next, cmd
 	}
 
@@ -536,11 +560,10 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 					}
 				}
 			},
-			Instances:      s.otherInstances,
-			ChannelMembers: s.activeChannelInstances,
-			ActiveMembers:  func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
-			ActiveChannel:  func() domain.ChannelName { return s.activeName() },
-			UserNick:       func() domain.Nick { return s.user.Nick() },
+			Instances:     s.otherInstances,
+			ActiveMembers: func() iter.Seq[domain.Nick] { return s.activeMemberNicks() },
+			ActiveChannel: func() domain.ChannelName { return s.activeName() },
+			UserNick:      func() domain.Nick { return s.user.Nick() },
 			LiveModels: func() iter.Seq[chatcmd.ModelOption] {
 				return slices.Values(s.liveModels)
 			},
@@ -553,7 +576,7 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			},
 			Kind: func() domain.ChannelKind { return s.activeKind() },
 			Directory: func() iter.Seq[domain.ChannelDirectoryEntry] {
-				entries, err := s.sess.DirectoryChannels(s.baseContext(), s.user.Instance())
+				entries, err := s.user.DirectoryChannels(s.baseContext())
 				if err != nil {
 					slog.Default().ErrorContext(s.baseContext(), "directory channels for completion",
 						"component", "ui",

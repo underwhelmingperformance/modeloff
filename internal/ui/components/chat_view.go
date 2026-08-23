@@ -12,13 +12,14 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
-// SetChannelMsg updates the channel identity and topic for a channel
-// switch. The message list re-reads its events through the injected
-// getter; no explicit history payload is carried.
+// SetChannelMsg updates the stable window identity, presentation name,
+// topic and kind for a window switch. The message list re-reads its events
+// through the injected getter; no explicit history payload is carried.
 type SetChannelMsg struct {
-	Channel domain.ChannelName
-	Topic   string
-	Kind    domain.ChannelKind
+	Channel     domain.ChannelName
+	DisplayName string
+	Topic       string
+	Kind        domain.ChannelKind
 }
 
 // ScrollbackClearedMsg tells the message list that a window's
@@ -83,7 +84,9 @@ type UserNickMsg struct {
 // view carries it so its MessageList stores a typed command tree for
 // `/help` rendering and its popover dispatches typed completions.
 type ChatView[C command.KindProvider] struct {
-	channel domain.ChannelName
+	channel     domain.ChannelName
+	displayName string
+
 	// kind governs kind-sensitive decisions: the glyph/style used for
 	// system notices in the message list, and which of headerText's
 	// two shapes the window header renders (the channel name plus
@@ -174,6 +177,7 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 
 	case SetChannelMsg:
 		c.channel = msg.Channel
+		c.displayName = msg.DisplayName
 		c.kind = msg.Kind
 		c.topic = msg.Topic
 
@@ -343,21 +347,27 @@ func (c ChatView[C]) updateInput(msg tea.Msg) (ChatView[C], tea.Cmd) {
 }
 
 // headerText names the window in view: the channel name plus its
-// topic when one is set, or the counterpart's nick for a DM (a DM
-// window's `Name()` is already the counterpart's nick, matching
-// [domain.Window.DisplayName]'s "@nick" convention for DMs).
+// topic when one is set, or the counterpart's current nick for a DM.
 //
 // `channel` starts as "" at construction, so the view's first frame
 // does not have to wait for the `SetChannelMsg` round trip that
 // supplies the real window; there is nothing to name during that
 // span, so headerText answers "".
 func (c ChatView[C]) headerText() string {
-	if c.channel == "" {
-		return ""
+	if c.kind == domain.KindDM {
+		name := c.displayName
+		if name == "" {
+			name = string(c.channel)
+		}
+		if name == "" {
+			return ""
+		}
+
+		return "@" + name
 	}
 
-	if c.kind == domain.KindDM {
-		return "@" + string(c.channel)
+	if c.channel == "" {
+		return ""
 	}
 
 	text := string(c.channel)

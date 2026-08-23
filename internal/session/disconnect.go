@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
@@ -12,14 +13,15 @@ import (
 // ircds have used for this since RFC 1459 §8.10.
 const sendQExceededReason = "Max SendQ exceeded"
 
+const scrollbackPersistenceFailureReason = "Scrollback persistence failed"
+
 // Disconnect ends `id`'s connection from the server side: the QUIT
 // carrying `reason` is broadcast to the channels the client was in,
 // its model-client is released, and its subscription is reaped. It
 // is the same teardown a client's own QUIT runs, with the server
-// supplying the message (RFC 2812 §3.1.7). A server-forced disconnect
-// always releases the connection, including when durable cleanup
-// fails: an overflowed queue has already dropped a delivery, and a
-// panicked dispatch goroutine has no reader left.
+// supplying the message (RFC 2812 §3.1.7). The connection loses
+// authority after the durable deletion commits. Its accepted delivery
+// prefix drains before the subscription closes.
 //
 // It is undefined for a client whose lifetime is the session's, and
 // refuses one. There is no connection there to close: that client
@@ -33,22 +35,43 @@ const sendQExceededReason = "Max SendQ exceeded"
 // already on the loop would wait for a turn it is holding. Calling
 // it for an unregistered identity does nothing.
 func (s *Session) Disconnect(ctx context.Context, id protocol.ClientID, reason string) {
+	s.disconnectClient(ctx, id, reason, true)
+}
+
+// DisconnectDeadClient ends a model connection whose event consumer
+// has already failed. Peer-visible teardown still follows the normal
+// QUIT path, but the target subscription is reaped without waiting for
+// terminal deliveries that no consumer remains to read.
+func (s *Session) DisconnectDeadClient(ctx context.Context, id protocol.ClientID, reason string) {
+	s.disconnectClient(ctx, id, reason, false)
+}
+
+func (s *Session) disconnectClient(
+	ctx context.Context,
+	id protocol.ClientID,
+	reason string,
+	drainTerminal bool,
+) {
 	if id == protocol.UserClientID {
 		return
 	}
-	if !s.externalHandlers.enter() {
+	if !s.beginHandler() {
 		return
 	}
-	defer s.externalHandlers.leave()
+	defer s.handlers.Done()
 
 	sc := s.lookupClientHandle(id)
 	if sc == nil {
 		return
 	}
+	sc.beginTermination()
 
-	var outcome quitOutcome
+	committed := false
+	instanceDeleted := false
 	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
-		outcome = s.quit(ctx, sc.instance, reason, quitForced)
+		outcome := s.quit(ctx, sc.instance, reason, quitForced, nil)
+		committed = outcome.err == nil || quitWasCommitted(outcome.err)
+		instanceDeleted = outcome.instanceDeleted
 
 		return commandResult(outcome.err)
 	})
@@ -66,18 +89,33 @@ func (s *Session) Disconnect(ctx context.Context, id protocol.ClientID, reason s
 		)
 	}
 
-	if outcome.instanceDeleted {
-		s.releaseAndForgetClient(id)
+	if committed {
+		if instanceDeleted {
+			s.instanceDeleted(id)
+		}
+		sc.sealOutbound()
+		s.emitScoped(ctx, domain.ConnectionError{
+			Reason: reason,
+			At:     s.now(),
+		}, clientScope{client: sc.instance.ID()})
+		if drainTerminal {
+			s.reapModelConnection(id)
+		} else {
+			s.reapDeadModelConnection(id)
+		}
 	} else {
-		s.releaseClient(id)
+		sc.abortTermination()
 	}
-	sc.Unsubscribe()
 }
 
 // disconnectOverflowed ends a subscription whose send queue passed
 // its allowance. The teardown runs on its own goroutine because the
 // producer that filled the queue is usually the command loop, and
 // the QUIT the disconnect broadcasts needs that same loop.
+// It also detaches from the producer's cancellation: the accepted
+// delivery has already overflowed the connection, so returning from
+// that command must not cancel the required teardown. The session's
+// writer gate still refuses the work after shutdown.
 //
 // Only the delivery that trips the allowance starts it; the QUIT
 // then lands back on this very queue, and everything still arriving
@@ -86,16 +124,30 @@ func (s *Session) Disconnect(ctx context.Context, id protocol.ClientID, reason s
 // A subscription with the session's lifetime never reaches here:
 // [serverClient.queue] does not report overflow for it, because
 // there is no connection to close in exchange for the bound.
-func (s *Session) disconnectOverflowed(c *serverClient) {
+func (s *Session) disconnectOverflowed(ctx context.Context, c *serverClient) {
 	if c.hasSessionLifetime() {
 		return
 	}
 
-	if !c.markOverflowed() {
+	if !c.claimServerDisconnect() {
 		return
 	}
 
-	go s.Disconnect(s.baseContext(), c.id, sendQExceededReason)
+	go s.Disconnect(context.WithoutCancel(ctx), c.id, sendQExceededReason)
+}
+
+func (s *Session) disconnectUnreplayable(ctx context.Context, c *serverClient) {
+	if c.hasSessionLifetime() {
+		return
+	}
+
+	if !c.claimServerDisconnect() {
+		return
+	}
+
+	go s.Disconnect(
+		context.WithoutCancel(ctx), c.id, scrollbackPersistenceFailureReason,
+	)
 }
 
 // releaseClient hands a departed client's model-client back to the
@@ -114,10 +166,79 @@ func (s *Session) releaseClient(id protocol.ClientID) {
 	s.modelClientFactory.Detach(id)
 }
 
-func (s *Session) releaseAndForgetClient(id protocol.ClientID) {
+func (s *Session) instanceDeleted(id protocol.ClientID) {
 	if id == protocol.UserClientID {
 		return
 	}
 
-	s.modelClientFactory.DetachAndForget(id)
+	s.modelClientFactory.InstanceDeleted(id)
+}
+
+func (s *Session) interruptModelTurn(id protocol.ClientID) {
+	if id == protocol.UserClientID {
+		return
+	}
+
+	s.modelClientFactory.InterruptTurn(id)
+}
+
+func (s *Session) interruptModelWindow(id protocol.ClientID, window domain.ChannelName) {
+	if id == protocol.UserClientID {
+		return
+	}
+
+	s.modelClientFactory.InterruptWindow(id, window)
+}
+
+func (s *Session) interruptModelPeerWindows(peer domain.InstanceID) {
+	window := domain.ChannelName(peer)
+	for id := range s.activeConnections() {
+		s.interruptModelWindow(id, window)
+	}
+}
+
+func (s *Session) reapModelConnection(id protocol.ClientID) {
+	if id == protocol.UserClientID {
+		return
+	}
+	s.interruptModelTurn(id)
+
+	subscription := s.takeModelSubscription(id)
+	if subscription == nil {
+		return
+	}
+
+	drained := subscription.drainOutbound()
+	s.reapers.Go(func() {
+		<-drained
+		s.releaseClient(id)
+		s.reapClient(id)
+	})
+}
+
+func (s *Session) reapDeadModelConnection(id protocol.ClientID) {
+	if id == protocol.UserClientID {
+		return
+	}
+
+	subscription := s.takeModelSubscription(id)
+	if subscription == nil {
+		return
+	}
+
+	s.releaseClient(id)
+	s.reapClient(id)
+}
+
+func (s *Session) takeModelSubscription(id protocol.ClientID) *serverClient {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+
+	subscription := s.clientHandles[id]
+	if subscription != nil {
+		delete(s.clientHandles, id)
+		delete(s.attachments, id)
+	}
+
+	return subscription
 }

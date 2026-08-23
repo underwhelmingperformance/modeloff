@@ -29,8 +29,8 @@ type writerJob struct {
 // one event loop — and it is what makes a command's read-modify-write
 // of channel state atomic without a lock per field.
 //
-// The loop exits when the lifetime ctx derived from the `baseContext`
-// supplier is cancelled or when [Session.Shutdown] closes the
+// The loop exits when the lifetime ctx passed to [New] is cancelled
+// or when [Session.Shutdown] closes the
 // shutdown gate, whichever happens first. `writerStopped` closes on
 // the way out, so a submitter blocked on the handoff is released
 // with an error; it does not wait on a loop that is gone.
@@ -60,26 +60,48 @@ func (s *Session) runWriterJob(job writerJob) {
 	job.fn(job.ctx)
 }
 
-// onWriter runs `fn` on the command loop and returns its result. The
-// handoff channel is unbuffered, so a successful send means the loop
-// has taken the job and will run it: there is no window in which a
-// job is accepted and then dropped.
+// onWriter runs `fn` on the command loop with no window authority
+// attached to it. Server-side work belongs here: the session starts
+// it on its own account, and no client's turn decides whether it
+// runs.
+func (s *Session) onWriter(
+	ctx context.Context,
+	fn func(context.Context) (protocol.Response, error),
+) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, nil, fn)
+}
+
+// onGuardedWriter runs `fn` on the command loop and returns its
+// result. The handoff channel is unbuffered, so a successful send
+// means the loop has taken the job and will run it: there is no
+// window in which a job is accepted and then dropped.
+//
+// A non-nil `guard` is the window authority the issuing client
+// attached to one command, and `fn` runs only while that authority
+// still stands; otherwise the command is refused with
+// [protocol.ErrWindowAuthorityChanged]. The check runs inside the
+// job, on the goroutine that also runs the KICK or PART that would
+// revoke the authority, so nothing runs between the check and `fn`.
+// [Session.Handle] passes the guard to the one dispatch it
+// authorises, which is why work that dispatch goes on to start for
+// another client is not gated on it.
 //
 // Every state-mutating command handler routes through here, which is
 // what makes the session a single writer. Two rules follow from that
 // and are load-bearing:
 //
-//   - Code running under `fn` must not call `onWriter` again, whether
-//     directly or through a client's `Send`. The loop is busy running
-//     `fn`, so the nested submission would never be taken up.
+//   - Code running under `fn` must not submit to the loop again,
+//     whether directly or through a client's `Send`. The loop is busy
+//     running `fn`, so the nested submission would never be taken up.
 //   - Blocking work belongs outside `fn`. An LLM round-trip
 //     ([ModelClientFactory.PrepareInstance]), a subscription's
 //     history load ([ModelClientFactory.Attach]), or a join on
 //     another goroutine ([ModelClientFactory.Detach]) stalls every
 //     other client for its duration, and `Detach` waits on a
 //     dispatch goroutine that may itself be queued behind the loop.
-func (s *Session) onWriter(
+func (s *Session) onGuardedWriter(
 	ctx context.Context,
+	guard protocol.WindowGuard,
 	fn func(context.Context) (protocol.Response, error),
 ) (protocol.Response, error) {
 	var (
@@ -88,8 +110,16 @@ func (s *Session) onWriter(
 	)
 
 	job := writerJob{
-		ctx:  ctx,
-		fn:   func(ctx context.Context) { resp, err = fn(ctx) },
+		ctx: ctx,
+		fn: func(ctx context.Context) {
+			if guard != nil && !guard.Valid(ctx) {
+				err = protocol.ErrWindowAuthorityChanged
+
+				return
+			}
+
+			resp, err = fn(ctx)
+		},
 		done: make(chan struct{}),
 	}
 

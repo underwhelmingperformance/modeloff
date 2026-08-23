@@ -66,7 +66,6 @@ func TestCloseCommand_Run_parts_a_channel_window(t *testing.T) {
 	rc := Context{
 		Session: sess,
 		Active:  domain.WindowKey("#general"),
-		Actor:   user.Instance(),
 		Client:  user,
 	}
 

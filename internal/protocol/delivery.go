@@ -30,11 +30,23 @@ import (
 // target field), so no peer learns membership it does not
 // already share.
 //
+// `Window` identifies the recipient-relative conversation for a
+// transient event whose wire payload has no target. Dispatch lifecycle
+// and failure events use it so clients apply the event to the turn's
+// channel or direct-message window.
+//
+// `HistoryOnly` marks sender-local chat traffic for replay-capable
+// clients. The client files the event into its transcript in delivery
+// order and does not treat the event as a new-turn trigger or an IRC
+// echo.
+//
 // Domain types stay free of observability metadata: the protocol
 // package owns the envelope; the persistence layer (`AppendEvent`
 // / `EventsBefore`) sees the inner [Event] only.
 type Delivery struct {
-	Event   Event
-	Targets []domain.ChannelName
-	SpanCtx trace.SpanContext
+	Event       Event
+	Targets     []domain.ChannelName
+	Window      WindowTarget
+	SpanCtx     trace.SpanContext
+	HistoryOnly bool
 }

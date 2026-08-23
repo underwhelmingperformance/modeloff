@@ -22,7 +22,7 @@ import (
 func newTestSession(t *testing.T, fx *managerFixture) *session.Session {
 	t.Helper()
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	return sess

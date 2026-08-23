@@ -219,7 +219,7 @@ func (s *Session) pokeWindows(ctx context.Context, names []domain.ChannelName) {
 	now := s.now()
 
 	for _, ch := range names {
-		s.emit(ctx, domain.PokeEvent{Channel: ch, At: now})
+		s.emitScoped(ctx, domain.PokeEvent{Channel: ch, At: now}, channelScope{channel: ch})
 	}
 }
 

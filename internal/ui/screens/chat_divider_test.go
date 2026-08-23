@@ -142,12 +142,11 @@ func TestChatScreen_no_divider_for_a_line_that_lands_during_a_switch(t *testing.
 		At:      time.Now(),
 	})
 
-	model, _ = model.Update(screens.NewProtocolEventForTest(domain.Message{
-		Target: "#general",
-		From:   "alice",
-		Body:   "landed during the switch",
-		At:     time.Now(),
-	}, nil))
+	model, _ = model.Update(screens.NewProtocolEventForTest(domain.Message{Source: domain.LegacyClientSource(
+
+		"alice"), Target: "#general", Body: "landed during the switch", At: time.Now()},
+
+		nil))
 
 	for _, msg := range flattenCmd(focusCmd) {
 		model, _ = model.Update(msg)

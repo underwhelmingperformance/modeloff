@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -14,7 +15,30 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/store/storetest"
 )
+
+type blockingLifecycleDeletionStore struct {
+	Store
+
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingLifecycleDeletionStore) CommitInstanceDeletion(
+	ctx context.Context,
+	deletion storemod.InstanceDeletion,
+) (storemod.CommittedInstanceDeletion, error) {
+	close(s.entered)
+
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return storemod.CommittedInstanceDeletion{}, ctx.Err()
+	}
+
+	return s.Store.CommitInstanceDeletion(ctx, deletion)
+}
 
 // quitToolCall builds a [api.CompletionResult] whose PendingToolCalls
 // invoke the `quit` tool with the given farewell. A model that runs
@@ -43,7 +67,6 @@ func quitToolCall(t testing.TB, message string) api.CompletionResult {
 // does.
 func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
 		continues := 0
 		fake := &apitest.Fake{
 			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
@@ -55,6 +78,7 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 			},
 		}
 
+		bootAt := time.Now()
 		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
@@ -69,15 +93,10 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Message{Target: "#general", From: "testuser", Body: "still there?", At: fixedTime},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.Quit{
-				Nick:       "botty",
-				InstanceID: testMemberID("botty"),
-				Message:    "signing off",
-				At:         fixedTime,
-				Instance:   botty,
-			},
+			domain.Message{Source: domain.ClientSource(protocol.UserClientID, "testuser"), Target: "#general", Body: "still there?", At: fixedTime},
+			domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime},
+			domain.Quit{Source: domain.ClientSource(botty.ID(), "botty"), Message: "signing off", At: fixedTime},
+			domain.ModelDispatchDone{Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		require.Equal(t, 0, continues, "quit ends the turn: there is no client left to ask for another round")
@@ -86,179 +105,199 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, window.Members.HasInstance(botty))
 
-		require.Nil(t, sess.LookupClient(protocol.ClientID(botty.ID())))
+		require.False(t, sess.ClientConnected(protocol.ClientID(botty.ID())))
 	})
 }
 
-func TestSession_committed_quit_retires_client_before_writer_advances(t *testing.T) {
-	sess, store := newTestSession(t)
-	botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+func TestSession_model_quit_drains_terminal_events_before_closing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		model, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		drainDeliveries(client)
 
-	var resolveErr error
-	var nickStillConnected bool
-	var activeIDs []protocol.ClientID
+		resp, err := sess.Handle(ctx, client, protocol.Quit{Reason: "goodnight"})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{}, resp)
 
-	resp, err := sess.onWriter(t.Context(), func(ctx context.Context) (protocol.Response, error) {
-		outcome := sess.quit(ctx, botty, "gone", quitRequiresDeletion)
+		var deliveries []protocol.Delivery
+		for range 2 {
+			deliveries = append(deliveries, <-client.Events())
+		}
+		require.Equal(t, []protocol.Delivery{
+			{Event: domain.Quit{
+				Source:  domain.ClientSource(model.ID(), "botty"),
+				Message: "goodnight", At: fixedTime,
+			}},
+			{Event: domain.ConnectionError{Reason: "Connection closed", At: fixedTime}},
+		}, deliveries)
+		<-client.sub.Done()
+	})
+}
 
-		_, resolveErr = sess.resolveClientActor(client)
-		nickStillConnected = sess.lookupClientByNick("botty") != nil
-		for _, sub := range sess.subscriberSnapshot() {
-			activeIDs = append(activeIDs, sub.Identity())
+func TestSession_terminal_error_ends_the_departing_clients_delivery_prefix(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		factory := newTestModelClientFactory(t, &apitest.Fake{})
+		sess := New(t.Context(), backing, factory, nil)
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		require.NoError(t, userJoin(t.Context(), t, sess, "#general"))
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(t.Context(), sess, botty, "#general", ""))
+		user := userClient(t, sess)
+		drainDeliveries(user)
+		drainDeliveries(client)
+
+		target := protocol.ChannelWindowTarget("#general")
+		dispatch := sess.BeginModelDispatch(
+			t.Context(), mustWindowGuard(t, client, target), target,
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+		)
+		factory.interruptTurnFn = func(id protocol.ClientID) {
+			if id == protocol.ClientID(botty.ID()) {
+				dispatch.Done(t.Context(), domain.ModelDispatchDone{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				})
+			}
 		}
 
-		return commandResult(outcome.err)
-	})
-	require.NoError(t, err)
-	require.Equal(t, protocol.Response{}, resp)
-	postQuitResp, postQuitErr := sess.Handle(t.Context(), client, protocol.Nick{New: "again"})
-	require.Equal(t, protocol.Response{}, postQuitResp)
+		response, err := user.Send(t.Context(), protocol.Kill{
+			Nick: botty.Nick(), Reason: "enough",
+		})
+		synctest.Wait()
 
-	var disconnected *ClientDisconnectedError
-	require.ErrorAs(t, resolveErr, &disconnected)
-	require.Equal(t, &ClientDisconnectedError{ID: client.Identity()}, disconnected)
-	disconnected = nil
-	require.ErrorAs(t, postQuitErr, &disconnected)
-	require.Equal(t, &ClientDisconnectedError{ID: client.Identity()}, disconnected)
-	require.False(t, nickStillConnected)
-	require.Equal(t, []protocol.ClientID{protocol.UserClientID}, activeIDs)
-	require.Nil(t, sess.LookupClient(client.Identity()))
-	require.Equal(t, []domain.Event{
-		domain.Quit{
-			Nick:       "botty",
-			InstanceID: botty.ID(),
-			Message:    "gone",
-			At:         fixedTime,
-			Instance:   botty,
-		},
-	}, drainDeliveries(client))
-	_, err = store.ResolveNick(t.Context(), "again")
-	require.ErrorIs(t, err, storemod.ErrNoSuchNick)
+		require.Equal(t, struct {
+			Response protocol.Response
+			Error    error
+			User     []domain.Event
+			Model    []domain.Event
+		}{
+			User: []domain.Event{
+				domain.ModelDispatchStarted{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+				domain.Quit{
+					Source:  domain.ClientSource(botty.ID(), botty.Nick()),
+					Message: "Killed by testuser (enough)", At: fixedTime,
+				},
+				domain.ModelDispatchDone{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+			},
+			Model: []domain.Event{
+				domain.ModelDispatchStarted{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+				domain.KillNotice{
+					Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
+					Subject: botty.Nick(), Reason: "enough", At: fixedTime,
+				},
+				domain.Quit{
+					Source:  domain.ClientSource(botty.ID(), botty.Nick()),
+					Message: "Killed by testuser (enough)", At: fixedTime,
+				},
+				domain.ConnectionError{
+					Reason: "Killed by testuser (enough)", At: fixedTime,
+				},
+			},
+		}, struct {
+			Response protocol.Response
+			Error    error
+			User     []domain.Event
+			Model    []domain.Event
+		}{
+			Response: response,
+			Error:    err,
+			User:     drainDeliveries(user),
+			Model:    drainDeliveries(client),
+		})
+	})
 }
 
-func TestSession_user_quit_retires_the_actor_until_connect(t *testing.T) {
-	sess, store := newTestSession(t)
-	client := sess.LookupClient(protocol.UserClientID)
-	require.NotNil(t, client)
-	user := sess.userInstance()
-	require.NoError(t, sess.Connect(t.Context()))
-	drainDeliveries(client)
+func TestSession_kill_drains_terminal_events_through_backpressure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		model, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		drainDeliveries(client)
 
-	resp, err := client.Send(t.Context(), protocol.Quit{Reason: "restart"})
-	require.NoError(t, err)
-	require.Equal(t, protocol.Response{}, resp)
+		filler := protocol.Delivery{Event: domain.SystemNotice{Text: "queued", At: fixedTime}}
+		sub := client.sub.(*serverClient)
+		for range eventBufSize {
+			sub.events <- filler
+		}
 
-	postQuitResp, postQuitErr := sess.Handle(t.Context(), client, protocol.Nick{New: "again"})
-	var disconnected *ClientDisconnectedError
-	require.ErrorAs(t, postQuitErr, &disconnected)
-	_, resolveErr := store.ResolveNick(t.Context(), "testuser")
-	require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)
-	require.Equal(t, struct {
-		active       protocol.Client
-		response     protocol.Response
-		disconnected *ClientDisconnectedError
-		events       []domain.Event
-	}{
-		active:       nil,
-		response:     protocol.Response{},
-		disconnected: &ClientDisconnectedError{ID: protocol.UserClientID},
-		events: []domain.Event{
+		resp, err := userClient(t, sess).Send(ctx, protocol.Kill{
+			Nick: "botty", Reason: "enough",
+		})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{}, resp)
+		require.False(t, sess.ClientConnected(client.Identity()))
+
+		for range eventBufSize {
+			require.Equal(t, filler, <-client.Events())
+		}
+
+		var terminal []domain.Event
+		for range 3 {
+			terminal = append(terminal, (<-client.Events()).Event)
+		}
+		require.Equal(t, []domain.Event{
+			domain.KillNotice{
+				Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
+				Subject: "botty", Reason: "enough", At: fixedTime,
+			},
 			domain.Quit{
-				Nick:       "testuser",
-				InstanceID: protocol.UserClientID,
-				Message:    "restart",
-				At:         fixedTime,
-				Instance:   user,
+				Source:  domain.ClientSource(model.ID(), "botty"),
+				Message: "Killed by testuser (enough)", At: fixedTime,
 			},
-		},
-	}, struct {
-		active       protocol.Client
-		response     protocol.Response
-		disconnected *ClientDisconnectedError
-		events       []domain.Event
-	}{
-		active:       sess.LookupClient(protocol.UserClientID),
-		response:     postQuitResp,
-		disconnected: disconnected,
-		events:       drainDeliveries(client),
-	})
-
-	require.NoError(t, sess.Connect(t.Context()))
-	stored, err := store.ResolveNick(t.Context(), "testuser")
-	require.NoError(t, err)
-	require.Equal(t, struct {
-		active      protocol.Client
-		storedID    domain.InstanceID
-		storedNick  domain.Nick
-		connectedAt time.Time
-		events      []domain.Event
-	}{
-		active:      client,
-		storedID:    protocol.UserClientID,
-		storedNick:  "testuser",
-		connectedAt: fixedTime,
-		events: []domain.Event{
-			domain.Welcome{
-				ServerName: domain.StatusServerName,
-				Nick:       "testuser",
-				At:         fixedTime,
+			domain.ConnectionError{
+				Reason: "Killed by testuser (enough)", At: fixedTime,
 			},
-		},
-	}, struct {
-		active      protocol.Client
-		storedID    domain.InstanceID
-		storedNick  domain.Nick
-		connectedAt time.Time
-		events      []domain.Event
-	}{
-		active:      sess.LookupClient(protocol.UserClientID),
-		storedID:    stored.ID(),
-		storedNick:  stored.Nick(),
-		connectedAt: sess.ConnectedAt(),
-		events:      drainDeliveries(client),
+		}, terminal)
+		<-client.sub.Done()
 	})
 }
 
-func TestSession_user_reactivation_refuses_a_reclaimed_nick(t *testing.T) {
-	sess, store := newTestSession(t)
-	client := sess.LookupClient(protocol.UserClientID)
-	require.NotNil(t, client)
-	require.NoError(t, sess.Connect(t.Context()))
-	drainDeliveries(client)
+func TestSession_shutdown_releases_a_terminal_reaper_blocked_on_outbound_delivery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		_, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		drainDeliveries(client)
 
-	resp, err := client.Send(t.Context(), protocol.Quit{Reason: "restart"})
-	require.NoError(t, err)
-	require.Equal(t, protocol.Response{}, resp)
-	drainDeliveries(client)
+		filler := protocol.Delivery{Event: domain.SystemNotice{Text: "queued", At: fixedTime}}
+		sub := client.sub.(*serverClient)
+		for range eventBufSize {
+			sub.events <- filler
+		}
 
-	replacement := domain.NewModelInstance("inst-replacement", "testuser", "test/model", "", nil)
-	require.NoError(t, store.SaveInstance(t.Context(), replacement))
+		response, err := userClient(t, sess).Send(ctx, protocol.Kill{
+			Nick: "botty", Reason: "enough",
+		})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{}, response)
+		require.False(t, sess.ClientConnected(client.Identity()))
 
-	err = sess.Connect(t.Context())
-	var nickInUse domain.NickInUseError
-	require.ErrorAs(t, err, &nickInUse)
-	stored, resolveErr := store.ResolveNick(t.Context(), "testuser")
-	require.NoError(t, resolveErr)
-	require.Equal(t, struct {
-		active    protocol.Client
-		nickError domain.NickInUseError
-		storedID  domain.InstanceID
-		events    []domain.Event
-	}{
-		active:    nil,
-		nickError: domain.NickInUseError{Nick: "testuser", At: fixedTime},
-		storedID:  replacement.ID(),
-		events:    nil,
-	}, struct {
-		active    protocol.Client
-		nickError domain.NickInUseError
-		storedID  domain.InstanceID
-		events    []domain.Event
-	}{
-		active:    sess.LookupClient(protocol.UserClientID),
-		nickError: nickInUse,
-		storedID:  stored.ID(),
-		events:    drainDeliveries(client),
+		shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		shutdownErr := sess.Shutdown(shutdownCtx)
+
+		require.Equal(t, struct {
+			ShutdownError error
+			Queued        int
+		}{}, struct {
+			ShutdownError error
+			Queued        int
+		}{
+			ShutdownError: shutdownErr,
+			Queued:        queuedDeliveries(sub),
+		})
 	})
 }
 
@@ -275,17 +314,21 @@ func TestSession_user_reactivation_refuses_a_reclaimed_nick(t *testing.T) {
 // is the kind that stops reading in practice.
 func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		bootAt := time.Now()
 		// The turn parks until the client's own teardown cancels it,
 		// which is what leaves the subscription with nobody reading
 		// it while the flood arrives.
+		turnStarted := make(chan struct{})
+		turnCancelled := make(chan struct{})
 		fake := &apitest.Fake{
 			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+				close(turnStarted)
 				<-ctx.Done()
+				close(turnCancelled)
 				return api.CompletionResult{}, ctx.Err()
 			},
 		}
 
+		bootAt := time.Now()
 		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
@@ -297,6 +340,7 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
 
 		dispatchUserMessage(ctx, t, sess, "#general", "are you there?")
+		<-turnStarted
 
 		sub := sess.lookupClientHandle(protocol.ClientID(botty.ID()))
 		require.NotNil(t, sub)
@@ -305,30 +349,362 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 		// the head of the flood before the queue starts holding, so
 		// the trip point is one past both.
 		for range eventBufSize + sendQAllowance + 1 {
-			sub.enqueue(protocol.Delivery{Event: domain.Message{
-				Target: "#general",
-				From:   "testuser",
-				Body:   "flood",
-				At:     fixedTime,
+			sub.enqueue(t.Context(), protocol.Delivery{Event: domain.Message{Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+
+				Target: "#general", Body: "flood", At: fixedTime}})
+		}
+
+		<-turnCancelled
+		synctest.Wait()
+		<-sub.Done()
+
+		require.Equal(t, []domain.Event{
+			bootstrapModeChange(t, sess, bootAt),
+			domain.Message{Source: domain.ClientSource(protocol.UserClientID, "testuser"), Target: "#general", Body: "are you there?", At: fixedTime},
+			domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime},
+			domain.Quit{Source: domain.ClientSource(botty.ID(), "botty"), Message: "Max SendQ exceeded", At: fixedTime},
+			domain.ModelDispatchDone{Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime},
+		}, collectEmittedEvents(t, sess))
+
+		require.False(t, sess.ClientConnected(protocol.ClientID(botty.ID())))
+		factory := sess.modelClientFactory.(*testModelClientFactory)
+		require.Equal(t, []protocol.ClientID{}, factory.attached())
+		require.Equal(t, []protocol.ClientID{protocol.ClientID(botty.ID())}, factory.deletedInstances())
+
+		window, err := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, err)
+		require.False(t, window.Members.HasInstance(botty))
+	})
+}
+
+func TestSession_sendQ_overflow_seals_the_accepted_prefix_during_teardown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		blocking := &blockingLifecycleDeletionStore{
+			Store: backing, entered: make(chan struct{}), release: make(chan struct{}),
+		}
+		factory := newTestModelClientFactory(t, &apitest.Fake{})
+		sess := New(t.Context(), blocking, factory, nil)
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		model, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		drainDeliveries(client)
+		sub := client.sub.(*serverClient)
+
+		buffered := protocol.Delivery{Event: domain.SystemNotice{
+			Text: "already buffered", At: fixedTime,
+		}}
+		for range eventBufSize {
+			sub.events <- buffered
+		}
+
+		acceptedDelivery := protocol.Delivery{Event: domain.SystemNotice{
+			Text: "accepted before overflow", At: fixedTime,
+		}}
+		acceptedQueue := make([]queuedDelivery, sendQAllowance)
+		for i := range acceptedQueue {
+			acceptedQueue[i] = queuedDelivery{delivery: acceptedDelivery}
+			sub.enqueue(t.Context(), acceptedDelivery)
+		}
+
+		sub.enqueue(t.Context(), protocol.Delivery{Event: domain.SystemNotice{
+			Text: "overflow", At: fixedTime,
+		}})
+		<-blocking.entered
+		actual := []protocol.Delivery{<-client.Events()}
+		synctest.Wait()
+
+		acceptedAfterDrain := make([]queuedDelivery, sendQAllowance-1)
+		for i := range acceptedAfterDrain {
+			acceptedAfterDrain[i] = queuedDelivery{delivery: acceptedDelivery}
+		}
+
+		lateDelivery := protocol.Delivery{Event: domain.PokeEvent{
+			Channel: "#general", At: fixedTime,
+		}}
+		for range 3 {
+			sub.enqueue(t.Context(), lateDelivery)
+		}
+		queuedDuringTeardown := queuedDeliverySnapshot(sub)
+
+		close(blocking.release)
+		for range eventBufSize + len(queuedDuringTeardown) + 2 {
+			actual = append(actual, <-client.Events())
+		}
+		<-sub.Done()
+		require.NoError(t, sess.Shutdown(t.Context()))
+
+		expected := make([]protocol.Delivery, 0, eventBufSize+sendQAllowance+2)
+		for range eventBufSize {
+			expected = append(expected, buffered)
+		}
+		for range sendQAllowance {
+			expected = append(expected, acceptedDelivery)
+		}
+		expected = append(expected,
+			protocol.Delivery{Event: domain.Quit{
+				Source:  domain.ClientSource(model.ID(), "botty"),
+				Message: sendQExceededReason, At: fixedTime,
+			}},
+			protocol.Delivery{Event: domain.ConnectionError{
+				Reason: sendQExceededReason, At: fixedTime,
+			}},
+		)
+
+		require.Equal(t, struct {
+			Queued  []queuedDelivery
+			Drained []protocol.Delivery
+		}{
+			Queued:  acceptedAfterDrain,
+			Drained: expected,
+		}, struct {
+			Queued  []queuedDelivery
+			Drained []protocol.Delivery
+		}{
+			Queued:  queuedDuringTeardown,
+			Drained: actual,
+		})
+	})
+}
+
+func TestSession_channel_event_failure_keeps_the_recipient_connected(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, backing := newTestSession(t)
+		ctx := t.Context()
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+
+		model := seedInstanceRow(t, backing, instanceSpec{
+			Nick: "botty", ModelID: "test/model",
+		})
+		client := &passiveClient{id: protocol.ClientID(model.ID())}
+		subscription, err := subscribeTestClient(ctx, t, sess, client, protocol.SubscribeOptions{
+			ReplayHistory: true,
+		})
+		require.NoError(t, err)
+		client.sub = subscription
+		joinResponse, err := sess.Handle(ctx, client, protocol.Join{
+			Channels: []domain.ChannelName{"#general"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{Events: []protocol.Event{
+			domain.JoinedChannel{Channel: "#general"},
+		}}, joinResponse)
+		subscription.Activate()
+		synctest.Wait()
+		collectSubscriptionDeliveries(subscription)
+		auditBefore, err := backing.EventsBefore(ctx, "#general", nil, 10)
+		require.NoError(t, err)
+		projectedBefore, err := backing.ChannelScrollback(
+			ctx, model.ID(), "#general", 10,
+		)
+		require.NoError(t, err)
+
+		sess.store = &failingProjectionStore{Store: backing}
+		response, sendErr := userClient(t, sess).Send(ctx, protocol.PrivMsg{
+			Target: protocol.ChannelTarget("#general"), Body: "projection fails",
+		})
+		var persistenceErr *MessagePersistenceError
+		require.ErrorAs(t, sendErr, &persistenceErr)
+
+		serverSub := subscription.(*serverClient)
+		serverSub.enqueue(ctx, protocol.Delivery{Event: domain.PokeEvent{
+			Channel: "#general", At: fixedTime,
+		}})
+		synctest.Wait()
+		audit, auditErr := backing.EventsBefore(ctx, "#general", nil, 10)
+		projected, projectedErr := backing.ChannelScrollback(
+			ctx, model.ID(), "#general", 10,
+		)
+		window, windowErr := sess.loadChannelWindow(ctx, "#general")
+
+		require.Equal(t, struct {
+			Response          protocol.Response
+			PersistenceFailed bool
+			Connected         bool
+			Member            bool
+			AuditError        error
+			Audit             []domain.StoredEvent
+			ProjectedError    error
+			Projected         []domain.StoredEvent
+			Deliveries        []protocol.Delivery
+		}{
+			PersistenceFailed: true,
+			Connected:         true,
+			Member:            true,
+			Audit:             auditBefore,
+			Projected:         projectedBefore,
+			Deliveries: []protocol.Delivery{{Event: domain.PokeEvent{
+				Channel: "#general", At: fixedTime,
+			}}},
+		}, struct {
+			Response          protocol.Response
+			PersistenceFailed bool
+			Connected         bool
+			Member            bool
+			AuditError        error
+			Audit             []domain.StoredEvent
+			ProjectedError    error
+			Projected         []domain.StoredEvent
+			Deliveries        []protocol.Delivery
+		}{
+			Response:          response,
+			PersistenceFailed: persistenceErr != nil,
+			Connected:         sess.ClientConnected(protocol.ClientID(model.ID())),
+			Member:            windowErr == nil && window.Members.HasInstance(model),
+			AuditError:        auditErr,
+			Audit:             audit,
+			ProjectedError:    projectedErr,
+			Projected:         projected,
+			Deliveries:        collectSubscriptionDeliveries(subscription),
+		})
+	})
+}
+
+func TestSession_sendQ_overflow_interrupts_turn_when_instance_deletion_fails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		turnStarted := make(chan struct{})
+		turnCancelled := make(chan struct{})
+		fake := &apitest.Fake{
+			SendEventsFn: func(ctx context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
+				close(turnStarted)
+				<-ctx.Done()
+				close(turnCancelled)
+
+				return api.CompletionResult{}, ctx.Err()
+			},
+		}
+
+		backing := storetest.NewMemoryStore(t)
+		failing := &teardownFailureStore{
+			Store:             backing,
+			deleteInstanceErr: errors.New("delete failed"),
+		}
+		factory := newTestModelClientFactory(t, fake)
+		sess := New(t.Context(), failing, factory, nil)
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		botty := seedInstance(t, sess, backing, instanceSpec{
+			Nick: "botty", ModelID: "test/model", Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, backing, "#general", "testuser", "botty")
+		collectEmittedEvents(t, sess)
+
+		failing.instanceID = botty.ID()
+		failing.armed.Store(true)
+
+		dispatchUserMessage(t.Context(), t, sess, "#general", "are you there?")
+		<-turnStarted
+
+		sub := sess.lookupClientHandle(protocol.ClientID(botty.ID()))
+		require.NotNil(t, sub)
+		for range eventBufSize + sendQAllowance + 1 {
+			sub.enqueue(t.Context(), protocol.Delivery{Event: domain.Message{
+				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+				Target: "#general", Body: "flood", At: fixedTime,
 			}})
 		}
 
 		synctest.Wait()
+		cancelledBeforeDrain := false
+		select {
+		case <-turnCancelled:
+			cancelledBeforeDrain = true
+		default:
+		}
+		window, err := sess.loadChannelWindow(t.Context(), "#general")
+		require.NoError(t, err)
+		stateBeforeDrain := struct {
+			TurnCancelled bool
+			Connected     bool
+			Member        bool
+		}{
+			TurnCancelled: cancelledBeforeDrain,
+			Connected:     sess.ClientConnected(protocol.ClientID(botty.ID())),
+			Member:        window.Members.HasInstance(botty),
+		}
+
+		go func() {
+			for {
+				select {
+				case <-sub.events:
+				case <-sub.Done():
+					return
+				}
+			}
+		}()
+		<-sub.Done()
+		require.NoError(t, sess.Shutdown(t.Context()))
+
+		require.Equal(t, struct {
+			TurnCancelled bool
+			Connected     bool
+			Member        bool
+		}{
+			TurnCancelled: true,
+		}, stateBeforeDrain)
+	})
+}
+
+func TestSession_dispatch_panic_reaps_a_backpressured_client(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		turnStarted := make(chan struct{})
+		panicNow := make(chan struct{})
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				close(turnStarted)
+				<-panicNow
+				panic("dispatch failed")
+			},
+		}
+
+		bootAt := time.Now()
+		sess, store := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+		botty := seedInstance(t, sess, store, instanceSpec{
+			Nick: "botty", ModelID: "test/model", Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, store, "#general", "testuser", "botty")
+
+		dispatchUserMessage(ctx, t, sess, "#general", "break now")
+		<-turnStarted
+
+		sub := sess.lookupClientHandle(protocol.ClientID(botty.ID()))
+		require.NotNil(t, sub)
+		for range eventBufSize + 5 {
+			sub.enqueue(ctx, protocol.Delivery{Event: domain.Message{
+				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+				Target: "#general", Body: "backpressure", At: fixedTime,
+			}})
+		}
+		require.Equal(t, 6, queuedDeliveries(sub))
+
+		close(panicNow)
+		synctest.Wait()
+		<-sub.Done()
 
 		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
-			domain.Message{Target: "#general", From: "testuser", Body: "are you there?", At: fixedTime},
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.Message{
+				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+				Target: "#general", Body: "break now", At: fixedTime,
+			},
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime,
+			},
+			domain.ModelDispatchDone{
+				Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime,
+			},
 			domain.Quit{
-				Nick:       "botty",
-				InstanceID: testMemberID("botty"),
-				Message:    sendQExceededReason,
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				Message: "Internal error", At: fixedTime,
 			},
 		}, collectEmittedEvents(t, sess))
-
-		require.Nil(t, sess.LookupClient(protocol.ClientID(botty.ID())))
+		require.False(t, sess.ClientConnected(protocol.ClientID(botty.ID())))
+		factory := sess.modelClientFactory.(*testModelClientFactory)
+		require.Equal(t, []protocol.ClientID{}, factory.attached())
+		require.Equal(t, []protocol.ClientID{protocol.ClientID(botty.ID())}, factory.deletedInstances())
 
 		window, err := sess.loadChannelWindow(ctx, "#general")
 		require.NoError(t, err)
@@ -365,12 +741,9 @@ func TestSession_sendQ_overflow_spares_the_session_lifetime_client(t *testing.T)
 		const flood = eventBufSize + sendQAllowance + 1
 
 		for range flood {
-			sub.enqueue(protocol.Delivery{Event: domain.Message{
-				Target: "#general",
-				From:   "testuser",
-				Body:   "flood",
-				At:     fixedTime,
-			}})
+			sub.enqueue(t.Context(), protocol.Delivery{Event: domain.Message{Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+
+				Target: "#general", Body: "flood", At: fixedTime}})
 		}
 
 		synctest.Wait()
@@ -379,7 +752,7 @@ func TestSession_sendQ_overflow_spares_the_session_lifetime_client(t *testing.T)
 		// is all still queued.
 		require.Equal(t, flood-eventBufSize, queuedDeliveries(sub))
 
-		require.NotNil(t, sess.LookupClient(protocol.UserClientID))
+		require.True(t, sess.ClientConnected(protocol.UserClientID))
 		require.True(t, userInstance(t, sess).InChannel("#general"))
 
 		window, err := sess.loadChannelWindow(ctx, "#general")
@@ -401,13 +774,18 @@ func queuedDeliveries(c *serverClient) int {
 	return len(c.outbox)
 }
 
-// TestSession_dispatch_started_and_done_are_paired covers the
-// bracket a consumer scopes its "thinking" indicator to. Started and
-// Done come as a pair for every turn, including one that fails
-// before it can even resolve its window: a consumer that lowers on
-// Done must never see one it has no Started for, and one that raises
-// on Started must always get the Done that lowers it again.
-func TestSession_dispatch_started_and_done_are_paired(t *testing.T) {
+func queuedDeliverySnapshot(c *serverClient) []queuedDelivery {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+
+	return append([]queuedDelivery(nil), c.outbox...)
+}
+
+// TestSession_dispatch_lifecycle_starts_with_the_upstream_turn covers
+// the boundary around the work a consumer displays as "thinking".
+// A failure before the model has a valid window does not start that
+// lifecycle.
+func TestSession_dispatch_lifecycle_starts_with_the_upstream_turn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, s := newTestSessionWithAPI(t, &apitest.Fake{})
 		ctx := t.Context()
@@ -421,17 +799,274 @@ func TestSession_dispatch_started_and_done_are_paired(t *testing.T) {
 			ModelID:  "test/model",
 			Channels: testChannels("#ghost"),
 		})
+		require.NoError(t, sess.destroyChannel(ctx, "#ghost"))
 		registerUserMembership(t, sess, "#ghost", []domain.Nick{userNick(t, sess)})
 
-		sess.Emit(ctx, domain.PokeEvent{Channel: "#ghost", At: fixedTime})
+		sess.emitScoped(ctx, domain.PokeEvent{Channel: "#ghost", At: fixedTime}, channelScope{"#ghost"})
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
-			domain.ModelUnavailableError{Channel: "#ghost", Nick: "botty", At: fixedTime},
-			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
+			domain.ModelUnavailableError{
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				At:     fixedTime,
+			},
 		}, dispatchLifecycleEvents(collectEmittedEvents(t, sess)))
 	})
+}
+
+func TestSession_direct_dispatch_failure_uses_the_recipient_window(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
+		user := userClient(t, sess)
+		drainDeliveries(user)
+
+		failure := domain.ModelUnavailableError{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		}
+		sess.EmitModelFailure(ctx, protocol.DirectWindowTarget(protocol.UserClientID), failure)
+		synctest.Wait()
+
+		require.Equal(t, protocol.Delivery{
+			Event: failure, Window: protocol.DirectWindowTarget(botty.ID()),
+		}, <-user.Events())
+	})
+}
+
+func TestSession_direct_dispatch_failure_has_no_unrelated_operator_window(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
+		alice, _ := seedPassiveInstance(t, sess, "alice", "test/model")
+		user := userClient(t, sess)
+		drainDeliveries(user)
+
+		failure := domain.ModelUnavailableError{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		}
+		sess.EmitModelFailure(ctx, protocol.DirectWindowTarget(alice.ID()), failure)
+		synctest.Wait()
+
+		require.Equal(t, protocol.Delivery{Event: failure}, <-user.Events())
+	})
+}
+
+func TestSession_dispatch_done_reaches_the_start_audience_after_part(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#general", ""))
+		drainDeliveries(client)
+		collectEmittedEvents(t, sess)
+
+		target := protocol.ChannelWindowTarget("#general")
+		dispatch := sess.BeginModelDispatch(ctx, mustWindowGuard(t, client, target), target, domain.ModelDispatchStarted{
+			Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime,
+		})
+		resp, err := sess.Handle(ctx, client, protocol.Part{Channel: "#general"})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{}, resp)
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime,
+		})
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime,
+			},
+			domain.Part{
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#general", At: fixedTime,
+			},
+			domain.ModelDispatchDone{
+				Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+	})
+}
+
+func TestSession_dispatch_start_rejects_a_guard_from_an_earlier_membership(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#general", ""))
+		target := protocol.ChannelWindowTarget("#general")
+		guard := mustWindowGuard(t, client, target)
+		collectEmittedEvents(t, sess)
+		drainDeliveries(client)
+
+		partResponse, partErr := sess.Handle(ctx, client, protocol.Part{Channel: "#general"})
+		joinResponse, joinErr := sess.Handle(ctx, client, protocol.Join{
+			Channels: []domain.ChannelName{"#general"},
+		})
+		synctest.Wait()
+		collectEmittedEvents(t, sess)
+		drainDeliveries(client)
+
+		dispatch := sess.BeginModelDispatch(ctx, guard, target, domain.ModelDispatchStarted{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		synctest.Wait()
+
+		require.Equal(t, struct {
+			PartResponse protocol.Response
+			PartError    error
+			JoinResponse protocol.Response
+			JoinError    error
+			UserEvents   []domain.Event
+			ActorEvents  []domain.Event
+		}{
+			JoinResponse: protocol.Response{Events: []protocol.Event{
+				domain.JoinedChannel{Channel: "#general"},
+			}},
+		}, struct {
+			PartResponse protocol.Response
+			PartError    error
+			JoinResponse protocol.Response
+			JoinError    error
+			UserEvents   []domain.Event
+			ActorEvents  []domain.Event
+		}{
+			PartResponse: partResponse,
+			PartError:    partErr,
+			JoinResponse: joinResponse,
+			JoinError:    joinErr,
+			UserEvents:   collectEmittedEvents(t, sess),
+			ActorEvents:  drainDeliveries(client),
+		})
+	})
+}
+
+func TestSession_dispatch_lifecycle_is_scoped_to_its_channel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		require.NoError(t, userJoin(ctx, t, sess, "#public"))
+
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#public", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#private", ""))
+		collectEmittedEvents(t, sess)
+
+		dispatch := sess.BeginModelDispatch(
+			ctx,
+			mustWindowGuard(t, client, protocol.ChannelWindowTarget("#private")),
+			protocol.ChannelWindowTarget("#private"),
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+		)
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event(nil), collectEmittedEvents(t, sess))
+	})
+}
+
+func TestSession_dispatch_lifecycle_does_not_reveal_a_direct_message(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		require.NoError(t, userJoin(ctx, t, sess, "#public"))
+
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#public", ""))
+		alice, _ := seedPassiveInstance(t, sess, "alice", "test/peer")
+		collectEmittedEvents(t, sess)
+
+		dispatch := sess.BeginModelDispatch(
+			ctx,
+			mustWindowGuard(t, client, protocol.DirectWindowTarget(alice.ID())),
+			protocol.DirectWindowTarget(alice.ID()),
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+		)
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event(nil), collectEmittedEvents(t, sess))
+	})
+}
+
+func TestSession_dispatch_lifecycle_uses_each_recipient_direct_window(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		botty, botClient := seedPassiveInstance(t, sess, "botty", "test/model")
+		collectEmittedEvents(t, sess)
+		drainDeliveries(botClient)
+
+		dispatch := sess.BeginModelDispatch(
+			ctx,
+			mustWindowGuard(t, botClient, protocol.DirectWindowTarget(protocol.UserClientID)),
+			protocol.DirectWindowTarget(protocol.UserClientID),
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+		)
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		synctest.Wait()
+
+		require.Equal(t, []protocol.Delivery{
+			{
+				Event: domain.ModelDispatchStarted{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+				Window: protocol.DirectWindowTarget(botty.ID()),
+			},
+			{
+				Event: domain.ModelDispatchDone{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+				Window: protocol.DirectWindowTarget(botty.ID()),
+			},
+		}, collectProtocolDeliveries(userClient(t, sess)))
+		require.Equal(t, []protocol.Delivery{
+			{
+				Event: domain.ModelDispatchStarted{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+				Window: protocol.DirectWindowTarget(protocol.UserClientID),
+			},
+			{
+				Event: domain.ModelDispatchDone{
+					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+				},
+				Window: protocol.DirectWindowTarget(protocol.UserClientID),
+			},
+		}, collectProtocolDeliveries(botClient))
+	})
+}
+
+func collectProtocolDeliveries(client protocol.Client) []protocol.Delivery {
+	deliveries := []protocol.Delivery{}
+	for {
+		select {
+		case delivery := <-client.Events():
+			deliveries = append(deliveries, delivery)
+		default:
+			return deliveries
+		}
+	}
 }
 
 // dispatchLifecycleEvents keeps the per-turn lifecycle events from a
@@ -477,13 +1112,10 @@ func TestSession_Quit_tears_down_the_same_way_for_every_actor(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{
-			domain.Quit{
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Message:    "goodnight",
-				At:         fixedTime,
-				Instance:   user,
+			domain.Quit{Source: domain.ClientSource(user.ID(), domain.Nick("testuser")), Message: "goodnight",
+				At: fixedTime,
 			},
+			domain.ConnectionError{Reason: "Connection closed", At: fixedTime},
 		}, collectEmittedEvents(t, sess),
 			"the departing client is on the channels the QUIT reaches, so the "+
 				"membership filter carries it its own QUIT")
@@ -501,13 +1133,159 @@ func TestSession_Quit_tears_down_the_same_way_for_every_actor(t *testing.T) {
 	})
 }
 
+func TestSession_user_QUIT_revokes_connection_authority(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, store := newTestSession(t)
+		ctx := t.Context()
+		user := userClient(t, sess)
+		sub := sess.lookupClientHandle(protocol.UserClientID)
+		require.NotNil(t, sub)
+
+		botty := seedInstanceRow(t, store, instanceSpec{
+			Nick: "botty", ModelID: "test/model",
+		})
+		botClient := attachModelClient(t, sess, botty)
+		guard, err := sub.GuardWindow(ctx, protocol.DirectWindowTarget(botty.ID()))
+		require.NoError(t, err)
+		collectEmittedEvents(t, sess)
+
+		resp, err := user.Send(ctx, protocol.Quit{Reason: "goodnight"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		synctest.Wait()
+
+		require.False(t, sess.ClientConnected(protocol.UserClientID))
+		require.False(t, guard.Valid(ctx))
+		terminalEvents := collectEmittedEvents(t, sess)
+
+		failure := domain.ModelUnavailableError{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		}
+		sess.EmitModelFailure(ctx, protocol.DirectWindowTarget(protocol.UserClientID), failure)
+		synctest.Wait()
+		disconnectedEvents := collectEmittedEvents(t, sess)
+
+		_, err = user.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#afterlife"}})
+		require.ErrorIs(t, err, ErrClientNotConnected)
+
+		_, err = sub.Replies(ctx, nil, 10)
+		require.ErrorIs(t, err, protocol.ErrSubscriptionClosed)
+
+		resp, err = botClient.Send(ctx, protocol.PrivMsg{
+			Target: protocol.ClientTarget(protocol.UserClientID), Body: "are you there?",
+		})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{Err: domain.UnknownNickError{
+			At: fixedTime,
+		}}, resp)
+
+		require.NoError(t, sess.Connect(ctx))
+		synctest.Wait()
+		require.True(t, sess.ClientConnected(protocol.UserClientID))
+		require.False(t, guard.Valid(ctx), "reconnect must not revive old window authority")
+		reconnectedEvents := collectEmittedEvents(t, sess)
+
+		resp, err = user.Send(ctx, protocol.Join{Channels: []domain.ChannelName{"#new-connection"}})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+
+		require.Equal(t, struct {
+			Terminal     []domain.Event
+			Disconnected []domain.Event
+			Reconnected  []domain.Event
+		}{
+			Terminal: []domain.Event{
+				domain.Quit{
+					Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
+					Message: "goodnight", At: fixedTime,
+				},
+				domain.ConnectionError{Reason: "Connection closed", At: fixedTime},
+			},
+			Reconnected: []domain.Event{
+				domain.Welcome{ServerName: domain.StatusServerName, Nick: "testuser", At: fixedTime},
+			},
+		}, struct {
+			Terminal     []domain.Event
+			Disconnected []domain.Event
+			Reconnected  []domain.Event
+		}{
+			Terminal:     terminalEvents,
+			Disconnected: disconnectedEvents,
+			Reconnected:  reconnectedEvents,
+		})
+	})
+}
+
+func TestSession_dispatch_done_does_not_cross_a_user_reconnect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+		user := userClient(t, sess)
+		botty, botClient := seedPassiveInstance(t, sess, "botty", "test/model")
+		collectEmittedEvents(t, sess)
+		drainDeliveries(botClient)
+
+		target := protocol.DirectWindowTarget(protocol.UserClientID)
+		dispatch := sess.BeginModelDispatch(
+			ctx,
+			mustWindowGuard(t, botClient, target),
+			target,
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+		)
+		synctest.Wait()
+		started := collectEmittedEvents(t, sess)
+
+		response, err := user.Send(ctx, protocol.Quit{Reason: "reconnecting"})
+		require.NoError(t, err)
+		require.Equal(t, protocol.Response{}, response)
+		synctest.Wait()
+		terminal := collectEmittedEvents(t, sess)
+
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		synctest.Wait()
+		require.NoError(t, sess.Connect(ctx))
+		synctest.Wait()
+		reconnected := collectEmittedEvents(t, sess)
+
+		require.Equal(t, struct {
+			Started     []domain.Event
+			Terminal    []domain.Event
+			Reconnected []domain.Event
+		}{
+			Started: []domain.Event{domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			}},
+			Terminal: []domain.Event{
+				domain.Quit{
+					Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
+					Message: "reconnecting", At: fixedTime,
+				},
+				domain.ConnectionError{Reason: "Connection closed", At: fixedTime},
+			},
+			Reconnected: []domain.Event{
+				domain.Welcome{
+					ServerName: domain.StatusServerName, Nick: "testuser", At: fixedTime,
+				},
+			},
+		}, struct {
+			Started     []domain.Event
+			Terminal    []domain.Event
+			Reconnected []domain.Event
+		}{
+			Started: started, Terminal: terminal, Reconnected: reconnected,
+		})
+	})
+}
+
 // TestSession_Kill_can_name_the_issuing_client covers KILL against
 // the client that sent it. RFC 2812 §3.7.1 describes a command that
 // names a nick; nothing in it exempts the operator's own. The
-// teardown is the ordinary one: the QUIT carries the kill reason,
-// membership goes, and a channel the departure empties is destroyed.
-// The only thing the server does not do afterwards is close a
-// connection it does not have.
+// target receives KILL, then the ordinary QUIT and terminal ERROR.
+// Membership goes, and a channel the departure empties is destroyed.
 func TestSession_Kill_can_name_the_issuing_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, _ := newTestSession(t)
@@ -523,19 +1301,60 @@ func TestSession_Kill_can_name_the_issuing_client(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{
-			domain.Quit{
-				Nick:       "testuser",
-				InstanceID: user.ID(),
-				Message:    "Killed by testuser (enough)",
-				At:         fixedTime,
-				Instance:   user,
+			domain.KillNotice{
+				Source:  domain.ClientSource(user.ID(), "testuser"),
+				Subject: "testuser", Reason: "enough", At: fixedTime,
 			},
+			domain.Quit{Source: domain.ClientSource(user.ID(), domain.Nick("testuser")), Message: "Killed by testuser (enough)",
+				At: fixedTime,
+			},
+			domain.ConnectionError{Reason: "Killed by testuser (enough)", At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 
 		_, err = sess.loadChannelWindow(ctx, "#general")
 		require.ErrorIs(t, err, storemod.ErrNoSuchChannel)
 
 		requireChannels(t, user.Channels())
+	})
+}
+
+func TestSession_committed_self_kill_reports_connection_error_after_cleanup_failure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		failing := &teardownFailureStore{
+			Store:           backing,
+			clearSessionErr: errors.New("clear session failed"),
+		}
+		sess := New(t.Context(), failing, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		seedInstance(t, sess, backing, instanceSpec{
+			Nick: "botty", ModelID: "test/model", Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, backing, "#general", "testuser", "botty")
+		collectEmittedEvents(t, sess)
+		failing.armed.Store(true)
+
+		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{
+			Nick: "testuser", Reason: "enough",
+		})
+		require.ErrorIs(t, err, failing.clearSessionErr)
+		require.Equal(t, protocol.Response{}, resp)
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{
+			domain.KillNotice{
+				Source:  domain.ClientSource("", "testuser"),
+				Subject: "testuser", Reason: "enough", At: fixedTime,
+			},
+			domain.Quit{
+				Source:  domain.ClientSource("", "testuser"),
+				Message: "Killed by testuser (enough)", At: fixedTime,
+			},
+			domain.ConnectionError{Reason: "Killed by testuser (enough)", At: fixedTime},
+		}, collectEmittedEvents(t, sess))
 	})
 }
 
@@ -547,9 +1366,8 @@ func TestSession_Kill_can_name_the_issuing_client(t *testing.T) {
 // `changeNickAs` makes for NICK, and for the same reason.
 func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 	tests := []struct {
-		name     string
-		setUp    func(t *testing.T, sess *Session, ctx context.Context)
-		wantPart bool
+		name  string
+		setUp func(t *testing.T, sess *Session, ctx context.Context)
 	}{
 		{
 			name:  "on no channels at all",
@@ -560,8 +1378,7 @@ func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 			// puts a masked PART there instead, so a client whose
 			// channels all carry `+a` is named nowhere the broadcast
 			// reaches.
-			name:     "on anonymous channels only",
-			wantPart: true,
+			name: "on anonymous channels only",
 			setUp: func(t *testing.T, sess *Session, ctx context.Context) {
 				t.Helper()
 
@@ -586,29 +1403,21 @@ func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 				tc.setUp(t, sess, ctx)
 				collectEmittedEvents(t, sess)
 
-				user := userInstance(t, sess)
 				resp, err := userClient(t, sess).Send(ctx, protocol.Kill{Nick: "testuser", Reason: "enough"})
 				require.NoError(t, err)
 				require.NoError(t, resp.Err)
 				synctest.Wait()
 
-				var want []domain.Event
-				if tc.wantPart {
-					want = append(want, domain.Part{
-						Target:  "#hidden",
-						Nick:    domain.AnonymousNick,
-						Message: "Killed by testuser (enough)",
-						At:      fixedTime,
-					})
+				want := []domain.Event{
+					domain.KillNotice{Source: domain.ClientSource(protocol.UserClientID, "testuser"), Subject: "testuser", Reason: "enough", At: fixedTime},
 				}
-				want = append(want, domain.Quit{
-					Nick:       "testuser",
-					InstanceID: user.ID(),
-					Message:    "Killed by testuser (enough)",
-					At:         fixedTime,
-					Instance:   user,
-				})
-
+				if tc.name == "on anonymous channels only" {
+					want = append(want, domain.Part{Source: domain.AnonymousSource(), Target: "#hidden", Message: "Killed by testuser (enough)", At: fixedTime})
+				}
+				want = append(want,
+					domain.Quit{Source: domain.ClientSource(protocol.UserClientID, "testuser"), Message: "Killed by testuser (enough)", At: fixedTime},
+					domain.ConnectionError{Reason: "Killed by testuser (enough)", At: fixedTime},
+				)
 				require.Equal(t, want, collectEmittedEvents(t, sess))
 			})
 		})
@@ -631,14 +1440,13 @@ func TestSession_commands_naming_the_issuing_client(t *testing.T) {
 			run: func(t *testing.T, sess *Session, ctx context.Context) (protocol.Response, error) {
 				t.Helper()
 
-				return userClient(t, sess).Send(ctx, protocol.Whois{Nick: "testuser", Channel: "#general"})
+				return userClient(t, sess).Send(ctx, protocol.Whois{Nick: "testuser", Window: protocol.ChannelWindowTarget("#general")})
 			},
 			assert: func(t *testing.T, _ *Session, resp protocol.Response) {
 				t.Helper()
 
 				require.NoError(t, resp.Err)
 				require.Equal(t, []protocol.Event{domain.Whois{
-					Target:   "#general",
 					Nick:     "testuser",
 					Channels: []domain.ChannelName{"#general"},
 					At:       fixedTime,
@@ -749,5 +1557,85 @@ func TestSession_the_issuing_client_has_a_connection_record(t *testing.T) {
 
 		require.Equal(t, []domain.InstanceID{}, instanceIDs(t, s),
 			"the QUIT teardown deletes the connection record, which frees the nick")
+	})
+}
+
+// TestSession_a_guarded_quit_disconnects_an_overflowed_peer separates
+// one client's window authority from another client's teardown. A
+// model ending its own connection sends QUIT under the window guard
+// its turn holds, and `quitAs` invalidates that guard before the QUIT
+// is broadcast. The broadcast is what pushes a peer that has stopped
+// reading past its send-queue allowance, and the peer's disconnect is
+// the server acting on the peer's own connection. The departing
+// model's authority therefore has no say in whether it runs.
+//
+// A peer that keeps its subscription here is unreachable from then
+// on: `beginTermination` has sealed its outbound queue and
+// `claimServerDisconnect` has latched, so every later delivery is
+// dropped and no second disconnect can be attempted.
+func TestSession_a_guarded_quit_disconnects_an_overflowed_peer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
+		sess, s := newTestSession(t)
+		ctx := t.Context()
+
+		botty := seedInstanceRow(t, s, instanceSpec{
+			Nick: "botty", ModelID: "test/model", Channels: testChannels("#general"),
+		})
+		peer := seedInstanceRow(t, s, instanceSpec{
+			Nick: "peer", ModelID: "test/model", Channels: testChannels("#general"),
+		})
+		seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty", "peer")
+
+		bottyClient := attachBareClient(t, sess, botty)
+		peerClient := &passiveClient{id: protocol.ClientID(peer.ID())}
+		peerSub, err := subscribeTestClient(ctx, t, sess, peerClient, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+		peerClient.sub = peerSub
+
+		guard, err := bottyClient.sub.GuardWindow(ctx, protocol.ChannelWindowTarget("#general"))
+		require.NoError(t, err)
+
+		peerHandle := sess.lookupClientHandle(protocol.ClientID(peer.ID()))
+		require.NotNil(t, peerHandle)
+		for range eventBufSize + sendQAllowance {
+			peerHandle.enqueue(ctx, protocol.Delivery{Event: domain.SystemNotice{
+				Text: "flood", At: fixedTime,
+			}})
+		}
+		synctest.Wait()
+
+		resp, err := guard.Send(ctx, bottyClient, protocol.Quit{Reason: "bye"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+
+		synctest.Wait()
+
+		window, windowErr := sess.loadChannelWindow(ctx, "#general")
+		require.NoError(t, windowErr)
+
+		type assertionSnapshot struct {
+			PeerConnected bool
+			PeerInChannel bool
+			Events        []domain.Event
+		}
+
+		require.Equal(t, assertionSnapshot{
+			Events: []domain.Event{
+				bootstrapModeChange(t, sess, bootAt),
+				domain.Quit{
+					Source:  domain.ClientSource(botty.ID(), "botty"),
+					Message: "bye", At: fixedTime,
+				},
+				domain.Quit{
+					Source:  domain.ClientSource(peer.ID(), "peer"),
+					Message: sendQExceededReason, At: fixedTime,
+				},
+			},
+		}, assertionSnapshot{
+			PeerConnected: sess.ClientConnected(protocol.ClientID(peer.ID())),
+			PeerInChannel: window.Members.HasInstance(peer),
+			Events:        collectEmittedEvents(t, sess),
+		})
 	})
 }

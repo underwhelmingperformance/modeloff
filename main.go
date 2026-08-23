@@ -22,6 +22,7 @@ import (
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/observability"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
 	"github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/ui"
@@ -108,16 +109,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	sess := session.New(baseContext, dataStore, mgr, defaultChannelModes)
+	userCredential := protocol.NewUserCredential()
+	sess := session.New(appCtx, dataStore, mgr, defaultChannelModes,
+		session.WithUserCredential(userCredential))
 
-	user := userclient.New(domain.Nick(cfg.UserNick), sess, dataStore, userclient.NewStoreReplyLog(dataStore))
+	user := userclient.New(domain.Nick(cfg.UserNick), sess, dataStore,
+		userclient.NewStoreReplyLog(dataStore), userCredential)
 	if err := user.Attach(appCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "error attaching user client: %v\n", err)
 		os.Exit(1)
 	}
 
 	if err := mgr.Start(appCtx, sess); err != nil {
-		slog.Warn("attach boot model clients", "error", err)
+		var startErr *modelmanager.StartError
+		if !errors.As(err, &startErr) || startErr.AttachmentFailed() {
+			fmt.Fprintf(os.Stderr, "error attaching stored model clients: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Fprintf(os.Stderr, "warning: model cleanup did not finish: %v\n", err)
 	}
 
 	channelCount := 0
@@ -173,13 +183,14 @@ func main() {
 
 	// Cancelling the app context wakes every dispatch goroutine and
 	// stops the session's command loop. One deadline then covers the
-	// whole way out, in the order the layers sit in: DetachAll waits
-	// for the model turns still unwinding, the models attached and
-	// the ones already draining from a QUIT or KILL alike, and
-	// Shutdown waits for accepted server handlers to finish their
-	// rollback before it joins the delivery pumps behind them.
+	// whole way out. DrainHandlers first closes admission and waits for
+	// every accepted command, including ADDMODEL rollback. DetachAll can
+	// then cancel the manager lifecycle after those handlers have
+	// finished their memory cleanup. Shutdown joins the reapers and
+	// delivery pumps behind them. The user-client drain then waits for
+	// store-backed bookkeeping that follows an accepted command.
 	//
-	// When both return nil, nothing is left reading or writing the
+	// When all three return nil, nothing is left reading or writing the
 	// store by the time the deferred Close reaches it. When DetachAll
 	// times out that guarantee is spent: the turns it names are still
 	// running, and Close happens underneath them. That is the price of
@@ -189,6 +200,9 @@ func main() {
 	// session.ErrSessionClosed without reaching the database. The
 	// warning names the clients so the operator can see it happened.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), drainTimeout(cfg))
+	if err := sess.DrainHandlers(drainCtx); err != nil {
+		slog.Warn("session handler drain timed out", "error", err)
+	}
 
 	if err := mgr.DetachAll(drainCtx); err != nil {
 		slog.Warn("model dispatch drain timed out", "error", err)
@@ -196,6 +210,10 @@ func main() {
 
 	if err := sess.Shutdown(drainCtx); err != nil {
 		slog.Warn("session shutdown timed out", "error", err)
+	}
+
+	if err := user.Drain(drainCtx); err != nil {
+		slog.Warn("user command drain timed out", "error", err)
 	}
 
 	drainCancel()

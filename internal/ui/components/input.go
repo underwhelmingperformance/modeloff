@@ -77,8 +77,9 @@ type InputBar struct {
 	histDraft       string
 	histDraftCursor int
 
-	nicks    []domain.Nick
-	nickComp nickCompletion
+	nicks            []domain.Nick
+	nickComp         nickCompletion
+	nickListRevision uint64
 
 	locked bool
 
@@ -144,6 +145,11 @@ func (b InputBar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		return b, nil
 
 	case NickListUpdatedMsg:
+		if msg.Revision < b.nickListRevision {
+			return b, nil
+		}
+
+		b.nickListRevision = msg.Revision
 		b.nicks = slices.Collect(msg.Members.Nicks())
 		return b, nil
 

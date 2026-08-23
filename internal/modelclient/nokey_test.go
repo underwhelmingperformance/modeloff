@@ -9,6 +9,7 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 // TestDispatch_without_an_api_client_makes_no_upstream_call pins what
@@ -28,7 +29,13 @@ func TestDispatch_without_an_api_client_makes_no_upstream_call(t *testing.T) {
 		upstream := &countingAPI{}
 
 		inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-		mc := New(inst, sess, func() api.Client { return nil }, nil, nil, nil, nil, context.Background, nil)
+		mc := New(Config{
+			Instance:        inst,
+			Attachment:      protocol.NewAttachment(),
+			Session:         sess,
+			APIClient:       func() api.Client { return nil },
+			LifetimeContext: context.Background,
+		})
 		mc.retry = retryPolicy{Delay: retryTestDelay}
 
 		require.NoError(t, mc.Attach(t.Context()))
@@ -40,9 +47,9 @@ func TestDispatch_without_an_api_client_makes_no_upstream_call(t *testing.T) {
 		require.Equal(t, 0, upstream.callCount())
 
 		require.Equal(t, []domain.ProtocolEvent{
-			domain.ModelDispatchStarted{Instance: inst, At: sess.Now()},
-			domain.ModelUnavailableError{Channel: "#dev", Nick: "botty", At: sess.Now()},
-			domain.ModelDispatchDone{Instance: inst, At: sess.Now()},
+			domain.ModelUnavailableError{Source: domain.ClientSource("inst-botty", "botty"),
+				At: sess.Now(),
+			},
 		}, sess.emittedEvents())
 	})
 }

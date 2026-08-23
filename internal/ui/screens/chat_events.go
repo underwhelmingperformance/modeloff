@@ -25,10 +25,40 @@ import (
 // [Session.fanOutProtocol] computed for this delivery, copied
 // off the [protocol.Delivery] envelope so the handler can route
 // the line into the user-client's open windows without consulting
-// the wire payload. Nil for window-scoped events.
+// the wire payload. Nil for ordinary window-scoped events.
+//
+// `window` carries the recipient-relative channel or direct-message
+// target for transient lifecycle events whose IRC-shaped payload has
+// no target of its own.
 type protocolEventMsg struct {
 	event   protocol.Event
 	targets []domain.ChannelName
+	window  protocol.WindowTarget
+}
+
+type dispatchWindowKey struct {
+	actor  domain.InstanceID
+	kind   domain.ChannelKind
+	window domain.ChannelName
+}
+
+func newDispatchWindowKey(
+	actor domain.InstanceID,
+	window protocol.WindowTarget,
+) (dispatchWindowKey, bool) {
+	if channel, ok := protocol.ChannelWindowName(window); ok {
+		return dispatchWindowKey{
+			actor: actor, kind: domain.KindChannel,
+			window: domain.ChannelName(domain.KeyForChannel(channel)),
+		}, true
+	}
+	if peer, ok := protocol.DirectWindowPeer(window); ok {
+		return dispatchWindowKey{
+			actor: actor, kind: domain.KindDM, window: domain.ChannelName(peer),
+		}, true
+	}
+
+	return dispatchWindowKey{}, false
 }
 
 // NewProtocolEventForTest builds a [tea.Msg] that injects a
@@ -54,6 +84,12 @@ type unreadCountedMsg struct {
 	visits  int
 }
 
+type protocolEffectResultMsg struct {
+	msg tea.Msg
+}
+
+type protocolEffectDoneMsg struct{}
+
 // routeSessionEvents answers what the server sent: a delivery off the
 // protocol bus, the paced release of a queued model reply, and the
 // unread count a store read came back with.
@@ -70,6 +106,14 @@ func (s ChatScreen) routeSessionEvents(msg tea.Msg) (ChatScreen, tea.Cmd, bool) 
 	case unreadCountedMsg:
 		next, cmd := s.deliverUnreadCount(msg)
 		return next, cmd, true
+
+	case protocolEffectResultMsg:
+		next, cmd := s.handleProtocolEffectResult(msg)
+		return next, cmd, true
+
+	case protocolEffectDoneMsg:
+		next, cmd := s.handleProtocolEffectDone()
+		return next, cmd, true
 	}
 
 	return s, nil, false
@@ -81,9 +125,59 @@ func (s ChatScreen) routeSessionEvents(msg tea.Msg) (ChatScreen, tea.Cmd, bool) 
 // info, dispatch lifecycle, names replies, the status-window
 // signal, and focus changes.
 func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ChatScreen, tea.Cmd) {
-	var cmd tea.Cmd
+	s, buffered := s.bufferProtocolEvent(msg.event, msg.targets, msg.window)
+	s, cmd := s.applyProtocolEvent(msg)
+	s, effects := s.enqueueProtocolEffects(buffered, cmd, s.scrollbackUpdatedCmd())
 
-	buffered := s.bufferProtocolEvent(msg.event, msg.targets)
+	return s, tea.Batch(effects, s.listenForProtocolEvents())
+}
+
+func (s ChatScreen) enqueueProtocolEffects(cmds ...tea.Cmd) (ChatScreen, tea.Cmd) {
+	for _, cmd := range cmds {
+		if cmd != nil {
+			s.protocolEffects = append(s.protocolEffects, cmd)
+		}
+	}
+
+	return s.startNextProtocolEffect()
+}
+
+func (s ChatScreen) startNextProtocolEffect() (ChatScreen, tea.Cmd) {
+	if s.protocolEffectRunning || len(s.protocolEffects) == 0 {
+		return s, nil
+	}
+
+	cmd := s.protocolEffects[0]
+	s.protocolEffects = s.protocolEffects[1:]
+	s.protocolEffectRunning = true
+
+	return s, func() tea.Msg {
+		return protocolEffectResultMsg{msg: cmd()}
+	}
+}
+
+func (s ChatScreen) handleProtocolEffectResult(msg protocolEffectResultMsg) (ChatScreen, tea.Cmd) {
+	if msg.msg == nil {
+		return s.handleProtocolEffectDone()
+	}
+
+	return s, tea.Sequence(
+		msgCmd(msg.msg),
+		msgCmd(protocolEffectDoneMsg{}),
+	)
+}
+
+func (s ChatScreen) handleProtocolEffectDone() (ChatScreen, tea.Cmd) {
+	s.protocolEffectRunning = false
+
+	return s.startNextProtocolEffect()
+}
+
+// applyProtocolEvent updates client state for one delivery and
+// returns only the command produced by that event. The outer handler
+// adds buffering, scrollback refresh and the next bus read.
+func (s ChatScreen) applyProtocolEvent(msg protocolEventMsg) (ChatScreen, tea.Cmd) {
+	var cmd tea.Cmd
 
 	switch evt := msg.event.(type) {
 	case domain.Join:
@@ -107,14 +201,28 @@ func (s ChatScreen) handleProtocolEvent(msg protocolEventMsg) (ChatScreen, tea.C
 	case domain.TopicInfo:
 		s, cmd = s.handleTopicInfoEvent(evt)
 	case domain.ModelDispatchStarted:
-		s, cmd = s.handleModelDispatchStarted(evt)
+		s, cmd = s.handleModelDispatchStarted(evt, msg.window)
 	case domain.ModelDispatchDone:
-		s, cmd = s.handleModelDispatchDone(evt)
+		s, cmd = s.handleModelDispatchDone(evt, msg.window)
 	case domain.NamesReplyEvent:
 		s, cmd = s.handleNamesReply(evt)
+	case domain.NamesEnd:
+		s, cmd = s.handleNamesEnd(evt)
+	case domain.ConnectionError:
+		s, cmd = s.handleConnectionError(evt)
 	}
 
-	return s, tea.Batch(buffered, cmd, s.scrollbackUpdatedCmd(), s.listenForProtocolEvents())
+	return s, cmd
+}
+
+func (s ChatScreen) handleConnectionError(domain.ConnectionError) (ChatScreen, tea.Cmd) {
+	if s.quitting {
+		return s, nil
+	}
+
+	s.quitting = true
+
+	return s, msgCmd(ui.QuitCompleteMsg{})
 }
 
 // listenForProtocolEvents reads the next delivery from the
@@ -133,7 +241,9 @@ func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 			return nil
 		}
 
-		return protocolEventMsg{event: delivery.Event, targets: delivery.Targets}
+		return protocolEventMsg{
+			event: delivery.Event, targets: delivery.Targets, window: delivery.Window,
+		}
 	}
 }
 
@@ -153,17 +263,9 @@ func (s ChatScreen) scrollbackUpdatedCmd() tea.Cmd {
 }
 
 // handleNamesReply applies the joiner-targeted member-list snapshot
-// to the local channel cache and proposes the freshly-joined
-// channel as the focus target. Pre-existing members of the channel
-// — models, other users — are otherwise invisible to the chat
-// screen's cache; without this handler, switching to a freshly-
-// joined channel would show only the user's own name.
-//
-// The focus proposal carries the window's `UserTime` (the
-// join-event timestamp), so the arbiter in `handleChannelFocus`
-// keeps the user where they are if they've already navigated past
-// this join, and lands them on the freshest autojoin channel
-// otherwise.
+// to the local channel cache. Without this handler, the chat screen
+// would not learn about members who joined before the user, and a
+// newly joined channel would show only the user's own name.
 func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ChatScreen, tea.Cmd) {
 	w, ok := s.windowByName(msg.Channel)
 	if !ok {
@@ -184,19 +286,34 @@ func (s ChatScreen) handleNamesReply(msg domain.NamesReplyEvent) (ChatScreen, te
 		cw.Members = msg.Members
 	}
 
-	cmds := []tea.Cmd{
-		msgCmd(chatcmd.ChannelFocusMsg{Channel: msg.Channel, At: w.UserTime}),
-	}
-
 	if isChannel && s.active != nil && msg.Channel == s.active.Name() {
-		cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+		return s.nickListUpdatedCmd()
 	}
 
-	return s, tea.Batch(cmds...)
+	return s, nil
+}
+
+func (s ChatScreen) handleNamesEnd(msg domain.NamesEnd) (ChatScreen, tea.Cmd) {
+	if _, ok := s.windowByName(msg.Channel); !ok {
+		return s, nil
+	}
+
+	s.joinReplyDone[msg.Channel] = true
+	at, pending := s.pendingJoinFocus[msg.Channel]
+	if !pending {
+		return s, nil
+	}
+
+	delete(s.pendingJoinFocus, msg.Channel)
+
+	return s.handleChannelFocus(chatcmd.ChannelFocusMsg{
+		Channel: msg.Channel,
+		At:      at,
+	})
 }
 
 func (s ChatScreen) handleJoinEvent(msg domain.Join) (ChatScreen, tea.Cmd) {
-	isUser := msg.Instance == s.user.Instance()
+	isUser := s.isOwnSource(msg.Source)
 
 	w, channelKnown := s.windowByName(msg.Target)
 
@@ -216,13 +333,13 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ChatScreen, tea.Cmd) {
 		s.channels.Insert(w)
 	}
 
-	if cw != nil && !cw.Members.HasInstance(msg.Instance) {
-		cw.Members.Add(msg.Instance)
+	if id, identified := msg.Source.InstanceID(); cw != nil && identified && !cw.Members.HasID(id) {
+		cw.Members.AddIdentity(id, msg.Source.Nick())
 	}
 
 	if !isUser {
 		if s.active != nil && msg.Target == s.active.Name() && cw != nil {
-			return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
+			return s.nickListUpdatedCmd()
 		}
 
 		return s, nil
@@ -237,6 +354,7 @@ func (s ChatScreen) handleJoinEvent(msg domain.Join) (ChatScreen, tea.Cmd) {
 	if w.UserTime.IsZero() {
 		w.UserTime = msg.At
 	}
+	s.joinReplyDone[msg.Target] = false
 
 	s.checklist.channelCount = s.realChannelCount()
 
@@ -252,25 +370,21 @@ func (s ChatScreen) handleChannelModeChangeEvent(msg domain.ChannelModeChange) (
 		return s, nil
 	}
 
-	cw.Members.ApplyMode(msg.Instance, msg.Flag, msg.Add)
+	if msg.Subject != domain.AnonymousNick && msg.Flag.MemberMode() {
+		cw.Members.ApplyModeNick(msg.Subject, msg.Flag, msg.Add)
+	}
 
 	if s.active == nil || msg.Target != s.active.Name() {
 		return s, nil
 	}
 
-	return s, msgCmd(components.NickListUpdatedMsg{Members: cw.Members})
+	return s.nickListUpdatedCmd()
 }
 
-// handleUserModeChangeEvent reacts to a user-mode change. When the
-// change targets the user-client's own instance, the visible command
-// set may have flipped — re-emit CommandsMsg from VisibleCommands so
-// the /help slice and the completion popover both reflect the new
-// capability state on next render.
-func (s ChatScreen) handleUserModeChangeEvent(msg domain.UserModeChange) (ChatScreen, tea.Cmd) {
-	if msg.InstanceID != s.user.Instance().ID() {
-		return s, nil
-	}
-
+// handleUserModeChangeEvent reacts to a user-mode change. These events
+// are delivered only to the affected client, so every event received
+// here can change the visible command set.
+func (s ChatScreen) handleUserModeChangeEvent(domain.UserModeChange) (ChatScreen, tea.Cmd) {
 	return s, msgCmd(components.CommandsMsg[chatcmd.CompletionContext]{
 		Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
 	})
@@ -282,12 +396,12 @@ func (s ChatScreen) handleUserModeChangeEvent(msg domain.UserModeChange) (ChatSc
 // nothing more — the user is still in the channel, so the sidebar
 // entry stays and the visible area does not move.
 func (s ChatScreen) handlePartEvent(msg domain.Part) (ChatScreen, tea.Cmd) {
-	isUser := msg.Instance == s.user.Instance()
+	isUser := s.isOwnSource(msg.Source)
 
 	// Remove the member from the channel's member list.
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
-		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
-			cw.Members.Remove(m)
+		if id, identified := msg.Source.InstanceID(); identified {
+			cw.Members.RemoveID(id)
 		}
 	}
 
@@ -299,15 +413,9 @@ func (s ChatScreen) handlePartEvent(msg domain.Part) (ChatScreen, tea.Cmd) {
 		cmds = append(cmds, closed)
 	}
 
-	var members domain.MemberList
-
-	if s.active != nil {
-		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok {
-			members = cw.Members
-		}
-	}
-
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
+	var nickListUpdated tea.Cmd
+	s, nickListUpdated = s.nickListUpdatedCmd()
+	cmds = append(cmds, nickListUpdated)
 
 	return s, tea.Batch(cmds...)
 }
@@ -327,8 +435,8 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 			continue
 		}
 
-		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
-			cw.Members.Remove(m)
+		if id, identified := msg.Source.InstanceID(); identified {
+			cw.Members.RemoveID(id)
 		}
 	}
 
@@ -339,39 +447,25 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 			continue
 		}
 
-		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok {
-			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+		if _, ok := s.active.Window.(*domain.ChannelWindow); ok {
+			var nickListUpdated tea.Cmd
+			s, nickListUpdated = s.nickListUpdatedCmd()
+			cmds = append(cmds, nickListUpdated)
 		}
+
+		break
 	}
 
-	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
+	actorID, identified := msg.Source.InstanceID()
+	cmds = append(cmds, s.lifecycleBumps(targets, actorID, identified)...)
 
-	next, exitCmd := s.exitOnOwnQuit(msg)
-	cmds = append(cmds, exitCmd)
-
-	return next, tea.Batch(cmds...)
-}
-
-// exitOnOwnQuit takes the screen down when the QUIT it just handled
-// was this client's own. A `/quit` reaches here too, but the quit
-// handler has already set `quitting` and has its own
-// [ui.QuitCompleteMsg] in flight, so the only QUIT that gets this far
-// unannounced is one the server ran without being asked: a KILL
-// naming this client.
-func (s ChatScreen) exitOnOwnQuit(msg domain.Quit) (ChatScreen, tea.Cmd) {
-	if s.quitting || msg.Instance != s.user.Instance() {
-		return s, nil
-	}
-
-	s.quitting = true
-
-	return s, msgCmd(ui.QuitCompleteMsg{})
+	return s, tea.Batch(cmds...)
 }
 
 func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ChatScreen, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
 		cw.Topic = msg.Topic
-		cw.TopicSetBy = msg.By
+		cw.TopicSetBy = msg.Source.Nick()
 		cw.TopicSetAt = msg.At
 	}
 
@@ -397,8 +491,19 @@ func (s ChatScreen) handleTopicInfoEvent(msg domain.TopicInfo) (ChatScreen, tea.
 }
 
 func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domain.ChannelName) (ChatScreen, tea.Cmd) {
-	// `msg.Instance.Nick()` is already the new value — the
-	// session renames before emitting. Update the snapshot in
+	actorID, identified := msg.Source.InstanceID()
+	dispatchNickChanged := false
+	if identified {
+		for key := range s.dispatching {
+			if key.actor != actorID {
+				continue
+			}
+
+			s.dispatching[key] = msg.NewNick
+			dispatchNickChanged = true
+		}
+	}
+	// The session has already applied the new nick. Update the snapshot in
 	// each affected channel's member list, then fire the
 	// active-window UI side-effects exactly once. `targets`
 	// comes from the per-recipient [protocol.Delivery.Targets]
@@ -409,8 +514,10 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 			continue
 		}
 
-		if cw.Members.HasInstance(msg.Instance) {
-			cw.Members.RenameTo(msg.Instance, msg.NewNick)
+		if identified && cw.Members.HasID(actorID) {
+			cw.Members.RenameID(actorID, msg.NewNick)
+		} else {
+			cw.Members.RenameNick(msg.Source.Nick(), msg.NewNick)
 		}
 	}
 
@@ -418,18 +525,34 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 
 	activeIsChannel := s.active != nil && slices.Contains(targets, s.active.Name())
 
-	activeDM, activeIsDM := s.activeDMWith(msg.Instance)
+	activeDM, activeIsDM := s.activeDMWith(actorID, identified)
 	activeDMVisible := activeIsDM && s.active != nil && activeDM.Name() == s.active.Name()
-
-	if activeIsChannel {
-		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok {
-			cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: cw.Members}))
+	if activeIsDM && activeDM.observeNick(msg.NewNick) {
+		cmds = append(cmds, msgCmd(components.ChannelAddedMsg{Channel: activeDM}))
+		if activeDMVisible {
+			var nickListUpdated tea.Cmd
+			s, nickListUpdated = s.nickListUpdatedCmd()
+			cmds = append(cmds,
+				s.setChannelCmd(),
+				nickListUpdated,
+			)
 		}
 	}
 
-	if msg.Instance == s.user.Instance() {
+	if activeIsChannel {
+		if _, ok := s.active.Window.(*domain.ChannelWindow); ok {
+			var nickListUpdated tea.Cmd
+			s, nickListUpdated = s.nickListUpdatedCmd()
+			cmds = append(cmds, nickListUpdated)
+		}
+	}
+	if dispatchNickChanged {
+		cmds = append(cmds, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}))
+	}
+
+	if identified && actorID == s.user.ID() {
 		var own tea.Cmd
-		s, own = s.handleOwnNickChange(msg, activeIsChannel)
+		s, own = s.handleOwnNickChange(msg, activeIsChannel || activeDMVisible)
 		cmds = append(cmds, own)
 	} else if activeIsChannel || activeDMVisible {
 		cmds = append(cmds, msgCmd(components.HighlightWordsMsg{
@@ -438,7 +561,7 @@ func (s ChatScreen) handleNickChangeEvent(msg domain.NickChange, targets []domai
 		}))
 	}
 
-	cmds = append(cmds, s.lifecycleBumps(targets, msg.Instance)...)
+	cmds = append(cmds, s.lifecycleBumps(targets, actorID, identified)...)
 
 	return s, tea.Batch(cmds...)
 }
@@ -480,39 +603,49 @@ func (s ChatScreen) handleOwnNickChange(msg domain.NickChange, renderedInActive 
 
 func (s ChatScreen) handleKickedEvent(msg domain.Kicked) (ChatScreen, tea.Cmd) {
 	if cw, ok := s.channelWindowByName(msg.Target); ok {
-		if m, mOK := cw.Members.GetByInstance(msg.Instance); mOK {
-			cw.Members.Remove(m)
+		if msg.Subject != domain.AnonymousNick {
+			cw.Members.RemoveNick(msg.Subject)
 		}
 	}
 
-	var members domain.MemberList
-
-	if s.active != nil {
-		cw, ok := s.active.Window.(*domain.ChannelWindow)
-		if ok {
-			members = cw.Members
+	var cmds []tea.Cmd
+	if msg.SubjectIsSelf {
+		if persist := s.user.ObserveKick(msg); persist != nil {
+			ctx := s.baseContext()
+			cmds = append(cmds, func() tea.Msg {
+				persist(ctx)
+				return nil
+			})
 		}
+
+		var closed tea.Cmd
+		s, closed = s.closeWindow(msg.Target, msg.At)
+		cmds = append(cmds, closed)
 	}
 
-	return s, msgCmd(components.NickListUpdatedMsg{Members: members})
+	var nickListUpdated tea.Cmd
+	s, nickListUpdated = s.nickListUpdatedCmd()
+	cmds = append(cmds, nickListUpdated)
+
+	return s, tea.Batch(cmds...)
 }
 
 // handleMessageEvent renders an incoming Message. The user-client
 // holds echo-message, so its own chat traffic returns over the
-// protocol bus; identified here by an empty InstanceID matching
-// [protocol.UserClientID], it renders inline. Model-originated
+// protocol bus with [domain.MessageAuthorshipSelf] and renders
+// inline. Model-originated
 // Messages enter the per-channel paced queue: the first message in an
 // empty queue delivers immediately,
 // subsequent messages drain at [pacedInterval] cadence.
 func (s ChatScreen) handleMessageEvent(msg domain.Message) (ChatScreen, tea.Cmd) {
-	key, ok := msg.RoutingKey(s.user.Instance().ID())
+	key, ok := msg.RoutingKey(s.user.ID())
 	if !ok {
 		// Foreign DM (model-to-model traffic the user is not a
 		// party to). Not surfaced in the user's UI.
 		return s, nil
 	}
 
-	if msg.InstanceID == protocol.UserClientID {
+	if msg.AuthoredBy(s.user.ID()) {
 		return s, s.renderMessage(msg, key)
 	}
 
@@ -601,64 +734,78 @@ func (s ChatScreen) deliverUnreadCount(msg unreadCountedMsg) (ChatScreen, tea.Cm
 	})
 }
 
-// handleModelDispatchStarted marks `msg.Instance` as currently
-// dispatching and refreshes the nick list's thinking indicator,
-// which surfaces every dispatching instance whose membership the
-// active window can see.
-func (s ChatScreen) handleModelDispatchStarted(msg domain.ModelDispatchStarted) (ChatScreen, tea.Cmd) {
-	if msg.Instance == nil {
+// handleModelDispatchStarted marks the model as dispatching in the
+// recipient-relative window carried by the delivery and refreshes
+// the nick list's thinking indicator.
+func (s ChatScreen) handleModelDispatchStarted(
+	msg domain.ModelDispatchStarted,
+	window protocol.WindowTarget,
+) (ChatScreen, tea.Cmd) {
+	id, identified := msg.Source.InstanceID()
+	if !identified {
+		return s, nil
+	}
+	key, valid := newDispatchWindowKey(id, window)
+	if !valid {
 		return s, nil
 	}
 
-	s.dispatching[msg.Instance] = true
+	s.dispatching[key] = msg.Source.Nick()
 
 	return s, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()})
 }
 
-// handleModelDispatchDone clears the dispatching mark for
-// `msg.Instance` and refreshes the nick list's thinking indicator.
-func (s ChatScreen) handleModelDispatchDone(msg domain.ModelDispatchDone) (ChatScreen, tea.Cmd) {
-	if msg.Instance != nil {
-		delete(s.dispatching, msg.Instance)
+// handleModelDispatchDone clears the model's dispatching mark for
+// this window and refreshes the nick list's thinking indicator.
+func (s ChatScreen) handleModelDispatchDone(
+	msg domain.ModelDispatchDone,
+	window protocol.WindowTarget,
+) (ChatScreen, tea.Cmd) {
+	if id, identified := msg.Source.InstanceID(); identified {
+		if key, valid := newDispatchWindowKey(id, window); valid {
+			delete(s.dispatching, key)
+		}
 	}
 
 	return s, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()})
 }
 
-// thinkingNicks returns the nicks of every dispatching instance
-// that is also a member of the active channel. Models running in
-// channels the user is not in stay invisible — RFC 2812 §3.3.1's
-// intersection rule applied to the local view.
+// thinkingNicks returns the nicks of the models dispatching in the
+// active window. Channel membership is checked again because a
+// PART or KICK can arrive before the matching completion.
 func (s ChatScreen) thinkingNicks() map[domain.Nick]bool {
 	if s.active == nil || len(s.dispatching) == 0 {
 		return nil
 	}
 
-	cw, ok := s.active.Window.(*domain.ChannelWindow)
-	if !ok {
+	activeTarget := protocol.WindowTargetForKey(s.active.Name())
+	activeKey, valid := newDispatchWindowKey("", activeTarget)
+	if !valid {
 		return nil
 	}
 
 	thinking := make(map[domain.Nick]bool, len(s.dispatching))
-	for inst := range s.dispatching {
-		if !cw.Members.HasInstance(inst) {
+	for key, nick := range s.dispatching {
+		if key.kind != activeKey.kind || key.window != activeKey.window {
+			continue
+		}
+		if cw, ok := s.active.Window.(*domain.ChannelWindow); ok && !cw.Members.HasID(key.actor) {
 			continue
 		}
 
-		thinking[inst.Nick()] = true
+		thinking[nick] = true
 	}
 
 	return thinking
 }
 
 // isHighlight reports whether msg's body mentions the user, matching
-// [components.renderMessage]'s exemption for the user's own messages:
-// the user-client carries no [domain.InstanceID] (the empty string is
-// [protocol.UserClientID]'s sentinel), so an empty InstanceID picks
-// out the user's own message and exempts it from the mention check.
-// The user should never see a mention badge on their own words.
+// [components.renderMessage]'s exemption for the user's own messages.
+// Older synthetic events can lack recipient-relative authorship, so
+// the empty user ID remains the fallback for those events.
 func (s ChatScreen) isHighlight(msg domain.Message) bool {
-	return msg.InstanceID != "" && components.ContainsHighlightWord(msg.Body, s.highlightWords, s.user.Nick())
+	return !msg.AuthoredBy(s.user.ID()) &&
+		components.ContainsHighlightWord(msg.Body, s.highlightWords, s.user.Nick())
 }
 
 func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
@@ -679,12 +826,12 @@ func (s ChatScreen) activeMemberNicks() iter.Seq[domain.Nick] {
 // connection record, this one included; a completion offers a nick
 // to address, and typing your own nick after `/msg` or `/invite` is
 // not what the suggestion list is for.
-func (s ChatScreen) otherInstances() iter.Seq[*domain.Instance] {
-	return func(yield func(*domain.Instance) bool) {
-		self := s.user.Instance()
+func (s ChatScreen) otherInstances() iter.Seq[domain.InstanceDirectoryEntry] {
+	return func(yield func(domain.InstanceDirectoryEntry) bool) {
+		self := s.user.ID()
 
 		for inst := range s.sess.Instances(s.baseContext()) {
-			if inst == self {
+			if inst.InstanceID == self {
 				continue
 			}
 
@@ -695,25 +842,7 @@ func (s ChatScreen) otherInstances() iter.Seq[*domain.Instance] {
 	}
 }
 
-// activeChannelInstances iterates the `*Instance` handles for every
-// member of the currently-active channel. Tab completion sources this
-// iterator: the user only gets completions for nicks they can already
-// see in their nick list, matching IRC semantics.
-func (s ChatScreen) activeChannelInstances() iter.Seq[*domain.Instance] {
-	return func(yield func(*domain.Instance) bool) {
-		if s.active == nil {
-			return
-		}
-
-		cw, ok := s.active.Window.(*domain.ChannelWindow)
-		if !ok {
-			return
-		}
-
-		for m := range cw.Members.All() {
-			if !yield(m.Instance) {
-				return
-			}
-		}
-	}
+func (s ChatScreen) isOwnSource(source domain.Source) bool {
+	id, identified := source.InstanceID()
+	return identified && id == s.user.ID()
 }

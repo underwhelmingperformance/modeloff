@@ -1,4 +1,4 @@
-package modelmanager_test
+package modelmanager
 
 import (
 	"testing"
@@ -7,9 +7,9 @@ import (
 
 	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
-	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/store/storetest"
 )
 
 // TestModelClient_Caps_follows_the_subscription_mode_set pins where a
@@ -24,16 +24,21 @@ import (
 // offered drift from what the dispatcher's operator gate will
 // actually run for it.
 func TestModelClient_Caps_follows_the_subscription_mode_set(t *testing.T) {
-	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}})
+	store := storetest.NewMemoryStore(t)
+	mgr := New(Config{APIClient: &apitest.Fake{}, Store: store, BaseContext: t.Context})
+	t.Cleanup(func() { _ = mgr.DetachAll(t.Context()) })
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), store, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	require.NoError(t, fx.store.SaveInstance(t.Context(), inst))
+	require.NoError(t, store.SaveInstance(t.Context(), inst))
 
-	client, err := fx.mgr.Attach(t.Context(), sess, inst)
-	require.NoError(t, err)
+	require.NoError(t, sess.StartModelClients(t.Context()))
+	mgr.clientsMu.Lock()
+	client := mgr.clients["inst-botty"]
+	mgr.clientsMu.Unlock()
+	require.NotNil(t, client)
 
 	require.False(t, client.Caps().Has(protocol.CapOperator))
 
@@ -51,9 +56,11 @@ func TestModelClient_Caps_follows_the_subscription_mode_set(t *testing.T) {
 // holds no subscription for grants nothing, which is what a client
 // that has not attached yet (or has already quit) reports.
 func TestSession_ClientCaps_answers_nothing_for_an_unregistered_identity(t *testing.T) {
-	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}})
+	store := storetest.NewMemoryStore(t)
+	mgr := New(Config{APIClient: &apitest.Fake{}, Store: store, BaseContext: t.Context})
+	t.Cleanup(func() { _ = mgr.DetachAll(t.Context()) })
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), store, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	require.False(t, sess.ClientCaps("inst-nobody").Has(protocol.CapOperator))

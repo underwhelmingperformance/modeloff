@@ -20,6 +20,15 @@ type ProtocolEvent interface {
 	isProtocolEvent()
 }
 
+// ModelClientEvent is the subset of protocol events a model client
+// may originate outside the command dispatcher. These events report
+// dispatch lifecycle or failure and cannot mutate IRC state or enter
+// persistent scrollback.
+type ModelClientEvent interface {
+	ProtocolEvent
+	modelClientEvent()
+}
+
 // Wire-shaped events delivered on the protocol bus: channel activity,
 // issuer replies, and the protocol-only `UserModeChange`,
 // `ListEnd` and `JoinedChannel`.
@@ -31,6 +40,7 @@ func (TopicChange) isProtocolEvent()       {}
 func (ChannelModeChange) isProtocolEvent() {}
 func (UserModeChange) isProtocolEvent()    {}
 func (Invited) isProtocolEvent()           {}
+func (Inviting) isProtocolEvent()          {}
 func (Kicked) isProtocolEvent()            {}
 func (NickChange) isProtocolEvent()        {}
 func (TopicInfo) isProtocolEvent()         {}
@@ -50,7 +60,13 @@ func (NamesReplyEvent) isProtocolEvent()       {}
 func (NamesEnd) isProtocolEvent()              {}
 func (Welcome) isProtocolEvent()               {}
 func (Reconnected) isProtocolEvent()           {}
+func (ConnectionError) isProtocolEvent()       {}
+func (KillNotice) isProtocolEvent()            {}
 func (ModelUnavailableError) isProtocolEvent() {}
+
+func (ModelDispatchStarted) modelClientEvent()  {}
+func (ModelDispatchDone) modelClientEvent()     {}
+func (ModelUnavailableError) modelClientEvent() {}
 
 // Typed errors that double as protocol events. They satisfy both
 // the `error` interface (for `errors.As` extraction at the

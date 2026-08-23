@@ -125,21 +125,16 @@ func (s *Session) setMemberModeAs(ctx context.Context, window *domain.ChannelWin
 
 		window.Members.ApplyMode(target, change.Flag, change.Add)
 
-		if err := s.persistChannelWindow(ctx, window); err != nil {
-			return fmt.Errorf("save channel: %w", err)
+		if err := s.commitChannelUpdate(ctx, window, domain.ChannelModeChange{
+			Source:  domain.ClientSource(actor.ID(), actor.Nick()),
+			Target:  ch,
+			Subject: target.Nick(),
+			Flag:    change.Flag,
+			Add:     change.Add,
+			At:      s.now(),
+		}); err != nil {
+			return fmt.Errorf("commit member mode change: %w", err)
 		}
-
-		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
-			Target:       ch,
-			Nick:         target.Nick(),
-			InstanceID:   target.ID(),
-			Flag:         change.Flag,
-			Add:          change.Add,
-			By:           actor.Nick(),
-			ByInstanceID: actor.ID(),
-			At:           s.now(),
-			Instance:     target,
-		})
 
 		return nil
 	})
@@ -159,19 +154,16 @@ func (s *Session) setChannelAttributeAs(ctx context.Context, window *domain.Chan
 	}, func(ctx context.Context, _ trace.Span) error {
 		window.Modes.ApplyChannelMode(change.Flag, change.Add, change.Param)
 
-		if err := s.persistChannelWindow(ctx, window); err != nil {
-			return fmt.Errorf("save channel: %w", err)
+		if err := s.commitChannelUpdate(ctx, window, domain.ChannelModeChange{
+			Source: domain.ClientSource(actor.ID(), actor.Nick()),
+			Target: ch,
+			Flag:   change.Flag,
+			Add:    change.Add,
+			Param:  attributeEmitParam(change),
+			At:     s.now(),
+		}); err != nil {
+			return fmt.Errorf("commit channel mode change: %w", err)
 		}
-
-		s.persistAndEmit(ctx, ch, domain.ChannelModeChange{
-			Target:       ch,
-			Flag:         change.Flag,
-			Add:          change.Add,
-			Param:        attributeEmitParam(change),
-			By:           actor.Nick(),
-			ByInstanceID: actor.ID(),
-			At:           s.now(),
-		})
 
 		return nil
 	})

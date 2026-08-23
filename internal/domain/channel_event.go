@@ -14,25 +14,10 @@ import (
 // lifecycle, focus changes, model replies); the store accepts only
 // `PersistableEvent`.
 //
-// Every persistable type that carries a `Nick` field
-// (`Join.Nick`, `Part.Nick`, `Quit.Nick`,
-// `TopicChange.By`, `ChannelModeChange.Nick` and `.By`,
-// `Invited.Nick`, `Kicked.Nick`,
-// `NickChange.OldNick`/`.NewNick`) holds a snapshot of the
-// nick at event time. These values are point-in-time records and
-// may differ from the instance handle's current nick after a later
-// rename; renderers that want the live nick should resolve via
-// `InstanceID` where present.
-//
-// The same struct normally flows through both persistence and live
-// emission: a `Join` is appended to the channel event log and emitted
-// on the session's event channel. A QUIT in an anonymous channel is the
-// exception: the channel records the masked PART its members receive,
-// so replay does not disclose the departing actor. Live consumers
-// populate the `Instance *Instance` field (excluded from JSON via
-// `json:"-"`) so they can mutate state by pointer identity; replay paths
-// leave `Instance` nil and rely on the snapshot fields plus a registry
-// lookup if a live handle is later needed.
+// An event's [Source] records the IRC prefix one recipient observed
+// at event time. It never exposes the mutable actor that produced the
+// event. Event subjects, such as a KICK target or MODE parameter, use
+// their own protocol fields.
 type PersistableEvent interface {
 	Event
 	persistableEvent()
@@ -49,6 +34,15 @@ type PersistableEvent interface {
 type ChannelActivity interface {
 	PersistableEvent
 	channelActivity()
+}
+
+// ChannelDepartureEvent is the closed subset of channel activity that removes
+// one member while keeping the member's connection record. PART and KICK are
+// committed with the membership change they announce.
+type ChannelDepartureEvent interface {
+	ChannelActivity
+	ProtocolEvent
+	channelDepartureEvent()
 }
 
 // IssuerReply is the subset of `PersistableEvent` that records a
@@ -83,6 +77,7 @@ var (
 	_ PersistableEvent = TopicChange{}
 	_ PersistableEvent = ChannelModeChange{}
 	_ PersistableEvent = Invited{}
+	_ PersistableEvent = Inviting{}
 	_ PersistableEvent = Kicked{}
 	_ PersistableEvent = NickChange{}
 	_ PersistableEvent = TopicInfo{}
@@ -112,6 +107,7 @@ var (
 	_ ChannelActivity = NickChange{}
 
 	_ IssuerReply = Whois{}
+	_ IssuerReply = Inviting{}
 	_ IssuerReply = ListReply{}
 	_ IssuerReply = TopicInfo{}
 	_ IssuerReply = CommandError{}
@@ -119,19 +115,25 @@ var (
 	_ IssuerReply = PersonasList{}
 )
 
-// Message records a message sent in a channel.
+// Message records a PRIVMSG or action sent to a channel or client.
 type Message struct {
-	Target     ChannelName `json:"channel"`
-	From       Nick        `json:"from"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	Body       string      `json:"body"`
-	Action     bool        `json:"action,omitempty"`
-	At         time.Time   `json:"at"`
+	Source Source      `json:"source"`
+	Target ChannelName `json:"channel"`
+	Body   string      `json:"body"`
+	Action bool        `json:"action,omitempty"`
+	At     time.Time   `json:"at"`
 }
 
 func (Message) persistableEvent()                 {}
 func (e Message) persistableEventTime() time.Time { return e.At }
 func (Message) channelActivity()                  {}
+
+// AuthoredBy reports whether this recipient authored the delivered
+// message.
+func (e Message) AuthoredBy(recipient InstanceID) bool {
+	id, ok := e.Source.InstanceID()
+	return ok && id == recipient
+}
 
 // RoutingKey returns the conversation key this message belongs
 // to from `self`'s point of view. For channel- and status-shaped
@@ -154,12 +156,17 @@ func (e Message) RoutingKey(self InstanceID) (ChannelName, bool) {
 	case KindChannel, KindStatus:
 		return e.Target, true
 	case KindDM:
-		if e.InstanceID == self {
+		id, identified := e.Source.InstanceID()
+		if identified && id == self {
 			return e.Target, true
 		}
 
 		if ChannelName(self) == e.Target {
-			return ChannelName(e.InstanceID), true
+			if !identified {
+				return "", false
+			}
+
+			return ChannelName(id), true
 		}
 
 		return "", false
@@ -169,75 +176,53 @@ func (e Message) RoutingKey(self InstanceID) (ChannelName, bool) {
 }
 
 // Join records a user or model joining a channel.
-//
-// `Instance` is the live actor handle, populated when the session
-// emits the event so live consumers can mutate state by pointer
-// identity (member-list ops, "is this me?" checks). It is excluded
-// from JSON; replay from store leaves it nil. Renderers consult the
-// snapshot fields (`Nick`) which are persistent.
 type Join struct {
-	Target     ChannelName `json:"channel"`
-	Nick       Nick        `json:"nick"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	Created    bool        `json:"created,omitempty"`
-	Message    string      `json:"message,omitempty"`
-	At         time.Time   `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source      `json:"source"`
+	Target  ChannelName `json:"channel"`
+	Created bool        `json:"created,omitempty"`
+	Message string      `json:"message,omitempty"`
+	At      time.Time   `json:"at"`
 }
 
 func (Join) persistableEvent()                 {}
 func (e Join) persistableEventTime() time.Time { return e.At }
 func (Join) channelActivity()                  {}
 
-// Part records a user or model leaving a channel. See
-// `Join` for the `Instance` / `InstanceID` contract.
+// Part records a user or model leaving a channel.
 type Part struct {
-	Target     ChannelName `json:"channel"`
-	Nick       Nick        `json:"nick"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	Message    string      `json:"message,omitempty"`
-	At         time.Time   `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source      `json:"source"`
+	Target  ChannelName `json:"channel"`
+	Message string      `json:"message,omitempty"`
+	At      time.Time   `json:"at"`
 }
 
 func (Part) persistableEvent()                 {}
 func (e Part) persistableEventTime() time.Time { return e.At }
 func (Part) channelActivity()                  {}
+func (Part) channelDepartureEvent()            {}
 
 // Quit records a user or model quitting the server. The wire
 // payload carries no channel list — RFC 2812 §3.1.7 QUIT is an
 // actor-scoped notice with no target. Server-side fan-out applies
 // the intersection rule (deliver to peers that share any channel
 // with the actor) and each receiving client decides which of its
-// own windows to update from local state. See `Join` for the
-// `Instance` / `InstanceID` contract.
+// own windows to update from local state.
 type Quit struct {
-	Nick       Nick       `json:"nick"`
-	InstanceID InstanceID `json:"instance_id,omitzero"`
-	Message    string     `json:"message,omitempty"`
-	At         time.Time  `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source    `json:"source"`
+	Message string    `json:"message,omitempty"`
+	At      time.Time `json:"at"`
 }
 
 func (Quit) persistableEvent()                 {}
 func (e Quit) persistableEventTime() time.Time { return e.At }
 func (Quit) channelActivity()                  {}
 
-// TopicChange records a topic change. `By` is the actor's
-// nick at the time of the change; `InstanceID` is the actor's
-// persistent id (empty for the human user); `ByInstance` is the
-// live handle, populated on emission and ignored by JSON.
+// TopicChange records a topic change.
 type TopicChange struct {
-	Target     ChannelName `json:"channel"`
-	Topic      string      `json:"topic"`
-	By         Nick        `json:"by"`
-	InstanceID InstanceID  `json:"instance_id,omitzero"`
-	At         time.Time   `json:"at"`
-
-	ByInstance *Instance `json:"-"`
+	Source Source      `json:"source"`
+	Target ChannelName `json:"channel"`
+	Topic  string      `json:"topic"`
+	At     time.Time   `json:"at"`
 }
 
 func (TopicChange) persistableEvent()                 {}
@@ -254,34 +239,20 @@ func (TopicChange) channelActivity()                  {}
 // (`+l <int>`, `+k <key>`); it is empty for member-mode and
 // boolean-attribute events.
 //
-// `Nick`/`InstanceID` identify the affected member (the subject of a
-// `+o`/`+v` change, empty for a channel attribute);
-// `By`/`ByInstanceID` identify the client that issued the MODE, as
-// [Kicked] and [Invited] carry their actor. A nick is display state
-// a client may change, so `ByInstanceID` is what lets a client tell
-// its own MODE from a peer's whatever either of them is called at
-// the time.
-//
-// `Instance` is the live affected member, populated on emission
-// and ignored by JSON.
+// Subject identifies the affected member for `+o` and `+v`. It is
+// empty for a channel attribute.
 type ChannelModeChange struct {
-	Target       ChannelName `json:"channel"`
-	Nick         Nick        `json:"nick"`
-	InstanceID   InstanceID  `json:"instance_id,omitzero"`
-	Flag         Mode        `json:"flag"`
-	Add          bool        `json:"add"`
-	Param        string      `json:"param,omitempty"`
-	By           Nick        `json:"by,omitempty"`
-	ByInstanceID InstanceID  `json:"by_instance_id,omitzero"`
-	At           time.Time   `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source      `json:"source"`
+	Target  ChannelName `json:"channel"`
+	Subject Nick        `json:"subject,omitempty"`
+	Flag    Mode        `json:"flag"`
+	Add     bool        `json:"add"`
+	Param   string      `json:"param,omitempty"`
+	At      time.Time   `json:"at"`
 }
 
-// ServerIssued reports whether the change was originated by the
-// server rather than by a client actor — the RFC convention is an
-// absent nick prefix on the wire, mirrored here as an empty `By`.
-func (e ChannelModeChange) ServerIssued() bool { return e.By == "" }
+// ServerIssued reports whether the server originated the change.
+func (e ChannelModeChange) ServerIssued() bool { return e.Source.Kind() == SourceServer }
 
 func (ChannelModeChange) persistableEvent()                 {}
 func (e ChannelModeChange) persistableEventTime() time.Time { return e.At }
@@ -292,74 +263,63 @@ func (ChannelModeChange) channelActivity()                  {}
 // grant). It is a capability signal delivered point-to-point to the
 // affected client's own bus — RFC 2812 §3.1.5 scopes user-mode
 // replies to the requester — never persisted and never broadcast.
-//
-// `Instance` is the live affected client, populated on emission and
-// ignored by JSON.
 type UserModeChange struct {
-	Nick       Nick       `json:"nick"`
-	InstanceID InstanceID `json:"instance_id,omitzero"`
-	Flag       Mode       `json:"flag"`
-	Add        bool       `json:"add"`
-	By         Nick       `json:"by,omitempty"`
-	At         time.Time  `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source    `json:"source"`
+	Subject Nick      `json:"subject"`
+	Flag    Mode      `json:"flag"`
+	Add     bool      `json:"add"`
+	At      time.Time `json:"at"`
 }
 
-// Invited records a model instance being added to a
-// channel. `Nick`/`InstanceID` identify the invitee (the subject
-// of the event); `By`/`ByInstanceID` identify the inviter (the
-// actor that issued the INVITE). `Instance` is the live invitee
-// handle, populated on emission and ignored by JSON.
+// Invited records a client being invited to a channel.
 type Invited struct {
-	Target       ChannelName `json:"channel"`
-	Nick         Nick        `json:"nick"`
-	InstanceID   InstanceID  `json:"instance_id,omitzero"`
-	By           Nick        `json:"by"`
-	ByInstanceID InstanceID  `json:"by_instance_id,omitzero"`
-	At           time.Time   `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source      `json:"source"`
+	Target  ChannelName `json:"channel"`
+	Invitee Nick        `json:"invitee"`
+	At      time.Time   `json:"at"`
 }
 
 func (Invited) persistableEvent()                 {}
 func (e Invited) persistableEventTime() time.Time { return e.At }
 func (Invited) channelActivity()                  {}
 
-// Kicked records a model instance being removed from a
-// channel. `Nick`/`InstanceID` identify the kicked party (the
-// subject); `By`/`ByInstanceID` identify the operator who issued
-// the KICK (the actor). `Instance` is the live kicked-target
-// handle, populated on emission and ignored by JSON.
-type Kicked struct {
-	Target       ChannelName `json:"channel"`
-	Nick         Nick        `json:"nick"`
-	InstanceID   InstanceID  `json:"instance_id,omitzero"`
-	By           Nick        `json:"by"`
-	ByInstanceID InstanceID  `json:"by_instance_id,omitzero"`
-	At           time.Time   `json:"at"`
+// Inviting confirms to a command issuer that the server delivered an
+// invitation. It is the RPL_INVITING reply, distinct from the
+// [Invited] event delivered to the invitee.
+type Inviting struct {
+	Target  ChannelName `json:"channel"`
+	Invitee Nick        `json:"invitee"`
+	At      time.Time   `json:"at"`
+}
 
-	Instance *Instance `json:"-"`
+func (Inviting) persistableEvent()                 {}
+func (e Inviting) persistableEventTime() time.Time { return e.At }
+func (Inviting) issuerReply()                      {}
+
+// Kicked records a client being removed from a channel.
+type Kicked struct {
+	Source        Source      `json:"source"`
+	Target        ChannelName `json:"channel"`
+	Subject       Nick        `json:"subject"`
+	SubjectIsSelf bool        `json:"subject_is_self,omitempty"`
+	At            time.Time   `json:"at"`
 }
 
 func (Kicked) persistableEvent()                 {}
 func (e Kicked) persistableEventTime() time.Time { return e.At }
 func (Kicked) channelActivity()                  {}
+func (Kicked) channelDepartureEvent()            {}
 
 // NickChange records a nick change. The wire payload carries no
 // channel list — RFC 2812 §3.1.2 NICK is an actor-scoped notice
 // with no target. Server-side fan-out applies the intersection
 // rule (deliver to peers that share any channel with the actor)
 // and each receiving client decides which of its own windows to
-// update from local state. `Instance` is the live renamed handle,
-// populated on emission and ignored by JSON.
+// update from local state.
 type NickChange struct {
-	OldNick    Nick       `json:"old_nick"`
-	NewNick    Nick       `json:"new_nick"`
-	InstanceID InstanceID `json:"instance_id,omitzero"`
-	At         time.Time  `json:"at"`
-
-	Instance *Instance `json:"-"`
+	Source  Source    `json:"source"`
+	NewNick Nick      `json:"new_nick"`
+	At      time.Time `json:"at"`
 }
 
 func (NickChange) persistableEvent()                 {}
@@ -395,7 +355,6 @@ type Help struct {
 // or persona edit does not retro-edit the historical line — IRC
 // fidelity demands history is fixed once printed.
 type Whois struct {
-	Target   ChannelName   `json:"channel"`
 	Nick     Nick          `json:"nick,omitzero"`
 	ModelID  ModelID       `json:"model_id,omitzero"`
 	Persona  string        `json:"persona,omitzero"`
@@ -521,12 +480,14 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case Invited:
 		return v.Target
+	case Inviting:
+		return v.Target
 	case Kicked:
 		return v.Target
 	case TopicInfo:
 		return v.Target
 	case Whois:
-		return v.Target
+		return ""
 	case ListReply:
 		return ""
 	case CommandError:
@@ -562,6 +523,8 @@ func EventType(e PersistableEvent) string {
 		return "mode_change"
 	case Invited:
 		return "model_invited"
+	case Inviting:
+		return "inviting"
 	case Kicked:
 		return "model_kicked"
 	case NickChange:
@@ -586,8 +549,9 @@ func EventType(e PersistableEvent) string {
 // persistableEventEnvelope is the JSON wire format for a channel event,
 // carrying a type discriminator alongside the event data.
 type persistableEventEnvelope struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
+	Version int             `json:"version,omitempty"`
+	Type    string          `json:"type"`
+	Data    json.RawMessage `json:"data"`
 }
 
 // MarshalPersistableEvent encodes a channel event as JSON with a type
@@ -599,8 +563,9 @@ func MarshalPersistableEvent(e PersistableEvent) ([]byte, error) {
 	}
 
 	return json.Marshal(persistableEventEnvelope{
-		Type: EventType(e),
-		Data: data,
+		Version: 2,
+		Type:    EventType(e),
+		Data:    data,
 	})
 }
 
@@ -624,6 +589,9 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	unmarshal := func(target any) error {
 		return json.Unmarshal(env.Data, target)
 	}
+	if env.Version < 2 {
+		return unmarshalLegacyPersistableEvent(env.Type, env.Data)
+	}
 
 	switch env.Type {
 	case "message":
@@ -646,6 +614,9 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		return e, unmarshal(&e)
 	case "model_invited":
 		var e Invited
+		return e, unmarshal(&e)
+	case "inviting":
+		var e Inviting
 		return e, unmarshal(&e)
 	case "model_kicked":
 		var e Kicked
@@ -676,6 +647,171 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	}
 }
 
+func legacySource(id *InstanceID, nick Nick) Source {
+	if nick == AnonymousNick {
+		return AnonymousSource()
+	}
+	if id == nil {
+		return LegacyClientSource(nick)
+	}
+
+	return ClientSource(*id, nick)
+}
+
+func unmarshalLegacyPersistableEvent(eventType string, data json.RawMessage) (PersistableEvent, error) {
+	decode := func(target any) error { return json.Unmarshal(data, target) }
+
+	switch eventType {
+	case "message":
+		var old struct {
+			Target     ChannelName `json:"channel"`
+			From       Nick        `json:"from"`
+			InstanceID *InstanceID `json:"instance_id"`
+			Body       string      `json:"body"`
+			Action     bool        `json:"action"`
+			At         time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return Message{
+			Source: legacySource(old.InstanceID, old.From), Target: old.Target,
+			Body: old.Body, Action: old.Action, At: old.At,
+		}, nil
+	case "join":
+		var old struct {
+			Target     ChannelName `json:"channel"`
+			Nick       Nick        `json:"nick"`
+			InstanceID *InstanceID `json:"instance_id"`
+			Created    bool        `json:"created"`
+			Message    string      `json:"message"`
+			At         time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return Join{Source: legacySource(old.InstanceID, old.Nick), Target: old.Target, Created: old.Created, Message: old.Message, At: old.At}, nil
+	case "part":
+		var old struct {
+			Target     ChannelName `json:"channel"`
+			Nick       Nick        `json:"nick"`
+			InstanceID *InstanceID `json:"instance_id"`
+			Message    string      `json:"message"`
+			At         time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return Part{Source: legacySource(old.InstanceID, old.Nick), Target: old.Target, Message: old.Message, At: old.At}, nil
+	case "quit":
+		var old struct {
+			Nick       Nick        `json:"nick"`
+			InstanceID *InstanceID `json:"instance_id"`
+			Message    string      `json:"message"`
+			At         time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return Quit{Source: legacySource(old.InstanceID, old.Nick), Message: old.Message, At: old.At}, nil
+	case "topic_change":
+		var old struct {
+			Target     ChannelName `json:"channel"`
+			Topic      string      `json:"topic"`
+			By         Nick        `json:"by"`
+			InstanceID *InstanceID `json:"instance_id"`
+			At         time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return TopicChange{Source: legacySource(old.InstanceID, old.By), Target: old.Target, Topic: old.Topic, At: old.At}, nil
+	case "mode_change":
+		var old struct {
+			Target       ChannelName `json:"channel"`
+			Nick         Nick        `json:"nick"`
+			Flag         Mode        `json:"flag"`
+			Add          bool        `json:"add"`
+			Param        string      `json:"param"`
+			By           Nick        `json:"by"`
+			ByInstanceID *InstanceID `json:"by_instance_id"`
+			At           time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		source := ServerSource("")
+		if old.By != "" {
+			source = legacySource(old.ByInstanceID, old.By)
+		}
+		return ChannelModeChange{Source: source, Target: old.Target, Subject: old.Nick, Flag: old.Flag, Add: old.Add, Param: old.Param, At: old.At}, nil
+	case "model_invited":
+		var old struct {
+			Target       ChannelName `json:"channel"`
+			Nick         Nick        `json:"nick"`
+			By           Nick        `json:"by"`
+			ByInstanceID *InstanceID `json:"by_instance_id"`
+			At           time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return Invited{Source: legacySource(old.ByInstanceID, old.By), Target: old.Target, Invitee: old.Nick, At: old.At}, nil
+	case "model_kicked":
+		var old struct {
+			Target       ChannelName `json:"channel"`
+			Nick         Nick        `json:"nick"`
+			By           Nick        `json:"by"`
+			ByInstanceID *InstanceID `json:"by_instance_id"`
+			At           time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return Kicked{Source: legacySource(old.ByInstanceID, old.By), Target: old.Target, Subject: old.Nick, At: old.At}, nil
+	case "nick_change":
+		var old struct {
+			OldNick    Nick        `json:"old_nick"`
+			NewNick    Nick        `json:"new_nick"`
+			InstanceID *InstanceID `json:"instance_id"`
+			At         time.Time   `json:"at"`
+		}
+		if err := decode(&old); err != nil {
+			return nil, err
+		}
+		return NickChange{Source: legacySource(old.InstanceID, old.OldNick), NewNick: old.NewNick, At: old.At}, nil
+	default:
+		return unmarshalPersistableEventV2(eventType, data)
+	}
+}
+
+func unmarshalPersistableEventV2(eventType string, data json.RawMessage) (PersistableEvent, error) {
+	unmarshal := func(target any) error { return json.Unmarshal(data, target) }
+
+	switch eventType {
+	case "topic_info":
+		var e TopicInfo
+		return e, unmarshal(&e)
+	case "whois":
+		var e Whois
+		return e, unmarshal(&e)
+	case "list_reply":
+		var e ListReply
+		return e, unmarshal(&e)
+	case "command_error":
+		var e CommandError
+		return e, unmarshal(&e)
+	case "system_notice":
+		var e SystemNotice
+		return e, unmarshal(&e)
+	case "personas_list":
+		var e PersonasList
+		return e, unmarshal(&e)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrUnknownEventType, eventType)
+	}
+}
+
 // All PersistableEvent types also implement Event so they flow through
 // the session's unified event channel.
 
@@ -687,6 +823,7 @@ func (TopicChange) domainEvent()       {}
 func (ChannelModeChange) domainEvent() {}
 func (UserModeChange) domainEvent()    {}
 func (Invited) domainEvent()           {}
+func (Inviting) domainEvent()          {}
 func (Kicked) domainEvent()            {}
 func (NickChange) domainEvent()        {}
 func (TopicInfo) domainEvent()         {}

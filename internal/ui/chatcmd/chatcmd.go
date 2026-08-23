@@ -26,11 +26,10 @@ type Command = command.Command[Context, tea.Cmd]
 type Parser = command.Parser[CompletionContext, Context, tea.Cmd]
 
 // Context carries the dependencies a command needs to execute.
-// Actor is the `*domain.Instance` for the caller — the user's handle
-// for slash-command invocations. Client is the protocol-side client
-// handle the caller dispatches commands through (the user-client
-// for chat-screen invocations). Both are guaranteed non-nil at
-// construction in `runContext` (chat_commands.go). The cancellation
+// Client is the protocol-side client handle the caller dispatches
+// commands through (the user-client for chat-screen invocations).
+// It is guaranteed non-nil at construction in `runContext`
+// (chat_commands.go). The cancellation
 // context is threaded as an explicit first parameter to [Command.Run]
 // and not carried on the struct.
 type Context struct {
@@ -38,7 +37,6 @@ type Context struct {
 	Manager    modelclient.ManagerAPI
 	Config     config.Store
 	Active     domain.Window
-	Actor      *domain.Instance
 	Client     protocol.Client
 	Invocation command.Invocation[CompletionContext]
 }
@@ -54,6 +52,20 @@ func (rc Context) ActiveName() (domain.ChannelName, bool) {
 	return rc.Active.Name(), true
 }
 
+func (rc Context) activeWindowTarget() protocol.WindowTarget {
+	if rc.Active == nil {
+		return nil
+	}
+	switch rc.Active.Kind() {
+	case domain.KindChannel:
+		return protocol.ChannelWindowTarget(rc.Active.Name())
+	case domain.KindDM:
+		return protocol.DirectWindowTarget(domain.InstanceID(rc.Active.Name()))
+	}
+
+	return nil
+}
+
 // HelpResult signals that the help screen should be shown.
 type HelpResult struct{}
 
@@ -65,14 +77,25 @@ type ClearResult struct{}
 // without UI involvement.
 type PokeRequested struct{}
 
-// TopicInfoResult carries the current topic metadata for
-// display. `Window` is the typed `*ChannelWindow` so the UI
-// can read `Topic` / `TopicSetBy` / `TopicSetAt` directly off
-// the handle. DM and status windows never produce a
-// `TopicInfoResult` — `/topic` rejects non-channel targets at
-// the command layer.
+// CommandResult binds a delayed slash-command result to the exact window in
+// which the command ran.
+type CommandResult struct {
+	IssuingWindow         domain.Window
+	IssuingWindowRevision uint64
+	Message               tea.Msg
+}
+
+// TopicInfoResult carries the actor-projected current topic metadata
+// for display. DM and status windows never produce one because
+// `/topic` rejects non-channel targets at the command layer.
 type TopicInfoResult struct {
-	Window *domain.ChannelWindow
+	Topic domain.TopicInfo
+}
+
+// CommandErrorResult carries a delayed command error inside a
+// [CommandResult].
+type CommandErrorResult struct {
+	Error domain.ErrorEvent
 }
 
 // UsageError indicates a command was invoked incorrectly. Usage
@@ -160,14 +183,17 @@ type PersonaResetResult struct {
 	Count int
 }
 
-// errorEvent builds the failure event for a command run from this
-// Context, stamped with the window the command was issued from
-// (`rc.Active`) so the chat-screen renders it there even if the user
-// has switched windows by the time the event arrives.
+// errorEvent builds the failure payload for a command run from this context.
 func (rc Context) errorEvent(operation string, err error) domain.ErrorEvent {
 	target, _ := rc.ActiveName()
 
 	return domain.ErrorEvent{Operation: operation, Err: err, Target: target, At: time.Now()}
+}
+
+func (rc Context) errorResult(operation string, err error) tea.Msg {
+	return CommandErrorResult{
+		Error: rc.errorEvent(operation, err),
+	}
 }
 
 // protocolCommand is implemented by any chatcmd that translates to a
@@ -178,46 +204,55 @@ type protocolCommand interface {
 }
 
 // ReplyEvents carries the full slice of confirmation events the
-// dispatcher synthesised in `Response.Events`. The chat-screen
-// unpacks it into a [tea.Sequence] that re-delivers each event as
-// its own message, so every confirmation reaches the per-event
-// render arms in dispatcher order — for `Invite` a
-// [domain.Invited] or a [domain.SystemNotice]; for `Whois` a
+// dispatcher synthesised in `Response.Events` and an optional later
+// execution error. Its enclosing [CommandResult] identifies the
+// window in which the command was issued.
+// The chat-screen unpacks it into a [tea.Sequence] that re-delivers
+// each event as its own message, so every confirmation reaches the
+// per-event render arms in dispatcher order. For `Invite` this is a
+// [domain.Inviting] or a [domain.SystemNotice]; for `Whois` a
 // [domain.Whois]; for `List` one [domain.ListReply] per channel
 // followed by a closing [domain.ListEnd]. A `PrivMsg` / `Action`
 // confirmation reaches the user-client over the bus via
 // echo-message, so the chat-screen drops [domain.Message] from this
 // slice.
-type ReplyEvents []domain.ProtocolEvent
+type ReplyEvents struct {
+	Events []domain.ProtocolEvent
+	Error  *domain.ErrorEvent
+}
 
-// sendCommand routes a migrated command through the protocol
-// client. On any failure (translation, transport, or the
-// dispatcher's typed `Response.Err`) it returns a
-// [domain.ErrorEvent] for the chat-screen to render. On success it
-// returns a [ReplyEvents] carrying every event the dispatcher
-// synthesised in `Response.Events`. Commands whose handler does not
-// populate `Response.Events` (Topic, Kick, Nick, …) return `nil`,
-// leaving the caller to follow up with whatever post-success
-// `tea.Msg` it wants. JOIN's partial-success shape does not fit this
-// contract: a refusal there is not a total failure. [JoinCommand.Run]
+// sendCommand routes a migrated command through the protocol client.
+// Translation and transport failures return a [CommandErrorResult].
+// A dispatcher response returns every event from `Response.Events` and
+// its optional typed `Response.Err` together in [ReplyEvents], so the
+// chat-screen renders the complete response in order. Commands whose
+// handler returns neither events nor an error return `nil`, leaving the
+// caller to follow up with its post-success `tea.Msg`. JOIN's
+// partial-success shape has per-target outcomes, so [JoinCommand.Run]
 // talks to the client directly and skips this helper.
 func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation string) tea.Msg {
 	cmd, err := c.ToCommand(rc)
 	if err != nil {
-		return rc.errorEvent(operation, err)
+		return rc.errorResult(operation, err)
 	}
 
 	resp, err := rc.Client.Send(ctx, cmd)
 	if err != nil {
-		return rc.errorEvent(operation, err)
-	}
-
-	if resp.Err != nil {
-		return rc.errorEvent(operation, resp.Err)
+		return rc.errorResult(operation, err)
 	}
 
 	if len(resp.Events) > 0 {
-		return ReplyEvents(resp.Events)
+		reply := ReplyEvents{Events: resp.Events}
+		if resp.Err != nil {
+			event := rc.errorEvent(operation, resp.Err)
+			reply.Error = &event
+		}
+
+		return reply
+	}
+
+	if resp.Err != nil {
+		return rc.errorResult(operation, resp.Err)
 	}
 
 	return nil
@@ -226,8 +261,8 @@ func sendCommand(ctx context.Context, rc Context, c protocolCommand, operation s
 // toolContext adapts a [modelclient.ToolContext] to the [Context]
 // that `ToCommand` reads from, so the same translation method serves
 // both `Run` (chat-screen) and `RunTool` (model). The returned
-// context carries the actor, the active window, and the protocol
-// client: every field `ToCommand` implementations consult. The
+// context carries the active window and protocol client: every field
+// `ToCommand` implementation consults. The
 // cancellation context is threaded separately to the wire send.
 //
 // `Active` is the name of the window the call is running in, which a
@@ -246,7 +281,6 @@ func toolContext(tc modelclient.ToolContext) Context {
 		Session: tc.Session,
 		Manager: tc.Manager,
 		Active:  window,
-		Actor:   tc.Actor,
 		Client:  tc.Client,
 	}
 }
@@ -299,7 +333,7 @@ func sendToolCommand(ctx context.Context, tc modelclient.ToolContext, c protocol
 		return toolRefusal(err)
 	}
 
-	resp, err := tc.Client.Send(ctx, cmd)
+	resp, err := tc.Send(ctx, cmd)
 	if err != nil {
 		return toolExecutionFailure(err)
 	}

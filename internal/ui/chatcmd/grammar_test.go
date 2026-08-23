@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -24,12 +23,9 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 		general,
 		domain.NewChannelWindow("#random", time.Time{}),
 	}
-	haikuChannels := orderedmap.New[domain.ChannelName, time.Time]()
-	haikuChannels.Set("#general", time.Time{})
-
-	instances := []*domain.Instance{
-		domain.NewModelInstance("inst-haiku", "haiku", "anthropic/haiku", "", haikuChannels),
-		domain.NewModelInstance("inst-sonnet", "sonnet", "anthropic/sonnet", "", nil),
+	instances := []domain.InstanceDirectoryEntry{
+		{InstanceID: "inst-haiku", Nick: "haiku", ModelID: "anthropic/haiku"},
+		{InstanceID: "inst-sonnet", Nick: "sonnet", ModelID: "anthropic/sonnet"},
 	}
 	members := []domain.Nick{"testuser", "haiku"}
 	models := []ModelOption{
@@ -43,7 +39,7 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 
 	return CompletionContext{
 		Channels:        func() iter.Seq[domain.Window] { return slices.Values(channels) },
-		Instances:       func() iter.Seq[*domain.Instance] { return slices.Values(instances) },
+		Instances:       func() iter.Seq[domain.InstanceDirectoryEntry] { return slices.Values(instances) },
 		ActiveMembers:   func() iter.Seq[domain.Nick] { return slices.Values(members) },
 		ActiveChannel:   func() domain.ChannelName { return "#general" },
 		UserNick:        func() domain.Nick { return "testuser" },

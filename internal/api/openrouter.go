@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +27,7 @@ import (
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
+	"github.com/tidwall/sjson"
 )
 
 // Default per-call timeouts. The chat timeout bounds how long a model
@@ -194,6 +197,225 @@ func toolParams(definitions []ToolDefinition) []openai.ChatCompletionToolUnionPa
 	return tools
 }
 
+func eventRequestParams(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools []ToolDefinition,
+) openai.ChatCompletionNewParams {
+	return completionRequestParams(
+		modelID,
+		selfInstanceID,
+		buildMessages(systemPrompt, selfInstanceID, history, events),
+		tools,
+	)
+}
+
+func completionRequestParams(
+	modelID domain.ModelID,
+	promptCacheKey domain.InstanceID,
+	messages []openai.ChatCompletionMessageParamUnion,
+	tools []ToolDefinition,
+) openai.ChatCompletionNewParams {
+	params := openai.ChatCompletionNewParams{
+		Model:             shared.ChatModel(string(modelID)),
+		Messages:          messages,
+		Tools:             toolParams(tools),
+		ParallelToolCalls: openai.Bool(false),
+	}
+	if promptCacheKey != "" {
+		params.PromptCacheKey = openai.String(string(promptCacheKey))
+	}
+
+	return params
+}
+
+// RenderedEventRequest is the non-secret wire evidence retained for
+// one provider request.
+type RenderedEventRequest struct {
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+	Body    json.RawMessage   `json:"body"`
+}
+
+func openRouterCompletionRequest(
+	params openai.ChatCompletionNewParams,
+) (openai.ChatCompletionNewParams, map[string]string, bool) {
+	extraFields := make(map[string]any)
+	if len(params.Tools) > 0 {
+		extraFields["provider"] = map[string]any{"require_parameters": true}
+	}
+	if len(extraFields) > 0 {
+		params.SetExtraFields(extraFields)
+	}
+
+	headers := make(map[string]string)
+	if params.PromptCacheKey.Valid() {
+		headers["x-session-id"] = params.PromptCacheKey.Value
+	}
+	if isAnthropicModel(domain.ModelID(params.Model)) && len(params.Tools) > 0 {
+		headers["x-anthropic-beta"] = anthropicStructuredOutputBeta
+	}
+
+	return params, headers, isAnthropicModel(domain.ModelID(params.Model))
+}
+
+func isAnthropicModel(modelID domain.ModelID) bool {
+	return strings.HasPrefix(string(modelID), "anthropic/")
+}
+
+// RenderEventRequest returns the non-secret request evidence for one
+// SendEvents call. The turn journal uses the same parameter builder as
+// the provider call, so the body contains the roles, recipient
+// projection, cache boundary and tool schemas the provider received.
+func RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...ToolDefinition,
+) (RenderedEventRequest, error) {
+	return renderEventRequest("/chat/completions", modelID, selfInstanceID,
+		systemPrompt, history, events, tools...)
+}
+
+// RenderEventRequest returns the non-secret request evidence for one
+// SendEvents call, including the path below this client's configured
+// API base URL.
+func (c *OpenRouterClient) RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...ToolDefinition,
+) (RenderedEventRequest, error) {
+	path, err := c.chatCompletionPath()
+	if err != nil {
+		return RenderedEventRequest{}, err
+	}
+
+	return renderEventRequest(path, modelID, selfInstanceID,
+		systemPrompt, history, events, tools...)
+}
+
+// RenderToolResultRequest returns the non-secret request evidence for
+// one ContinueWithToolResults call, including the path below this
+// client's configured API base URL.
+func (c *OpenRouterClient) RenderToolResultRequest(
+	conv *Conversation,
+	results []ToolResult,
+	tools ...ToolDefinition,
+) (RenderedEventRequest, error) {
+	path, err := c.chatCompletionPath()
+	if err != nil {
+		return RenderedEventRequest{}, err
+	}
+
+	return renderToolResultRequest(path, conv, results, tools...)
+}
+
+// RenderToolResultRequest returns the standard OpenRouter request
+// shape for one ContinueWithToolResults call.
+func RenderToolResultRequest(
+	conv *Conversation,
+	results []ToolResult,
+	tools ...ToolDefinition,
+) (RenderedEventRequest, error) {
+	return renderToolResultRequest("/chat/completions", conv, results, tools...)
+}
+
+func (c *OpenRouterClient) chatCompletionPath() (string, error) {
+	endpoint, err := url.JoinPath(c.baseURL, "chat/completions")
+	if err != nil {
+		return "", fmt.Errorf("render chat completion request URL: %w", err)
+	}
+	requestURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse chat completion request URL: %w", err)
+	}
+
+	return requestURL.EscapedPath(), nil
+}
+
+func renderEventRequest(
+	path string,
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...ToolDefinition,
+) (RenderedEventRequest, error) {
+	return renderCompletionRequest(path, eventRequestParams(
+		modelID,
+		selfInstanceID,
+		systemPrompt,
+		history,
+		events,
+		tools,
+	))
+}
+
+func renderToolResultRequest(
+	path string,
+	conv *Conversation,
+	results []ToolResult,
+	tools ...ToolDefinition,
+) (RenderedEventRequest, error) {
+	params, err := toolResultRequestParams(conv, results, tools)
+	if err != nil {
+		return RenderedEventRequest{}, err
+	}
+
+	return renderCompletionRequest(path, params)
+}
+
+func renderCompletionRequest(
+	path string,
+	params openai.ChatCompletionNewParams,
+) (RenderedEventRequest, error) {
+	params, headers, cacheControl := openRouterCompletionRequest(params)
+	body, err := params.MarshalJSON()
+	if err != nil {
+		return RenderedEventRequest{}, fmt.Errorf("render event request: %w", err)
+	}
+	if cacheControl {
+		body, err = sjson.SetBytes(body, "cache_control", map[string]string{"type": "ephemeral"})
+		if err != nil {
+			return RenderedEventRequest{}, fmt.Errorf("render event request cache policy: %w", err)
+		}
+	}
+
+	return RenderedEventRequest{
+		Method:  http.MethodPost,
+		Path:    path,
+		Headers: headers,
+		Body:    body,
+	}, nil
+}
+
+func toolResultRequestParams(
+	conv *Conversation,
+	results []ToolResult,
+	tools []ToolDefinition,
+) (openai.ChatCompletionNewParams, error) {
+	if conv == nil {
+		return openai.ChatCompletionNewParams{}, errors.New("render tool result request: missing conversation")
+	}
+
+	messages := slices.Clone(conv.messages)
+	for _, result := range results {
+		messages = append(messages, openai.ToolMessage(result.Content, result.ToolCallID))
+	}
+
+	return completionRequestParams(conv.modelID, conv.promptCacheKey, messages, tools), nil
+}
+
 // SendEvents sends protocol events to a model and returns its typed
 // response. The model replies via structured JSON output (reply or
 // pass) and may optionally call memory tools.
@@ -212,18 +434,21 @@ func (c *OpenRouterClient) SendEvents(
 	err := c.inSpan(ctx, "api.openrouter.send_events",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(modelID))},
 		func(ctx context.Context, span trace.Span) error {
-			msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
-			params := openai.ChatCompletionNewParams{
-				Model:             shared.ChatModel(string(modelID)),
-				Messages:          msgs,
-				Tools:             toolParams(tools),
-				ParallelToolCalls: openai.Bool(false),
-			}
-			if selfInstanceID != "" {
-				params.PromptCacheKey = openai.String(string(selfInstanceID))
-			}
+			params := eventRequestParams(
+				modelID,
+				selfInstanceID,
+				systemPrompt,
+				history,
+				events,
+				tools,
+			)
+			msgs := params.Messages
 
-			resp, rawResp, err := c.chatCompletion(ctx, modelID, params) //nolint:bodyclose // SDK reads and closes the body.
+			resp, rawResp, err := c.chatCompletion( //nolint:bodyclose // SDK reads and closes the body.
+				ctx,
+				params,
+				option.WithMaxRetries(0),
+			)
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
 				logger.ErrorContext(ctx, "openrouter send events failed", "error", err)
@@ -232,6 +457,7 @@ func (c *OpenRouterClient) SendEvents(
 
 			parsed, assistantMsg, err := parseCompletionResponse(resp, rawResp)
 			if err != nil {
+				result = parsed
 				markSpanError(span, completionParseErrorKind(err), 0, err)
 				logger.ErrorContext(ctx, "openrouter response parse failed", "error", err)
 				return err
@@ -264,7 +490,7 @@ func (c *OpenRouterClient) SendEvents(
 			return nil
 		})
 	if err != nil {
-		return CompletionResult{}, err
+		return result, err
 	}
 
 	return result, nil
@@ -284,22 +510,17 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	err := c.inSpan(ctx, "api.openrouter.continue_with_tool_results",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(conv.modelID))},
 		func(ctx context.Context, span trace.Span) error {
-			msgs := conv.messages
-			for _, r := range results {
-				msgs = append(msgs, openai.ToolMessage(r.Content, r.ToolCallID))
+			params, err := toolResultRequestParams(conv, results, tools)
+			if err != nil {
+				return err
 			}
+			msgs := params.Messages
 
-			params := openai.ChatCompletionNewParams{
-				Model:             shared.ChatModel(string(conv.modelID)),
-				Messages:          msgs,
-				Tools:             toolParams(tools),
-				ParallelToolCalls: openai.Bool(false),
-			}
-			if conv.promptCacheKey != "" {
-				params.PromptCacheKey = openai.String(string(conv.promptCacheKey))
-			}
-
-			resp, rawResp, err := c.chatCompletion(ctx, conv.modelID, params) //nolint:bodyclose // SDK reads and closes the body.
+			resp, rawResp, err := c.chatCompletion( //nolint:bodyclose // SDK reads and closes the body.
+				ctx,
+				params,
+				option.WithMaxRetries(0),
+			)
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
 				logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
@@ -308,6 +529,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 
 			parsed, assistantMsg, err := parseCompletionResponse(resp, rawResp)
 			if err != nil {
+				result = parsed
 				markSpanError(span, completionParseErrorKind(err), 0, err)
 				logger.ErrorContext(ctx, "openrouter continue parse failed", "error", err)
 				return err
@@ -344,7 +566,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 			return nil
 		})
 	if err != nil {
-		return CompletionResult{}, err
+		return result, err
 	}
 
 	return result, nil
@@ -411,11 +633,10 @@ func buildMessages(
 	}
 
 	appendMsg := func(m protocol.IRCMessage) {
-		isSelf := selfInstanceID != "" && m.InstanceID == selfInstanceID
+		sourceID, identified := m.Source.InstanceID()
+		isSelf := selfInstanceID != "" && identified && sourceID == selfInstanceID
 
-		// Strip the internal instance ID before marshalling so it
-		// never appears in the prompt sent to the model.
-		m.InstanceID = ""
+		m.Source = m.Source.WithoutInstanceID()
 
 		data, _ := json.Marshal(m)
 		if isSelf {
@@ -431,10 +652,6 @@ func buildMessages(
 	}
 
 	for _, e := range events {
-		if selfInstanceID != "" && e.InstanceID == selfInstanceID {
-			continue
-		}
-
 		appendMsg(e)
 	}
 
@@ -496,7 +713,8 @@ func runToMessage(r messageRun) openai.ChatCompletionMessageParamUnion {
 // `me` for chat traffic, `pass` for explicit silence-with-reason,
 // memory tools for retrieval, and the channel-management tools
 // (`join`, `part`, `topic`, etc.). A completion with no tool calls
-// is silence; any text content in `msg.Content` is ignored.
+// is silence. Text content is retained for the turn journal but does
+// not enter the dispatch protocol.
 func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response) (CompletionResult, openai.ChatCompletionMessageParamUnion, error) {
 	if resp == nil {
 		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, fmt.Errorf("no response")
@@ -508,24 +726,21 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 	// no tool calls, no conversation handle, dispatch loop terminates.
 	if len(resp.Choices) == 0 {
 		return CompletionResult{
-			RequestID: requestIDFromChatCompletion(resp, rawResp),
-			Usage:     usageFromResponse(resp.Usage),
+			ResponseReceived: true,
+			RequestID:        requestIDFromChatCompletion(resp, rawResp),
+			Usage:            usageFromResponse(resp.Usage),
 		}, openai.ChatCompletionMessageParamUnion{}, nil
 	}
 
 	choice := resp.Choices[0]
 	msg := choice.Message
 	result := CompletionResult{
-		RequestID: requestIDFromChatCompletion(resp, rawResp),
-		Usage:     usageFromResponse(resp.Usage),
+		AssistantText:    msg.Content,
+		Refusal:          msg.Refusal,
+		ResponseReceived: true,
+		RequestID:        requestIDFromChatCompletion(resp, rawResp),
+		Usage:            usageFromResponse(resp.Usage),
 	}
-
-	if err := validateChoice(choice); err != nil {
-		return CompletionResult{}, openai.ChatCompletionMessageParamUnion{}, err
-	}
-
-	assistantMsg := msg.ToParam()
-
 	for _, call := range msg.ToolCalls {
 		result.PendingToolCalls = append(result.PendingToolCalls, PendingToolCall{
 			ID:   call.ID,
@@ -533,6 +748,12 @@ func parseCompletionResponse(resp *openai.ChatCompletion, rawResp *http.Response
 			Args: json.RawMessage(call.Function.Arguments),
 		})
 	}
+
+	if err := validateChoice(choice); err != nil {
+		return result, openai.ChatCompletionMessageParamUnion{}, err
+	}
+
+	assistantMsg := msg.ToParam()
 
 	return result, assistantMsg, nil
 }
@@ -711,34 +932,29 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 func (c *OpenRouterClient) chatCompletion(
 	ctx context.Context,
-	modelID domain.ModelID,
 	payload openai.ChatCompletionNewParams,
+	requestOptions ...option.RequestOption,
 ) (*openai.ChatCompletion, *http.Response, error) {
 	ctx, cancel := ensureDeadline(ctx, c.chatTimeout)
 	defer cancel()
+	payload, headers, cacheControl := openRouterCompletionRequest(payload)
 
 	var rawResp *http.Response
 
-	opts := []option.RequestOption{
+	opts := append([]option.RequestOption{
 		option.WithResponseInto(&rawResp),
-	}
-	if payload.PromptCacheKey.Valid() {
+	}, requestOptions...)
+	for name, value := range headers {
 		// OpenRouter uses the session ID to select the same provider
 		// endpoint from the first successful request. The prompt cache
 		// key still reaches providers that use it for cache bucketing.
-		opts = append(opts, option.WithHeader("x-session-id", payload.PromptCacheKey.Value))
+		opts = append(opts, option.WithHeader(name, value))
 	}
-	if len(payload.Tools) > 0 {
-		opts = append(opts, option.WithJSONSet("provider.require_parameters", true))
+	if cacheControl {
+		opts = append(opts, option.WithJSONSet(
+			"cache_control", map[string]string{"type": "ephemeral"},
+		))
 	}
-
-	if isAnthropicModel(modelID) {
-		if len(payload.Tools) > 0 {
-			opts = append(opts, option.WithHeader("x-anthropic-beta", anthropicStructuredOutputBeta))
-		}
-		opts = append(opts, option.WithJSONSet("cache_control", map[string]string{"type": "ephemeral"}))
-	}
-
 	completion, err := c.oai.Chat.Completions.New(
 		ctx,
 		payload,
@@ -749,10 +965,6 @@ func (c *OpenRouterClient) chatCompletion(
 	}
 
 	return completion, rawResp, nil
-}
-
-func isAnthropicModel(modelID domain.ModelID) bool {
-	return strings.HasPrefix(string(modelID), "anthropic/")
 }
 
 func requestIDFromChatCompletion(resp *openai.ChatCompletion, rawResp *http.Response) string {

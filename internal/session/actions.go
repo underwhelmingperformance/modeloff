@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	orderedmap "github.com/wk8/go-ordered-map/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -17,6 +16,8 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
+
+const joinCompletionTimeout = 5 * time.Second
 
 // joinAs joins the given actor to a channel. `key` carries the
 // channel password for keyed (`+k`) channels — empty for unkeyed
@@ -41,10 +42,11 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 	ch = domain.NormaliseChannelName(ch)
 
 	if reason := domain.ValidateChannelName(ch); reason != domain.ChannelNameAccepted {
-		return ch, domain.ErroneousChannelNameError{Channel: ch, Reason: reason, At: s.now()}
+		return "", domain.ErroneousChannelNameError{Channel: ch, Reason: reason, At: s.now()}
 	}
 
 	actorNick := actor.Nick()
+	joined := false
 
 	err := s.inSpan(ctx, "session.join", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
@@ -53,7 +55,7 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 	}, func(ctx context.Context, _ trace.Span) error {
 		now := s.now()
 
-		window, created, err := s.ensureChannelWindowWithActor(ctx, ch, actor, now)
+		window, created, err := s.ensureChannelWindowForJoin(ctx, ch, now)
 		if err != nil {
 			return err
 		}
@@ -65,17 +67,16 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 		// the actor's channel set and the wire events all agree.
 		ch = window.Name()
 
-		alreadyMember := !created && window.Members.HasInstance(actor)
+		windowMember := window.Members.HasInstance(actor)
+		actorMember := actor.InChannel(ch)
+		alreadyMember := windowMember && actorMember
+		invitationConsumed := false
 
-		if !created && !alreadyMember {
-			if err := s.checkJoinGates(window, actor, kind, key); err != nil {
+		resetContext := !created && !windowMember
+		if resetContext {
+			invitationConsumed, err = s.checkJoinGates(window, actor, kind, key)
+			if err != nil {
 				return err
-			}
-
-			window.Members.Add(actor)
-
-			if err := s.persistChannelWindow(ctx, window); err != nil {
-				return fmt.Errorf("save channel: %w", err)
 			}
 		}
 
@@ -88,39 +89,80 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 		// `RPL_NAMREPLY` that follow see the `+o` in the member list
 		// (the `@` prefix in NAMES is how RFC 2812 §3.2.1 conveys the
 		// new op's rank — there is no separate MODE message).
-		if created {
-			window.Members.ApplyMode(actor, domain.ModeOperator, true)
-
-			if err := s.persistChannelWindow(ctx, window); err != nil {
-				return fmt.Errorf("save channel after mode: %w", err)
-			}
-		}
-
-		if !alreadyMember {
-			if err := s.recordActorMembership(ctx, actor, ch, now); err != nil {
-				return err
-			}
-		}
-
 		if alreadyMember {
+			joined = true
 			return nil
 		}
 
-		s.persistAndEmit(ctx, ch, domain.Join{
-			Target:     ch,
-			Nick:       actorNick,
-			InstanceID: actor.ID(),
-			Created:    created,
-			At:         now,
-			Instance:   actor,
+		joinEvent := domain.Join{
+			Source:  domain.ClientSource(actor.ID(), actorNick),
+			Target:  ch,
+			Created: created,
+			At:      now,
+		}
+		candidateActor := actor.Snapshot()
+		candidateActor.JoinChannel(ch, now)
+
+		window.Members.Add(actor)
+		if created {
+			window.Members.ApplyMode(actor, domain.ModeOperator, true)
+		}
+		routes := s.channelJoinRoutes(ctx, window, joinEvent)
+		actorClient := s.lookupClientHandle(protocol.ClientID(actor.ID()))
+		locked := lockRouteSubscriptions(routes, actorClient)
+		routes = authorisedRoutesLocked(ctx, routes)
+		records, indexes := projectedScrollbackRecords(routes)
+
+		committed, err := s.store.CommitChannelJoin(ctx, store.ChannelJoin{
+			Window: window, Instance: candidateActor, Event: joinEvent,
+			Scrollback: records, ResetContext: resetContext, PreserveTurns: invitationConsumed,
 		})
+		if err != nil {
+			for _, sub := range slices.Backward(locked) {
+				sub.replayMu.Unlock()
+			}
+			s.recordPersistenceFailure(ctx, ch)
+
+			return err
+		}
+
+		if invitationConsumed {
+			s.installChannelWindowWithInvitationChange(window, actor.ID())
+		} else {
+			s.installChannelWindow(window)
+		}
+		actor.JoinChannel(ch, now)
+		s.bumpClientWindow(actor.ID(), ch)
+		for i := range routes {
+			routes[i].eventID = committed.EventID
+		}
+		for _, sub := range locked {
+			sub.outMu.Lock()
+		}
+		_, overflowed := queueRoutesLocked(
+			routes, indexes, committed.ScrollbackIDs, len(records),
+		)
+		for _, sub := range slices.Backward(locked) {
+			sub.outMu.Unlock()
+			sub.replayMu.Unlock()
+		}
+		for _, sub := range overflowed {
+			s.disconnectOverflowed(ctx, sub)
+		}
+		joined = true
+
+		completionCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), joinCompletionTimeout,
+		)
+		defer cancel()
+		ctx = completionCtx
 
 		window, err = s.loadChannelWindow(ctx, ch)
 		if err != nil {
 			return fmt.Errorf("reload channel after join: %w", err)
 		}
 
-		// RFC 2812 §3.2.1 / §3.2.4: RPL_NAMREPLY and RPL_TOPIC are
+		// RFC 2812 §3.2.1 / §3.2.4: RPL_TOPIC and RPL_NAMREPLY are
 		// sent only to the joiner. They are server-to-client
 		// responses, not channel broadcasts, so they go directly to
 		// the joiner's subscription via [Session.deliverToClient]. The
@@ -132,10 +174,28 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 		// On a `+a` channel the reply carries the mask alone (RFC
 		// 2811 §4.2.1). Anyone may join an anonymous channel, so a
 		// reply naming its members would be the way to ask who is on
-		// one. The topic names no member and needs no masking.
+		// one. RPL_TOPIC also masks another member recorded as the
+		// setter.
 		members := window.Members
 		if window.Modes.Anonymous {
 			members = domain.AnonymousMembers()
+		}
+
+		if window.Topic != "" {
+			topicSetBy := window.TopicSetBy
+			if window.Modes.Anonymous && topicSetBy != "" {
+				topicSetBy = domain.AnonymousNick
+			}
+
+			topic := domain.TopicInfo{
+				Target:     ch,
+				Topic:      window.Topic,
+				TopicSetBy: topicSetBy,
+				TopicSetAt: window.TopicSetAt,
+				At:         now,
+			}
+			s.appendInstanceReply(ctx, actor.ID(), protocol.ChannelWindowTarget(ch), topic)
+			s.deliverToClient(ctx, actor.ID(), topic)
 		}
 
 		s.deliverToClient(ctx, actor.ID(), domain.NamesReplyEvent{
@@ -149,26 +209,52 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 			At:      now,
 		})
 
-		if window.Topic != "" {
-			s.deliverToClient(ctx, actor.ID(), domain.TopicInfo{
-				Target:     ch,
-				Topic:      window.Topic,
-				TopicSetBy: window.TopicSetBy,
-				TopicSetAt: window.TopicSetAt,
-				At:         now,
-			})
-		}
-
 		return nil
 	})
+
+	if !joined {
+		return "", err
+	}
 
 	return ch, err
 }
 
-// ensureChannelWindowWithActor loads the channel-window or creates
-// a fresh one that already contains the actor. Returns the
-// (possibly freshly-saved) `*ChannelWindow`, whether it was newly
-// created, and any persistence error encountered along the way.
+func (s *Session) channelJoinRoutes(
+	ctx context.Context,
+	window *domain.ChannelWindow,
+	event domain.Join,
+) []routedDelivery {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	routes := make([]routedDelivery, 0, window.Members.Len())
+
+	for _, sub := range s.subscriberSnapshot() {
+		if !window.Members.HasInstance(sub.instance) {
+			continue
+		}
+
+		generation, active := sub.connection()
+		if !active {
+			continue
+		}
+
+		var projected domain.ProtocolEvent = event
+		if window.Modes.Anonymous {
+			projected = maskChannelEvent(projected, sub)
+		}
+		routes = append(routes, routedDelivery{
+			sub:                 sub,
+			connectionAuthority: &connectionAuthority{generation: generation},
+			delivery: protocol.Delivery{
+				Event: projected, SpanCtx: spanCtx,
+			},
+		})
+	}
+
+	return routes
+}
+
+// ensureChannelWindowForJoin loads the channel window or creates an empty one.
+// It also reports whether this call created the window.
 //
 // A channel is created only when the load says the channel does not
 // exist. Any other load failure is returned as-is: creating a fresh
@@ -182,7 +268,7 @@ func (s *Session) joinAs(ctx context.Context, actor *domain.Instance, kind joinK
 // A freshly created channel starts with the session's default mode
 // set (see [DefaultChannelModes]); a channel that already exists
 // keeps the modes it has.
-func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.ChannelName, actor *domain.Instance, now time.Time) (*domain.ChannelWindow, bool, error) {
+func (s *Session) ensureChannelWindowForJoin(ctx context.Context, ch domain.ChannelName, now time.Time) (*domain.ChannelWindow, bool, error) {
 	window, err := s.loadChannelWindow(ctx, ch)
 	if err == nil {
 		return window, false, nil
@@ -194,25 +280,8 @@ func (s *Session) ensureChannelWindowWithActor(ctx context.Context, ch domain.Ch
 
 	window = domain.NewChannelWindow(ch, now)
 	window.Modes = s.newChannelModes(ctx)
-	window.Members.Add(actor)
-
-	if saveErr := s.persistChannelWindow(ctx, window); saveErr != nil {
-		return nil, false, fmt.Errorf("save channel: %w", saveErr)
-	}
 
 	return window, true, nil
-}
-
-// recordActorMembership stamps the channel onto the actor's joined-
-// channels map and persists the updated instance row.
-func (s *Session) recordActorMembership(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, now time.Time) error {
-	actor.JoinChannel(ch, now)
-
-	if err := s.store.SaveInstance(ctx, actor); err != nil {
-		return fmt.Errorf("save instance: %w", err)
-	}
-
-	return nil
 }
 
 // partAs parts the given actor from a channel.
@@ -240,21 +309,13 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 			return domain.NotOnChannelError{Channel: ch, Command: "PART", At: s.now()}
 		}
 
-		// The PART is broadcast to the channel while `actor` is still a
-		// member, then membership is dropped — RFC 2812 §3.2.2 order.
-		// Emitting first is what lets the departing member receive its
-		// own PART through the membership filter.
 		now := s.now()
-		s.persistAndEmit(ctx, ch, domain.Part{
-			Target:     ch,
-			Nick:       actorNick,
-			InstanceID: actor.ID(),
-			Message:    message,
-			At:         now,
-			Instance:   actor,
+		return s.commitMemberDeparture(ctx, window, actor, domain.Part{
+			Source:  domain.ClientSource(actor.ID(), actorNick),
+			Target:  ch,
+			Message: message,
+			At:      now,
 		})
-
-		return s.removeMember(ctx, window, actor)
 	})
 }
 
@@ -286,30 +347,136 @@ type quitOutcome struct {
 
 type quitState struct {
 	channels         []domain.ChannelName
+	eventChannels    []domain.ChannelName
+	liveChannels     []domain.ChannelName
+	anonymous        []domain.ChannelName
 	windows          []*domain.ChannelWindow
 	unloaded         []domain.ChannelName
 	teardownErrors   []error
 	initialDeleteErr error
 	pendingDeleteErr error
 	instanceDeleted  bool
+	projection       *quitProjection
+	scrollbackIDs    []int64
+	scrollback       []store.ChannelScrollbackRecord
+}
+
+type quitInstanceDeletion struct {
+	committed         bool
+	eventChannels     []domain.ChannelName
+	liveChannels      []domain.ChannelName
+	uncertainChannels []domain.ChannelName
+	scrollbackIDs     []int64
+	scrollback        []store.ChannelScrollbackRecord
+}
+
+type quitProjection struct {
+	locked  []*serverClient
+	routes  []routedDelivery
+	records []store.ChannelScrollbackRecord
+	indexes []map[domain.ChannelName]int
+}
+
+func (p *quitProjection) unlock() {
+	if p == nil {
+		return
+	}
+
+	for _, sub := range slices.Backward(p.locked) {
+		sub.replayMu.Unlock()
+	}
+	p.locked = nil
+}
+
+func (p *quitProjection) queue(
+	scrollbackIDs []int64,
+	scrollback []store.ChannelScrollbackRecord,
+	channels []domain.ChannelName,
+) []*serverClient {
+	if p == nil {
+		return nil
+	}
+	p.canonicalise(scrollback, channels)
+
+	for _, sub := range p.locked {
+		sub.outMu.Lock()
+	}
+	_, overflowed := queueRoutesLocked(
+		p.routes, p.indexes, scrollbackIDs, len(p.records),
+	)
+	for _, sub := range slices.Backward(p.locked) {
+		sub.outMu.Unlock()
+	}
+	p.unlock()
+
+	return overflowed
+}
+
+func (p *quitProjection) canonicalise(
+	scrollback []store.ChannelScrollbackRecord,
+	channels []domain.ChannelName,
+) {
+	canonicalChannel := func(channel domain.ChannelName) domain.ChannelName {
+		for _, candidate := range channels {
+			if domain.EqualChannel(candidate, channel) {
+				return candidate
+			}
+		}
+
+		return channel
+	}
+
+	for i := range p.routes {
+		indexes := p.indexes[i]
+		for targetIndex, target := range p.routes[i].delivery.Targets {
+			if recordIndex, ok := indexes[target]; ok && recordIndex < len(scrollback) {
+				p.routes[i].delivery.Targets[targetIndex] = scrollback[recordIndex].Channel
+				continue
+			}
+
+			p.routes[i].delivery.Targets[targetIndex] = canonicalChannel(target)
+		}
+
+		if part, ok := p.routes[i].delivery.Event.(domain.Part); ok {
+			if recordIndex, exists := indexes[part.Target]; exists && recordIndex < len(scrollback) {
+				part.Target = scrollback[recordIndex].Channel
+			} else {
+				part.Target = canonicalChannel(part.Target)
+			}
+			p.routes[i].delivery.Event = part
+		}
+
+		if len(indexes) == 0 {
+			continue
+		}
+		canonicalIndexes := make(map[domain.ChannelName]int, len(indexes))
+		for _, recordIndex := range indexes {
+			if recordIndex >= len(scrollback) {
+				continue
+			}
+			canonicalIndexes[scrollback[recordIndex].Channel] = recordIndex
+		}
+		p.indexes[i] = canonicalIndexes
+	}
 }
 
 // quitAs disconnects the given actor from every joined channel. It
-// loads the channels and deletes the instance row before making the
-// QUIT observable. A failure in either step therefore leaves the
-// connection intact and produces no QUIT that a restart could undo.
-// The event is then logged and broadcast against the actor's existing
-// membership, which carries it to peers who share those channels and
-// to the departing client. Membership goes afterwards, so a channel
-// the departure empties is destroyed like a last PART (RFC 2811 §2).
+// loads the channels, writes their departure audit events and deletes
+// the instance in one transaction before making the QUIT observable.
+// A load or transaction failure therefore leaves the connection and
+// its durable state intact. The session then broadcasts the event
+// against the actor's existing live membership, which carries it to
+// peers who share those channels and to the departing client. Live
+// membership goes afterwards, so a channel the departure empties is
+// destroyed like a last PART (RFC 2811 §2).
 //
 // This is the one teardown, whoever sent the QUIT. The subscription
 // is a separate matter: the dispatcher reaps a model-client's
-// through [Session.releaseClient] and [Session.reapClient], and the
-// client whose lifetime is the session's has no connection under it
-// to close, so both refuse for it.
+// through [Session.releaseClient] and [Session.reapClient]. The
+// user-client's transport remains allocated for the session, but
+// QUIT revokes the connection authority attached to it.
 func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message string) error {
-	return s.quit(ctx, actor, message, quitRequiresDeletion).err
+	return s.quit(ctx, actor, message, quitRequiresDeletion, nil).err
 }
 
 func (s *Session) quit(
@@ -317,6 +484,7 @@ func (s *Session) quit(
 	actor *domain.Instance,
 	message string,
 	durability quitDurability,
+	preQuit domain.ProtocolEvent,
 ) quitOutcome {
 	actorID := actor.ID()
 	actorNick := actor.Nick()
@@ -328,25 +496,53 @@ func (s *Session) quit(
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
 
 		now := s.now()
-		state, err := s.prepareQuit(ctx, actor, durability)
+		quit := domain.Quit{
+			Source:  domain.ClientSource(actorID, actorNick),
+			Message: message,
+			At:      now,
+		}
+		client := s.lookupClientHandle(protocol.ClientID(actorID))
+		state, err := s.prepareQuit(ctx, actor, quit, durability, client, preQuit)
 		if err != nil {
 			return err
 		}
 
-		quit := domain.Quit{
-			Nick:       actorNick,
-			InstanceID: actorID,
-			Message:    message,
-			At:         now,
-			Instance:   actor,
+		if client != nil {
+			client.turnGeneration++
+			client.deactivateConnection()
 		}
+		var overflowed []*serverClient
+		if state.instanceDeleted {
+			overflowed = state.projection.queue(
+				state.scrollbackIDs, state.scrollback, state.liveChannels,
+			)
+		} else {
+			state.projection.unlock()
+		}
+		for _, sub := range overflowed {
+			s.disconnectOverflowed(ctx, sub)
+		}
+		s.interruptModelPeerWindows(actorID)
+		if !state.instanceDeleted {
+			if preQuit != nil {
+				s.deliverToClosingClient(ctx, client, preQuit)
+			}
 
-		s.emitQuit(ctx, actor, quit, state.channels, state.unloaded)
-		s.retireClient(actorID)
+			quitEmission, emitErr := s.emitQuit(
+				ctx, actor, quit, state.eventChannels, state.liveChannels, state.anonymous,
+				state.unloaded, true,
+			)
+			if emitErr != nil {
+				state.teardownErrors = append(state.teardownErrors,
+					fmt.Errorf("persist quit event: %w", emitErr))
+			}
+			if quitEmission.closingDeliveryAllowed && !quitEmission.deliveredDirectly {
+				s.deliverToClosingClient(ctx, client, quit)
+			}
+		}
 		s.removeQuitMembership(ctx, actor, &state)
 		s.retryForcedQuitDeletion(ctx, actor, &state)
 		outcome.instanceDeleted = state.instanceDeleted
-
 		if err := errors.Join(state.teardownErrors...); err != nil {
 			return &quitCommittedError{Err: err}
 		}
@@ -365,15 +561,23 @@ func (s *Session) quit(
 func (s *Session) prepareQuit(
 	ctx context.Context,
 	actor *domain.Instance,
+	quit domain.Quit,
 	durability quitDurability,
+	client *serverClient,
+	preQuit domain.ProtocolEvent,
 ) (quitState, error) {
 	state := quitState{channels: s.instanceChannelNames(actor)}
+	state.eventChannels = slices.Clone(state.channels)
+	state.liveChannels = slices.Clone(state.channels)
 	state.windows = make([]*domain.ChannelWindow, 0, len(state.channels))
 
 	for _, ch := range state.channels {
 		window, err := s.loadChannelWindow(ctx, ch)
 		if err == nil {
 			state.windows = append(state.windows, window)
+			if window.Modes.Anonymous {
+				state.anonymous = append(state.anonymous, window.Name())
+			}
 			continue
 		}
 		if durability == quitRequiresDeletion {
@@ -383,9 +587,17 @@ func (s *Session) prepareQuit(
 		state.unloaded = append(state.unloaded, ch)
 		state.teardownErrors = append(state.teardownErrors, fmt.Errorf("load channel %q: %w", ch, err))
 	}
+	state.projection = s.prepareQuitProjection(
+		ctx, actor, quit, &state, client, preQuit,
+	)
 
-	if err := s.store.DeleteInstanceByID(ctx, actor.ID()); err != nil {
+	deletion, err := s.deleteQuitInstance(
+		ctx, actor, quit, state.channels, state.windows, state.anonymous, state.unloaded,
+		state.projection.records,
+	)
+	if !deletion.committed {
 		if durability == quitRequiresDeletion {
+			state.projection.unlock()
 			return quitState{}, fmt.Errorf("delete instance: %w", err)
 		}
 
@@ -399,21 +611,223 @@ func (s *Session) prepareQuit(
 	}
 
 	state.instanceDeleted = true
+	state.scrollbackIDs = deletion.scrollbackIDs
+	state.scrollback = deletion.scrollback
+	state.eventChannels = deletion.eventChannels
+	state.liveChannels = deletion.liveChannels
+	for _, channel := range deletion.uncertainChannels {
+		if s.hasOtherActiveMember(actor.ID(), channel) {
+			state.liveChannels = append(state.liveChannels, channel)
+		}
+	}
+	if err != nil {
+		state.teardownErrors = append(state.teardownErrors, err)
+	}
 
 	return state, nil
+}
+
+func (s *Session) prepareQuitProjection(
+	ctx context.Context,
+	actor *domain.Instance,
+	quit domain.Quit,
+	state *quitState,
+	client *serverClient,
+	preQuit domain.ProtocolEvent,
+) *quitProjection {
+	channels := make([]domain.ChannelName, 0, len(state.windows)+len(state.unloaded))
+	for _, window := range state.windows {
+		remaining := window.Members.Len()
+		if window.Members.HasID(actor.ID()) {
+			remaining--
+		}
+		if remaining > 0 {
+			channels = append(channels, window.Name())
+		}
+	}
+	channels = append(channels, state.unloaded...)
+
+	masked := slices.Concat(slices.Clone(state.anonymous), state.unloaded)
+	routes := s.quitRoutes(ctx, quit, channels, masked, client)
+	spanCtx := trace.SpanContextFromContext(ctx)
+	if client != nil && preQuit != nil {
+		routes = append([]routedDelivery{{
+			sub: client, terminal: true,
+			delivery: protocol.Delivery{Event: preQuit, SpanCtx: spanCtx},
+		}}, routes...)
+	}
+	if client != nil {
+		routes = append(routes, routedDelivery{
+			sub: client, terminal: true,
+			delivery: protocol.Delivery{Event: quit, SpanCtx: spanCtx},
+		})
+	}
+
+	locked := lockRouteSubscriptions(routes, client)
+	routes = authorisedRoutesLocked(ctx, routes)
+	excluded := map[domain.InstanceID]struct{}{actor.ID(): {}}
+	records, indexes := projectedScrollbackRecordsExcept(routes, excluded)
+
+	return &quitProjection{
+		locked: locked, routes: routes, records: records, indexes: indexes,
+	}
+}
+
+func (s *Session) deleteQuitInstance(
+	ctx context.Context,
+	actor *domain.Instance,
+	quit domain.Quit,
+	channels []domain.ChannelName,
+	windows []*domain.ChannelWindow,
+	anonymous []domain.ChannelName,
+	unloaded []domain.ChannelName,
+	scrollback []store.ChannelScrollbackRecord,
+) (quitInstanceDeletion, error) {
+	expectedDestroyed := make(map[domain.ChannelKey]struct{}, len(unloaded))
+	for _, window := range windows {
+		if window.Members.Len() == 1 && window.Members.HasID(actor.ID()) {
+			expectedDestroyed[domain.KeyForChannel(window.Name())] = struct{}{}
+		}
+	}
+	for _, channel := range unloaded {
+		expectedDestroyed[domain.KeyForChannel(channel)] = struct{}{}
+	}
+
+	// Keep the durable deletion and the authority-generation change under
+	// one channel-state lock so a guard cannot observe the deleted channel
+	// with its previous generation.
+	s.channels.mu.Lock()
+	defer s.channels.mu.Unlock()
+
+	masked := slices.Concat(slices.Clone(anonymous), unloaded)
+	auditChannels := make([]domain.ChannelName, 0, len(windows)+len(unloaded))
+	for _, window := range windows {
+		auditChannels = append(auditChannels, window.Name())
+	}
+	auditChannels = append(auditChannels, unloaded...)
+	auditEvents := make([]store.ChannelAuditEvent, 0, len(auditChannels))
+	for _, channel := range auditChannels {
+		auditEvents = append(auditEvents, store.ChannelAuditEvent{
+			Channel: channel,
+			Event:   actorEventForChannel(quit, channel, masked),
+		})
+	}
+	committed, err := s.store.CommitInstanceDeletion(ctx, store.InstanceDeletion{
+		InstanceID: actor.ID(),
+		Events:     auditEvents,
+		Scrollback: scrollback,
+	})
+	if err != nil {
+		return quitInstanceDeletion{}, err
+	}
+
+	seen := make(map[domain.ChannelKey]struct{}, len(channels))
+	eventChannels := make([]domain.ChannelName, 0, len(channels))
+	liveChannels := make([]domain.ChannelName, 0, len(channels))
+	var refreshErrors []error
+	var uncertainChannels []domain.ChannelName
+	for _, name := range channels {
+		key := domain.KeyForChannel(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		delete(s.channels.windows, key)
+
+		window, err := s.loadChannelWindowFromStore(ctx, name)
+		if err == nil {
+			s.channels.windows[key] = window
+			eventChannels = append(eventChannels, window.Name())
+			liveChannels = append(liveChannels, window.Name())
+			continue
+		}
+
+		eventChannels = append(eventChannels, name)
+		if errors.Is(err, store.ErrNoSuchChannel) {
+			s.channels.generations[key]++
+			s.channelFlood.forget(name)
+			continue
+		}
+
+		uncertainChannels = append(uncertainChannels, name)
+		refreshErrors = append(refreshErrors,
+			fmt.Errorf("reload channel %q after instance deletion: %w", name, err))
+		if _, destroyed := expectedDestroyed[key]; destroyed {
+			s.channels.generations[key]++
+			s.channelFlood.forget(name)
+		}
+	}
+	s.directoryGeneration.Add(1)
+
+	return quitInstanceDeletion{
+		committed:         true,
+		eventChannels:     eventChannels,
+		liveChannels:      liveChannels,
+		uncertainChannels: uncertainChannels,
+		scrollbackIDs:     committed.ScrollbackIDs,
+		scrollback:        committed.Scrollback,
+	}, errors.Join(refreshErrors...)
+}
+
+func (s *Session) hasOtherActiveMember(actor domain.InstanceID, channel domain.ChannelName) bool {
+	for _, connection := range s.activeConnections() {
+		instance := connection.client.instance
+		if instance.ID() != actor && instance.InChannel(channel) {
+			return true
+		}
+	}
+
+	return false
+}
+
+type quitEmission struct {
+	deliveredDirectly      bool
+	closingDeliveryAllowed bool
 }
 
 func (s *Session) emitQuit(
 	ctx context.Context,
 	actor *domain.Instance,
 	quit domain.Quit,
-	channels []domain.ChannelName,
+	channels, liveChannels, anonymous []domain.ChannelName,
 	maskedChannels []domain.ChannelName,
-) {
-	s.propagateActorEvent(ctx, actor, actorEventConfig{
-		build:          func() broadcastEvent { return quit },
-		maskedChannels: maskedChannels,
-	})
+	persist bool,
+) (quitEmission, error) {
+	masked := slices.Clone(anonymous)
+	for _, channel := range maskedChannels {
+		if !slices.Contains(masked, channel) {
+			masked = append(masked, channel)
+		}
+	}
+	deliveryChannels := liveChannels
+	deliveryMasked := masked
+	var persistenceErrors []error
+	if persist {
+		var persistedChannels []domain.ChannelName
+		for _, channel := range channels {
+			if _, err := s.appendEventResult(
+				ctx, channel, actorEventForChannel(quit, channel, masked),
+			); err != nil {
+				persistenceErrors = append(persistenceErrors,
+					fmt.Errorf("append actor event for %q: %w", channel, err))
+				continue
+			}
+			persistedChannels = append(persistedChannels, channel)
+		}
+		deliveryChannels = intersectChannelNames(liveChannels, persistedChannels)
+		deliveryMasked = intersectChannelNames(masked, persistedChannels)
+	}
+	err := errors.Join(persistenceErrors...)
+	deliverable := !persist || len(channels) == 0 || len(deliveryChannels) > 0 || len(deliveryMasked) > 0
+	if !deliverable {
+		return quitEmission{}, err
+	}
+	if len(deliveryChannels) > 0 || len(deliveryMasked) > 0 {
+		s.emitScoped(ctx, quit, sharedChannelsScope{
+			channels: deliveryChannels,
+			masked:   deliveryMasked,
+		})
+	}
 
 	// A client is told what happened to its own connection, which
 	// matters for the QUIT it did not ask for: RFC 2812 §3.7.1 has
@@ -429,25 +843,28 @@ func (s *Session) emitQuit(
 	// asks per recipient. Both are answered with a direct
 	// delivery, which is the fallback `changeNickAs` makes for
 	// NICK, for the same reason.
-	anonymous := s.anonymousChannels(ctx, channels)
-	for _, ch := range maskedChannels {
+	anonymous = s.anonymousChannels(ctx, deliveryChannels)
+	for _, ch := range deliveryMasked {
 		if !slices.Contains(anonymous, ch) {
 			anonymous = append(anonymous, ch)
 		}
 	}
-	if len(namedChannels(channels, anonymous)) == 0 {
+	if len(namedChannels(deliveryChannels, anonymous)) == 0 {
 		s.deliverToClient(ctx, actor.ID(), quit)
+
+		return quitEmission{
+			deliveredDirectly:      true,
+			closingDeliveryAllowed: true,
+		}, err
 	}
+
+	return quitEmission{closingDeliveryAllowed: true}, err
 }
 
 func (s *Session) removeQuitMembership(ctx context.Context, actor *domain.Instance, state *quitState) {
 	if state.instanceDeleted {
 		for _, ch := range state.channels {
 			actor.LeaveChannels(ch)
-			if err := s.reloadChannelWindow(ctx, ch); err != nil {
-				state.teardownErrors = append(state.teardownErrors,
-					fmt.Errorf("reload channel %q: %w", ch, err))
-			}
 		}
 
 		return
@@ -458,6 +875,9 @@ func (s *Session) removeQuitMembership(ctx context.Context, actor *domain.Instan
 		err := s.commitChannel(ctx, window)
 
 		if err != nil {
+			if window.Members.Len() > 0 {
+				s.installChannelWindow(window)
+			}
 			state.teardownErrors = append(state.teardownErrors, fmt.Errorf("leave channel %q: %w", window.Name(), err))
 		}
 	}
@@ -511,33 +931,77 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 			return err
 		}
 
-		actor.SetNick(newNick)
-
-		// The instances table is keyed by InstanceID, so a rename is
-		// an in-place update of the `nick` column.
-		if err := s.store.SaveInstance(ctx, actor); err != nil {
-			return fmt.Errorf("save instance: %w", err)
-		}
-
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 		now := s.now()
 		actorID := actor.ID()
 
 		change := domain.NickChange{
-			OldNick:    oldNick,
-			NewNick:    newNick,
-			InstanceID: actorID,
-			At:         now,
-			Instance:   actor,
+			Source:  domain.ClientSource(actorID, oldNick),
+			NewNick: newNick,
+			At:      now,
 		}
 
-		s.propagateActorEvent(ctx, actor, actorEventConfig{
-			mutate: func(window *domain.ChannelWindow) {
-				window.Members.RenameTo(actor, newNick)
-			},
-			build: func() broadcastEvent { return change },
+		candidateActor := actor.Snapshot()
+		candidateActor.SetNick(newNick)
+		channels := s.instanceChannelNames(actor)
+		windows := make([]*domain.ChannelWindow, 0, len(channels))
+		auditEvents := make([]store.ChannelAuditEvent, 0, len(channels))
+		for _, channel := range channels {
+			window, err := s.loadChannelWindow(ctx, channel)
+			if err != nil {
+				return fmt.Errorf("load nick change channel %q: %w", channel, err)
+			}
+
+			window.Members.RenameID(actor.ID(), newNick)
+			windows = append(windows, window)
+			auditEvents = append(auditEvents, store.ChannelAuditEvent{
+				Channel: window.Name(),
+				Event:   change,
+			})
+		}
+
+		plan := s.planProtocolEmission(ctx, protocolEmission{
+			event: change,
+			scope: sharedChannelsScope{channels: channels},
+		}, 0)
+		locked := lockRouteSubscriptions(plan.routes)
+		plan.routes = authorisedRoutesLocked(ctx, plan.routes)
+		records, indexes := projectedScrollbackRecords(plan.routes)
+
+		committed, err := s.store.CommitActorRename(ctx, store.ActorRename{
+			Instance:   candidateActor,
+			Windows:    windows,
+			Events:     auditEvents,
+			Scrollback: records,
 		})
+		if err != nil {
+			for _, sub := range slices.Backward(locked) {
+				sub.replayMu.Unlock()
+			}
+			for _, channel := range channels {
+				s.recordPersistenceFailure(ctx, channel)
+			}
+			return fmt.Errorf("persist nick change: %w", err)
+		}
+
+		actor.SetNick(newNick)
+		for _, window := range windows {
+			s.installChannelWindow(window)
+		}
+		for _, sub := range locked {
+			sub.outMu.Lock()
+		}
+		_, overflowed := queueRoutesLocked(
+			plan.routes, indexes, committed.ScrollbackIDs, len(records),
+		)
+		for _, sub := range slices.Backward(locked) {
+			sub.outMu.Unlock()
+			sub.replayMu.Unlock()
+		}
+		for _, sub := range overflowed {
+			s.disconnectOverflowed(ctx, sub)
+		}
 
 		// RFC 2812 §3.1.2: a client is always told its own NICK
 		// succeeded. The broadcast above carries it back through the
@@ -552,12 +1016,33 @@ func (s *Session) changeNickAs(ctx context.Context, actor *domain.Instance, newN
 	})
 }
 
+func intersectChannelNames(
+	candidates []domain.ChannelName,
+	allowed []domain.ChannelName,
+) []domain.ChannelName {
+	allowedKeys := make(map[domain.ChannelKey]struct{}, len(allowed))
+	for _, channel := range allowed {
+		allowedKeys[domain.KeyForChannel(channel)] = struct{}{}
+	}
+
+	matched := make([]domain.ChannelName, 0, len(candidates))
+	for _, channel := range candidates {
+		if _, ok := allowedKeys[domain.KeyForChannel(channel)]; ok {
+			matched = append(matched, channel)
+		}
+	}
+
+	return matched
+}
+
 // sendMessageAs records a message from the given actor and
 // returns the persisted [domain.Message]. The message is emitted
 // via [Session.emit]; membership fan-out suppresses the originator
 // (RFC 2812 §3.3.1), and a sender holding echo-message additionally
-// receives a direct echo via [Session.echoToOriginator]. A model,
-// holding no echo capability, sees no copy of its own line.
+// receives a direct echo via [Session.echoToOriginator]. A replay-
+// capable sender without echo-message receives a history-only
+// delivery, which its client files in server order without exposing
+// an IRC echo.
 func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch domain.ChannelName, body string) (domain.Message, error) {
 	actorNick := actor.Nick()
 
@@ -576,19 +1061,15 @@ func (s *Session) sendMessageAs(ctx context.Context, actor *domain.Instance, ch 
 		}
 
 		msg = domain.Message{
-			Target:     target,
-			From:       actorNick,
-			InstanceID: instanceID,
-			Body:       body,
-			At:         s.now(),
+			Source: domain.ClientSource(instanceID, actorNick),
+			Target: target,
+			Body:   body,
+			At:     s.now(),
 		}
 
 		ch = target
 
-		s.appendEvent(ctx, ch, msg)
-		s.emit(ctx, msg)
-
-		return nil
+		return s.recordAndEmitMessage(ctx, ch, msg)
 	})
 
 	return msg, err
@@ -614,24 +1095,57 @@ func (s *Session) sendActionAs(ctx context.Context, actor *domain.Instance, ch d
 		}
 
 		msg = domain.Message{
-			Target:     target,
-			From:       actorNick,
-			InstanceID: instanceID,
-			Body:       body,
-			Action:     true,
-			At:         s.now(),
+			Source: domain.ClientSource(instanceID, actorNick),
+			Target: target,
+			Body:   body,
+			Action: true,
+			At:     s.now(),
 		}
 
 		ch = target
 
-		s.appendEvent(ctx, ch, msg)
-		s.emit(ctx, msg)
-
-		return nil
+		return s.recordAndEmitMessage(ctx, ch, msg)
 	})
 
 	return msg, err
 }
+
+func (s *Session) recordAndEmitMessage(
+	ctx context.Context,
+	target domain.ChannelName,
+	message domain.Message,
+) error {
+	if domain.InferChannelKind(target) == domain.KindDM {
+		s.dmHistoryMu.Lock()
+		defer s.dmHistoryMu.Unlock()
+
+		eventID, err := s.appendEventResult(ctx, target, message)
+		if err != nil {
+			return &MessagePersistenceError{Err: err}
+		}
+		s.emitStored(ctx, message, eventID, clientScope{client: domain.InstanceID(target)})
+
+		return nil
+	}
+
+	if err := s.commitChannelMessage(ctx, target, message); err != nil {
+		return &MessagePersistenceError{Err: err}
+	}
+
+	return nil
+}
+
+// MessagePersistenceError reports that the session could not persist a
+// message before delivery. Err is the store failure.
+type MessagePersistenceError struct {
+	Err error
+}
+
+func (e *MessagePersistenceError) Error() string {
+	return fmt.Sprintf("persist message: %v", e.Err)
+}
+
+func (e *MessagePersistenceError) Unwrap() error { return e.Err }
 
 // setTopicAs sets the topic for a channel. A topic longer than
 // [domain.TopicMaxLen] (this server's TOPICLEN) is refused with
@@ -696,18 +1210,14 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		window.TopicSetBy = actorNick
 		window.TopicSetAt = now
 
-		if err := s.persistChannelWindow(ctx, window); err != nil {
-			return fmt.Errorf("save channel: %w", err)
+		if err := s.commitChannelUpdate(ctx, window, domain.TopicChange{
+			Source: domain.ClientSource(actor.ID(), actorNick),
+			Target: ch,
+			Topic:  topic,
+			At:     now,
+		}); err != nil {
+			return fmt.Errorf("commit topic change: %w", err)
 		}
-
-		s.persistAndEmit(ctx, ch, domain.TopicChange{
-			Target:     ch,
-			Topic:      topic,
-			By:         actorNick,
-			InstanceID: actor.ID(),
-			At:         now,
-			ByInstance: actor,
-		})
 
 		return nil
 	})
@@ -742,36 +1252,30 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 			return domain.UserNotInChannelError{Nick: targetNick, Channel: ch, Command: "KICK", At: s.now()}
 		}
 
-		// The KICK is broadcast to the channel while `target` is still
-		// a member, then membership is dropped, which is the order
-		// PART follows and the one RFC 2812 §3.2.8 requires: the
-		// kicked client is told it was kicked, and the membership
-		// filter is what carries the event to it.
 		now := s.now()
-		s.persistAndEmit(ctx, ch, domain.Kicked{
-			Target:       ch,
-			Nick:         targetNick,
-			InstanceID:   target.ID(),
-			By:           actor.Nick(),
-			ByInstanceID: actor.ID(),
-			At:           now,
-			Instance:     target,
-		})
+		if err := s.commitMemberDeparture(ctx, window, target, domain.Kicked{
+			Source:  domain.ClientSource(actor.ID(), actor.Nick()),
+			Target:  ch,
+			Subject: targetNick,
+			At:      now,
+		}); err != nil {
+			return err
+		}
 
-		return s.removeMember(ctx, window, target)
+		s.interruptModelWindow(protocol.ClientID(target.ID()), ch)
+
+		return nil
 	})
 }
 
 // inviteAs implements RFC 2812 §3.2.7's INVITE command. The invitee
 // is recorded against the channel's [domain.Invitations] set so a
 // follow-up JOIN can pass `+i`. Delivery is scoped to the inviter
-// and invitee: the returned [domain.Invited] envelope is the
-// inviter's `RPL_INVITING`-equivalent, which [Session.handleInvite]
-// wraps in `Response.Events` for the synchronous client reply, and
-// the same envelope is written directly to the invitee's
-// subscription as their wire `INVITE` message. The channel event log
-// is not touched and no broadcast happens; other channel members are
-// not told.
+// and invitee: the returned [domain.Invited] value is written directly
+// to the invitee's subscription as the wire `INVITE` message.
+// [Session.handleInvite] constructs a separate [domain.Inviting]
+// reply for the issuer. The channel event log is not touched and no
+// broadcast happens; other channel members are not told.
 //
 // The gates run in RFC order, and nothing is recorded until every
 // one of them has passed:
@@ -791,9 +1295,8 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 // that does not exist. Resolving against the registry of connected
 // clients is what an invitation asks for: somebody the server can
 // deliver it to, which a nick an instances row still holds is not if
-// nothing ever attached under it. The inviter gets a
-// [domain.SystemNotice] in place of the envelope, so the chat-screen
-// surfaces the missing-nick condition.
+// nothing ever attached under it. The inviter gets a typed
+// [domain.UnknownNickError] and a private [domain.SystemNotice].
 func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target domain.Nick, ch domain.ChannelName) (domain.ProtocolEvent, error) {
 	actorNick := actor.Nick()
 
@@ -841,8 +1344,6 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 					Text:   fmt.Sprintf("no such nick: %s", target),
 					At:     now,
 				}
-
-				return nil
 			}
 
 			return err
@@ -850,22 +1351,26 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(inst.ID())))
 
-		window.Invitations.Add(inst.ID())
-		if err := s.persistChannelWindow(ctx, window); err != nil {
-			return fmt.Errorf("save channel: %w", err)
+		if !window.Invitations.Contains(inst.ID()) {
+			window.Invitations.Add(inst.ID())
+			persistErr := s.persistChannelWindowWithInvitationChange(ctx, window, inst.ID())
+			if persistErr != nil {
+				return fmt.Errorf("save channel: %w", persistErr)
+			}
 		}
 
 		invited := domain.Invited{
-			Target:       ch,
-			Nick:         inst.Nick(),
-			InstanceID:   inst.ID(),
-			By:           actorNick,
-			ByInstanceID: actor.ID(),
-			At:           now,
-			Instance:     inst,
+			Source:  domain.ClientSource(actor.ID(), actorNick),
+			Target:  ch,
+			Invitee: inst.Nick(),
+			At:      now,
 		}
 
-		s.deliverToClient(ctx, inst.ID(), invited)
+		delivery := invited
+		if window.Modes.Anonymous {
+			delivery.Source = domain.AnonymousSource()
+		}
+		s.deliverToClient(ctx, inst.ID(), delivery)
 
 		event = invited
 
@@ -881,15 +1386,26 @@ func (s *Session) inviteAs(ctx context.Context, actor *domain.Instance, target d
 // names a specific recipient (INVITE, user-mode replies) rather
 // than the channel-wide audience.
 func (s *Session) deliverToClient(ctx context.Context, id domain.InstanceID, evt domain.ProtocolEvent) {
-	target := s.lookupClientHandle(protocol.ClientID(id))
-	if target == nil {
+	s.emitScoped(ctx, evt, clientScope{client: id})
+}
+
+func (s *Session) deliverToClosingClient(
+	ctx context.Context,
+	client *serverClient,
+	event domain.ProtocolEvent,
+) {
+	if client == nil {
 		return
 	}
 
-	target.enqueue(protocol.Delivery{
-		Event:   evt,
-		SpanCtx: trace.SpanContextFromContext(ctx),
-	})
+	s.enqueueRoutes(ctx, []routedDelivery{{
+		sub:      client,
+		terminal: true,
+		delivery: protocol.Delivery{
+			Event:   event,
+			SpanCtx: trace.SpanContextFromContext(ctx),
+		},
+	}})
 }
 
 // setUserModeAs mutates a single user-mode flag on `target` and
@@ -909,6 +1425,7 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 	if !target.setMode(mode, add) {
 		return
 	}
+	s.directoryGeneration.Add(1)
 
 	targetInst := target.instance
 
@@ -918,17 +1435,17 @@ func (s *Session) setUserModeAs(ctx context.Context, by domain.Nick, target *ser
 		attribute.String("mode.flag", string(mode)),
 		attribute.Bool("mode.add", add),
 	}, func(ctx context.Context, _ trace.Span) error {
-		target.enqueue(protocol.Delivery{
-			Event: domain.UserModeChange{
-				Nick:       targetInst.Nick(),
-				InstanceID: targetInst.ID(),
-				Flag:       mode,
-				Add:        add,
-				By:         by,
-				At:         s.now(),
-				Instance:   targetInst,
-			},
-			SpanCtx: trace.SpanContextFromContext(ctx),
+		source := domain.ServerSource("")
+		if by != "" {
+			source = domain.LegacyClientSource(by)
+		}
+
+		s.deliverToClient(ctx, targetInst.ID(), domain.UserModeChange{
+			Source:  source,
+			Subject: targetInst.Nick(),
+			Flag:    mode,
+			Add:     add,
+			At:      s.now(),
 		})
 
 		return nil
@@ -968,15 +1485,12 @@ func (s *Session) registerModelAs(
 			return fmt.Errorf("get channel: %w", err)
 		}
 
-		channels := orderedmap.New[domain.ChannelName, time.Time]()
-		channels.Set(ch, s.now())
-
 		inst = domain.NewModelInstance(
 			domain.GenerateInstanceID(),
 			nick,
 			modelID,
 			persona,
-			channels,
+			nil,
 		)
 
 		if err := s.store.SaveInstance(ctx, inst); err != nil {
@@ -1018,7 +1532,7 @@ func (s *Session) requireNickAvailable(ctx context.Context, nick domain.Nick, ho
 		)
 	}
 
-	existing, err := s.ResolveNick(ctx, nick)
+	existing, err := s.store.ResolveNick(ctx, nick)
 
 	switch {
 	case err == nil:
@@ -1043,23 +1557,67 @@ func (s *Session) requireNickAvailable(ctx context.Context, nick domain.Nick, ho
 //
 // Runs on the session's command loop, after the instance's
 // model-client has attached, so the JOIN reaches its subscription.
-func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance, ch domain.ChannelName) error {
-	return s.inSpan(ctx, "session.add_model", []attribute.KeyValue{
+func (s *Session) admitModelAs(
+	ctx context.Context,
+	issuer protocol.Client,
+	actor *domain.Instance,
+	modelClient protocol.Client,
+	inst *domain.Instance,
+	ch domain.ChannelName,
+) (domain.ChannelName, error) {
+	var admittedChannel domain.ChannelName
+	err := s.inSpan(ctx, "session.add_model", []attribute.KeyValue{
 		attribute.String(observability.AttrChannel, string(ch)),
 		attribute.String(observability.AttrNick, string(actor.Nick())),
 		attribute.String(observability.AttrInstanceID, string(inst.ID())),
 	}, func(ctx context.Context, _ trace.Span) error {
-		_, err := s.joinAs(ctx, inst, operatorJoin, ch, "")
+		window, err := s.loadChannelWindow(ctx, ch)
+		if err != nil {
+			if errors.Is(err, store.ErrNoSuchChannel) {
+				return domain.NotOnChannelError{Channel: ch, Command: "ADDMODEL", At: s.now()}
+			}
+
+			return fmt.Errorf("get channel before model admission: %w", err)
+		}
+
+		ch = window.Name()
+		admittedChannel = ch
+		if s.clientOwner(protocol.ClientID(actor.ID())) != issuer ||
+			!s.idHasServerOper(protocol.ClientID(actor.ID())) {
+			return domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}
+		}
+		if !actor.InChannel(ch) || !window.Members.HasInstance(actor) {
+			return domain.NotOnChannelError{Channel: ch, Command: "ADDMODEL", At: s.now()}
+		}
+
+		if modelClient == nil || s.clientOwner(protocol.ClientID(inst.ID())) != modelClient {
+			return fmt.Errorf(
+				"model client %q disconnected before admission: %w",
+				inst.ID(), protocol.ErrSubscriptionClosed,
+			)
+		}
+
+		canonical, err := s.store.GetInstanceByID(ctx, inst.ID())
+		if err != nil {
+			return fmt.Errorf("resolve model before admission: %w", err)
+		}
+		if canonical != inst {
+			return fmt.Errorf("model instance %q changed before admission", inst.ID())
+		}
+
+		_, err = s.joinAs(ctx, inst, operatorJoin, ch, "")
 
 		return err
 	})
+
+	return admittedChannel, err
 }
 
 // killAs is the operator-issued forced disconnect of `target` per
-// RFC 2812 §3.7.1. The kill is announced exactly as IRC frames it: a
-// killed client is seen to QUIT, so the forced teardown broadcasts a
-// wire `QUIT` to peers in shared channels with the conventional
-// `"Killed by <oper> (<reason>)"` body.
+// RFC 2812 §3.7.1. The target receives KILL first. `quitAs` then
+// broadcasts QUIT to the target and peers in shared channels with the
+// conventional `"Killed by <oper> (<reason>)"` body. The dispatcher
+// sends the terminal ERROR after teardown completes.
 //
 // The dispatcher's `handleKill` is the only caller and runs the
 // operator gate, so this method assumes `oper` has the
@@ -1074,6 +1632,12 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 // session's.
 func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, reason string) quitOutcome {
 	body := fmt.Sprintf("Killed by %s (%s)", oper.Nick(), reason)
+	kill := domain.KillNotice{
+		Source:  domain.ClientSource(oper.ID(), oper.Nick()),
+		Subject: target.Nick(),
+		Reason:  reason,
+		At:      s.now(),
+	}
 
-	return s.quit(ctx, target, body, quitForced)
+	return s.quit(ctx, target, body, quitForced, kill)
 }

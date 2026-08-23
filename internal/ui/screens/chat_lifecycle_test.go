@@ -27,18 +27,16 @@ func TestChatScreen_PartEvent_model_part_keeps_user_in_channel(t *testing.T) {
 	uitest.SeedChannel(t, h.user, "#general")
 	uitest.AddModel(t, h.user, "#general", "anthropic/claude-3-haiku", "")
 
-	model, err := h.sess.ResolveNick(t.Context(), "fakenick")
+	id, nick, err := h.sess.ResolveNick(t.Context(), "fakenick")
 	require.NoError(t, err)
 
 	tm := newChatApp(t, h)
 	waitForChannelAndModelSeedDrain(tm)
 
 	screenstest.SendProtocolEvent(tm.TestModel, domain.Part{
-		Target:     "#general",
-		Nick:       model.Nick(),
-		InstanceID: model.ID(),
-		Instance:   model,
-		At:         time.Now(),
+		Target: "#general",
+		Source: domain.ClientSource(id, nick),
+		At:     time.Now(),
 	}, []domain.ChannelName{"#general"})
 
 	view := tm.WaitForViewContains("fakenick has left #general")

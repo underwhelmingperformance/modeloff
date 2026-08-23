@@ -18,8 +18,8 @@ func members(ms ...domain.Member) domain.MemberList {
 	ml := domain.NewMemberList()
 
 	for _, m := range ms {
-		ml.Add(m.Instance)
-		ml.SetModes(m.Instance, m.Modes)
+		ml.AddIdentity(m.InstanceID, m.Nick)
+		ml.SetModesID(m.InstanceID, m.Modes)
 	}
 
 	return ml
@@ -35,7 +35,7 @@ func member(nick string, modes domain.MemberModes) domain.Member {
 		domain.InstanceID("inst-"+nick),
 		domain.Nick(nick), "", "", nil,
 	)
-	return domain.Member{Instance: inst, Nick: domain.Nick(nick), Modes: modes}
+	return domain.Member{InstanceID: inst.ID(), Nick: domain.Nick(nick), Modes: modes}
 }
 
 // op, voiced and plain are the three privilege sets the nick-list
@@ -98,6 +98,21 @@ func TestNickList_Update_clears_on_empty(t *testing.T) {
 
 	v = renderToBuffer(updated, 20, 10)
 	require.Equal(t, []string{"No members"}, visibleLines(v))
+}
+
+func TestNickList_Update_ignores_an_older_member_revision(t *testing.T) {
+	nl := components.NewNickList(domain.NewMemberList())
+
+	updated, _ := nl.Update(components.NickListUpdatedMsg{
+		Members:  members(member("reader", plain)),
+		Revision: 2,
+	})
+	updated, _ = updated.Update(components.NickListUpdatedMsg{
+		Members:  members(member("botty", plain)),
+		Revision: 1,
+	})
+
+	require.Equal(t, []string{"Nicks", "reader"}, visibleLines(renderToBuffer(updated, 20, 10)))
 }
 
 func TestNickList_View_overflow_fits_height(t *testing.T) {

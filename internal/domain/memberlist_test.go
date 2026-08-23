@@ -2,7 +2,6 @@ package domain_test
 
 import (
 	"encoding/json"
-	"iter"
 	"slices"
 	"testing"
 
@@ -34,11 +33,11 @@ func TestMemberList_Add_and_query_helpers(t *testing.T) {
 
 	got, ok := ml.GetByInstance(alice)
 	require.True(t, ok)
-	require.Equal(t, domain.Member{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}}, got)
+	require.Equal(t, domain.Member{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{}}, got)
 
 	got, ok = ml.GetByNick("bob")
 	require.True(t, ok)
-	require.Equal(t, domain.Member{Instance: bob, Nick: "bob", Modes: domain.MemberModes{}}, got)
+	require.Equal(t, domain.Member{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{}}, got)
 
 	_, ok = ml.GetByInstance(ghost)
 	require.False(t, ok)
@@ -60,9 +59,9 @@ func TestMemberList_sort_order_by_mode_then_nick(t *testing.T) {
 	ml.Add(bob)
 
 	expected := []domain.Member{
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{Operator: true}},
-		{Instance: zara, Nick: "zara", Modes: domain.MemberModes{Voice: true}},
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{Operator: true}},
+		{InstanceID: "inst-zara", Nick: "zara", Modes: domain.MemberModes{Voice: true}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{}},
 	}
 
 	require.Equal(t, expected, slices.Collect(ml.All()))
@@ -79,8 +78,8 @@ func TestMemberList_SetMode_by_instance(t *testing.T) {
 	ml.SetModes(bob, domain.MemberModes{Operator: true})
 
 	expected := []domain.Member{
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{Operator: true}},
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{Operator: true}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{}},
 	}
 
 	require.Equal(t, expected, slices.Collect(ml.All()))
@@ -96,7 +95,7 @@ func TestMemberList_SetMode_unknown_instance_is_noop(t *testing.T) {
 	ml.SetModes(ghost, domain.MemberModes{Operator: true})
 
 	require.Equal(t, []domain.Member{
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{}},
 	}, slices.Collect(ml.All()))
 }
 
@@ -112,14 +111,14 @@ func TestMemberList_SetModeByNick_forwards_to_handle(t *testing.T) {
 
 	got, ok := ml.GetByInstance(bob)
 	require.True(t, ok)
-	require.Equal(t, domain.Member{Instance: bob, Nick: "bob", Modes: domain.MemberModes{Operator: true}}, got)
+	require.Equal(t, domain.Member{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{Operator: true}}, got)
 
 	// Unknown nick is a no-op.
 	ml.SetModesByNick("ghost", domain.MemberModes{Operator: true})
 
 	require.Equal(t, []domain.Member{
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{Operator: true}},
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{Operator: true}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{}},
 	}, slices.Collect(ml.All()))
 }
 
@@ -134,13 +133,13 @@ func TestMemberList_RenameTo_preserves_identity_and_mode(t *testing.T) {
 
 	got, ok := ml.GetByInstance(alice)
 	require.True(t, ok)
-	require.Equal(t, domain.Member{Instance: alice, Nick: "alice2", Modes: domain.MemberModes{Operator: true}}, got)
+	require.Equal(t, domain.Member{InstanceID: "inst-alice", Nick: "alice2", Modes: domain.MemberModes{Operator: true}}, got)
 
 	require.False(t, ml.HasNick("alice"))
 	require.True(t, ml.HasNick("alice2"))
 
 	require.Equal(t, []domain.Member{
-		{Instance: alice, Nick: "alice2", Modes: domain.MemberModes{Operator: true}},
+		{InstanceID: "inst-alice", Nick: "alice2", Modes: domain.MemberModes{Operator: true}},
 	}, slices.Collect(ml.All()))
 }
 
@@ -154,7 +153,7 @@ func TestMemberList_RenameTo_unknown_instance_is_noop(t *testing.T) {
 	ml.RenameTo(ghost, "ghost2")
 
 	require.Equal(t, []domain.Member{
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{}},
 	}, slices.Collect(ml.All()))
 }
 
@@ -166,12 +165,12 @@ func TestMemberList_Remove_by_instance(t *testing.T) {
 	ml.Add(alice)
 	ml.Add(bob)
 
-	ml.Remove(domain.Member{Instance: alice})
+	ml.Remove(domain.Member{InstanceID: "inst-alice"})
 
 	require.False(t, ml.HasInstance(alice))
 	require.True(t, ml.HasInstance(bob))
 	require.Equal(t, []domain.Member{
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{}},
 	}, slices.Collect(ml.All()))
 }
 
@@ -189,7 +188,7 @@ func TestMemberList_Add_existing_instance_updates_snapshot_nick(t *testing.T) {
 
 	got, ok := ml.GetByInstance(alice)
 	require.True(t, ok)
-	require.Equal(t, domain.Member{Instance: alice, Nick: "alice_renamed", Modes: domain.MemberModes{Operator: true}}, got)
+	require.Equal(t, domain.Member{InstanceID: "inst-alice", Nick: "alice_renamed", Modes: domain.MemberModes{Operator: true}}, got)
 }
 
 func TestMemberList_user_instance_is_a_regular_member(t *testing.T) {
@@ -201,7 +200,7 @@ func TestMemberList_user_instance_is_a_regular_member(t *testing.T) {
 
 	require.True(t, ml.HasInstance(user))
 	require.Equal(t, []domain.Member{
-		{Instance: user, Nick: "testuser", Modes: domain.MemberModes{Operator: true}},
+		{InstanceID: "", Nick: "testuser", Modes: domain.MemberModes{Operator: true}},
 	}, slices.Collect(ml.All()))
 
 	// The user's handle supports rename in place, just like any
@@ -210,10 +209,10 @@ func TestMemberList_user_instance_is_a_regular_member(t *testing.T) {
 
 	got, ok := ml.GetByInstance(user)
 	require.True(t, ok)
-	require.Equal(t, domain.Member{Instance: user, Nick: "renamed", Modes: domain.MemberModes{Operator: true}}, got)
+	require.Equal(t, domain.Member{InstanceID: "", Nick: "renamed", Modes: domain.MemberModes{Operator: true}}, got)
 }
 
-func TestMemberList_JSON_round_trip_requires_resolver(t *testing.T) {
+func TestMemberList_JSON_round_trip(t *testing.T) {
 	alice := newModel("inst-alice", "alice")
 	bob := newModel("inst-bob", "bob")
 
@@ -229,35 +228,6 @@ func TestMemberList_JSON_round_trip_requires_resolver(t *testing.T) {
 	var ml2 domain.MemberList
 	err = json.Unmarshal(data, &ml2)
 	require.NoError(t, err)
-
-	// Before ResolveInstances is called, the unmarshal produces stub
-	// Instance handles — the (nick, mode) pairs survive the round-trip
-	// even though the handles themselves are not yet canonical.
-	type nickModes struct {
-		Nick  domain.Nick
-		Modes domain.MemberModes
-	}
-
-	pairs := func(members iter.Seq[domain.Member]) []nickModes {
-		var out []nickModes
-		for m := range members {
-			out = append(out, nickModes{Nick: m.Nick, Modes: m.Modes})
-		}
-
-		return out
-	}
-
-	require.Equal(t, pairs(ml.All()), pairs(ml2.All()))
-
-	// Rewriting the stubs via a resolver that returns the original
-	// handles reproduces the input exactly.
-	canonical := map[domain.InstanceID]*domain.Instance{
-		alice.ID(): alice,
-		bob.ID():   bob,
-	}
-	ml2.ResolveInstances(func(id domain.InstanceID) *domain.Instance {
-		return canonical[id]
-	})
 
 	require.Equal(t, slices.Collect(ml.All()), slices.Collect(ml2.All()))
 }
@@ -278,8 +248,8 @@ func TestMemberList_ApplyMode_leaves_other_privileges_alone(t *testing.T) {
 	ml.ApplyMode(bob, domain.ModeChannelVoice, true)
 
 	require.Equal(t, []domain.Member{
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{Operator: true, Voice: true}},
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{Voice: true}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{Operator: true, Voice: true}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{Voice: true}},
 	}, slices.Collect(ml.All()))
 
 	// Taking alice's voice leaves her `@`, so the display order does
@@ -287,8 +257,8 @@ func TestMemberList_ApplyMode_leaves_other_privileges_alone(t *testing.T) {
 	ml.ApplyMode(alice, domain.ModeChannelVoice, false)
 
 	require.Equal(t, []domain.Member{
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{Operator: true}},
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{Voice: true}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{Operator: true}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{Voice: true}},
 	}, slices.Collect(ml.All()))
 
 	// Taking the `@` leaves alice with no privileges at all, so bob's
@@ -296,8 +266,8 @@ func TestMemberList_ApplyMode_leaves_other_privileges_alone(t *testing.T) {
 	ml.ApplyMode(alice, domain.ModeOperator, false)
 
 	require.Equal(t, []domain.Member{
-		{Instance: bob, Nick: "bob", Modes: domain.MemberModes{Voice: true}},
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}},
+		{InstanceID: "inst-bob", Nick: "bob", Modes: domain.MemberModes{Voice: true}},
+		{InstanceID: "inst-alice", Nick: "alice", Modes: domain.MemberModes{}},
 	}, slices.Collect(ml.All()))
 }
 
@@ -333,43 +303,11 @@ func TestMemberList_UnmarshalJSON_privilege_precedence(t *testing.T) {
 			var ml domain.MemberList
 			require.NoError(t, json.Unmarshal([]byte(tc.data), &ml))
 
-			alice := newModel("inst-alice", "alice")
-			ml.ResolveInstances(func(domain.InstanceID) *domain.Instance { return alice })
-
 			require.Equal(t, []domain.Member{
-				{Instance: alice, Nick: "alice", Modes: tc.want},
+				{InstanceID: "inst-alice", Nick: "alice", Modes: tc.want},
 			}, slices.Collect(ml.All()))
 		})
 	}
-}
-
-func TestMemberList_ResolveInstances_drops_nil_resolved(t *testing.T) {
-	alice := newModel("inst-alice", "alice")
-	bob := newModel("inst-bob", "bob")
-
-	ml := domain.NewMemberList()
-	ml.Add(alice)
-	ml.Add(bob)
-
-	data, err := json.Marshal(ml)
-	require.NoError(t, err)
-
-	var ml2 domain.MemberList
-	require.NoError(t, json.Unmarshal(data, &ml2))
-
-	// Resolver only knows about alice; bob's stub resolves to nil
-	// and must be dropped.
-	ml2.ResolveInstances(func(id domain.InstanceID) *domain.Instance {
-		if id == alice.ID() {
-			return alice
-		}
-
-		return nil
-	})
-
-	require.Equal(t, []domain.Member{
-		{Instance: alice, Nick: "alice", Modes: domain.MemberModes{}},
-	}, slices.Collect(ml2.All()))
 }
 
 func TestMemberList_zero_value_is_safe(t *testing.T) {

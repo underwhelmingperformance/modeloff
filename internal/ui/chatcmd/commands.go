@@ -36,15 +36,25 @@ type ChannelFocusMsg struct {
 	At      time.Time
 }
 
+// ChannelJoinFocusMsg requests focus for a JOIN whose protocol
+// events can reach the chat screen before or after the command
+// result. The chat screen retains the request until the JOIN has
+// created the window.
+type ChannelJoinFocusMsg struct {
+	Channel domain.ChannelName
+	At      time.Time
+}
+
 // DMOpenedMsg is fired by `/msg <nick> <body>` and `/query <nick>
 // [<body>]`. The chat screen materialises a DM window for
 // `Counterpart`, optionally focus-switches, and optionally sends
 // `Body` to it. `/query` sets `Focus`; `/msg` leaves it false.
 type DMOpenedMsg struct {
-	Counterpart *domain.Instance
-	Body        string
-	Focus       bool
-	At          time.Time
+	CounterpartID   domain.InstanceID
+	CounterpartNick domain.Nick
+	Body            string
+	Focus           bool
+	At              time.Time
 }
 
 // DMClosedMsg is fired by `/close` in a DM window. The chat screen
@@ -244,29 +254,39 @@ func (c JoinCommand) ToCommand(_ Context) (protocol.Command, error) {
 // the typed spelling would find no window and leave the user where
 // they were with the channel joined behind their back.
 func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
+	intentAt := rc.Session.Now()
+
 	return func() tea.Msg {
 		cmd, err := c.ToCommand(rc)
 		if err != nil {
-			return rc.errorEvent("join", err)
+			return rc.errorResult("join", err)
 		}
 
 		resp, err := rc.Client.Send(ctx, cmd)
-		if err != nil {
-			return rc.errorEvent("join", err)
-		}
-
 		if len(resp.Events) == 0 {
+			if err != nil {
+				return rc.errorResult("join", err)
+			}
 			if resp.Err != nil {
-				return rc.errorEvent("join", resp.Err)
+				return rc.errorResult("join", resp.Err)
 			}
 			return nil
 		}
 
 		outcome := newJoinOutcome(resp.Events)
-		if len(outcome.Refused) > 0 {
+		if len(outcome.Refused) > 0 || err != nil {
 			target, _ := rc.ActiveName()
+			reply := ReplyEvents{
+				Events: []domain.ProtocolEvent{
+					domain.SystemNotice{Target: target, Text: outcome.Text(), At: time.Now()},
+				},
+			}
+			if err != nil {
+				errorEvent := rc.errorEvent("join", err)
+				reply.Error = &errorEvent
+			}
 
-			return ReplyEvents{domain.SystemNotice{Target: target, Text: outcome.Text(), At: time.Now()}}
+			return reply
 		}
 
 		focus, ok := outcome.Focus()
@@ -274,7 +294,7 @@ func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			return nil
 		}
 
-		return ChannelFocusMsg{Channel: focus, At: time.Now()}
+		return ChannelJoinFocusMsg{Channel: focus, At: intentAt}
 	}
 }
 
@@ -289,12 +309,11 @@ func (c JoinCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 		return toolRefusal(err)
 	}
 
-	resp, err := tc.Client.Send(ctx, cmd)
-	if err != nil {
-		return toolExecutionFailure(err)
-	}
-
+	resp, err := tc.Send(ctx, cmd)
 	if len(resp.Events) == 0 {
+		if err != nil {
+			return toolExecutionFailure(err)
+		}
 		if resp.Err != nil {
 			return toolRefusal(resp.Err)
 		}
@@ -302,6 +321,9 @@ func (c JoinCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 	}
 
 	outcome := newJoinOutcome(resp.Events)
+	if err != nil {
+		return toolExecutionFailure(fmt.Errorf("%s: %w", outcome.Text(), err))
+	}
 	if len(outcome.Joined) == 0 {
 		return toolResult(modelclient.ToolResultPayload{OK: false, Error: outcome.Text()})
 	}
@@ -404,8 +426,8 @@ func (c PartCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 type ListCommand struct{}
 
 // ToCommand builds the wire-protocol command for `/list`.
-func (ListCommand) ToCommand(_ Context) (protocol.Command, error) {
-	return protocol.List{}, nil
+func (ListCommand) ToCommand(ctx Context) (protocol.Command, error) {
+	return protocol.List{Window: ctx.activeWindowTarget()}, nil
 }
 
 // Run implements Command. The dispatcher returns one
@@ -424,8 +446,13 @@ func (c ListCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // the dispatcher serves records the reply in the model's private
 // reply log — its own memory of the lookup — and the same data
 // rides back in `ToolResultPayload.Data` for the immediate turn.
-func (ListCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
-	resp, err := tc.Client.Send(ctx, protocol.List{})
+func (c ListCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
+	cmd, err := c.ToCommand(toolContext(tc))
+	if err != nil {
+		return toolRefusal(err)
+	}
+
+	resp, err := tc.Send(ctx, cmd)
 	if err != nil {
 		return toolExecutionFailure(err)
 	}
@@ -525,12 +552,15 @@ func (InviteCommand) Sources() map[string]command.SuggestionSource[CompletionCon
 
 // ToCommand builds the wire-protocol command for `/invite`.
 func (c InviteCommand) ToCommand(rc Context) (protocol.Command, error) {
+	window := rc.activeWindowTarget()
 	ch, _ := rc.ActiveName()
 	if c.Channel != "" {
 		ch = domain.ChannelName(c.Channel.String())
 	}
 
-	return protocol.Invite{Nick: domain.Nick(c.Nick), Channel: ch}, nil
+	return protocol.Invite{
+		Nick: domain.Nick(c.Nick), Channel: ch, Window: window,
+	}, nil
 }
 
 // Run implements Command.
@@ -681,18 +711,14 @@ func msgTargetSource(ctx CompletionContext, st command.InvocationState[Completio
 // ToCommand builds the wire-protocol command for `/msg`. The target
 // is read the way a server reads `<msgtarget>`: a `#`-prefixed value
 // is a channel, anything else is a nick the dispatcher resolves. A
-// channel the actor is not in is refused here so the chat-screen can
-// surface a typed error without going over the wire.
-func (c MsgCommand) ToCommand(rc Context) (protocol.Command, error) {
+// Channel membership remains a server-side send gate, so command
+// construction does not need a client-side actor snapshot.
+func (c MsgCommand) ToCommand(_ Context) (protocol.Command, error) {
 	body, err := c.cliBody()
 	if err != nil {
 		return nil, err
 	}
 	target := protocol.ParseMsgTarget(c.Target)
-
-	if ch, ok := target.(protocol.ChannelTarget); ok && !c.actorInChannel(rc.Actor, domain.ChannelName(ch)) {
-		return nil, notInChannelError(domain.ChannelName(ch))
-	}
 
 	return protocol.PrivMsg{Target: target, Body: body}, nil
 }
@@ -708,7 +734,7 @@ func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		body, err := c.cliBody()
 		if err != nil {
-			return rc.errorEvent("msg", err)
+			return rc.errorResult("msg", err)
 		}
 
 		target := domain.ChannelName(c.Target)
@@ -719,13 +745,13 @@ func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 		nick := domain.Nick(c.Target)
 
-		resolved, err := rc.Session.ResolveNick(ctx, nick)
+		id, resolvedNick, err := rc.Session.ResolveNick(ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
-				return rc.errorEvent("msg", domain.UnknownNickError{Nick: nick, At: time.Now()})
+				return rc.errorResult("msg", domain.UnknownNickError{Nick: nick, At: time.Now()})
 			}
 
-			return rc.errorEvent("msg", fmt.Errorf("resolve nick: %w", err))
+			return rc.errorResult("msg", fmt.Errorf("resolve nick: %w", err))
 		}
 
 		// The chat screen handler materialises the DM window
@@ -735,10 +761,11 @@ func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 		// had it — `/msg` is a send command, not a window-opening
 		// one.
 		return DMOpenedMsg{
-			Counterpart: resolved,
-			Body:        body,
-			Focus:       false,
-			At:          time.Now(),
+			CounterpartID:   id,
+			CounterpartNick: resolvedNick,
+			Body:            body,
+			Focus:           false,
+			At:              time.Now(),
 		}
 	}
 }
@@ -754,30 +781,6 @@ func (c MsgCommand) cliBody() (string, error) {
 	}
 
 	return body, nil
-}
-
-// actorInChannel reports whether `actor` is a member of `target`.
-// The membership snapshot is read from the actor's joined-channel
-// map; the same precondition is enforced server-side, but pre-
-// checking lets the chat-screen surface a typed "not a member"
-// error before going over the wire.
-func (MsgCommand) actorInChannel(actor *domain.Instance, target domain.ChannelName) bool {
-	target = domain.NormaliseChannelName(target)
-
-	channels := actor.Channels()
-	if channels == nil {
-		return false
-	}
-
-	_, ok := channels.Get(target)
-	return ok
-}
-
-// notInChannelError formats the not-a-member rejection. Kept as
-// a helper so the user-side and model-side paths surface the
-// same wording.
-func notInChannelError(target domain.ChannelName) error {
-	return fmt.Errorf("not a member of %s", target)
 }
 
 // QueryCommand represents `/query <nick> [<body>]`. It opens (or
@@ -803,23 +806,26 @@ func (QueryCommand) Sources() map[string]command.SuggestionSource[CompletionCont
 
 // Run implements Command.
 func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
+	intentAt := rc.Session.Now()
+
 	return func() tea.Msg {
 		nick := domain.Nick(c.Nick)
 
-		resolved, err := rc.Session.ResolveNick(ctx, nick)
+		id, resolvedNick, err := rc.Session.ResolveNick(ctx, nick)
 		if err != nil {
 			if errors.Is(err, store.ErrNoSuchNick) {
-				return rc.errorEvent("query", domain.UnknownNickError{Nick: nick, At: time.Now()})
+				return rc.errorResult("query", domain.UnknownNickError{Nick: nick, At: time.Now()})
 			}
 
-			return rc.errorEvent("query", fmt.Errorf("resolve nick: %w", err))
+			return rc.errorResult("query", fmt.Errorf("resolve nick: %w", err))
 		}
 
 		return DMOpenedMsg{
-			Counterpart: resolved,
-			Body:        strings.TrimSpace(c.Body.String()),
-			Focus:       true,
-			At:          time.Now(),
+			CounterpartID:   id,
+			CounterpartNick: resolvedNick,
+			Body:            strings.TrimSpace(c.Body.String()),
+			Focus:           true,
+			At:              intentAt,
 		}
 	}
 }
@@ -875,7 +881,7 @@ func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mod
 
 	target := protocol.ParseMsgTarget(c.Target)
 	return sendToolMessages(ctx, tc, protocol.ReplyMessage, messages, func(body string) (protocol.Response, error) {
-		return tc.Client.Send(ctx, protocol.PrivMsg{Target: target, Body: body})
+		return tc.Send(ctx, protocol.PrivMsg{Target: target, Body: body})
 	}, func(resp protocol.Response) error {
 		if _, isNick := target.(protocol.NickTarget); !isNick {
 			return nil
@@ -996,7 +1002,7 @@ func (c NickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			cfg.UserNick = string(nick)
 			return cfg
 		}); err != nil {
-			return rc.errorEvent("nick", err)
+			return rc.errorResult("nick", err)
 		}
 
 		return sendCommand(ctx, rc, c, "nick")
@@ -1074,19 +1080,27 @@ func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 
 	if c.Topic == nil {
+		issuingChannel, _ := rc.Active.(*domain.ChannelWindow)
+
 		return func() tea.Msg {
 			channel := rc.Active.Name()
-			w, err := rc.Session.GetWindow(ctx, channel)
+			response, err := rc.Client.Send(ctx, protocol.TopicQuery{Channel: channel})
 			if err != nil {
-				return rc.errorEvent("topic", err)
+				return rc.errorResult("topic", err)
+			}
+			if response.Err != nil {
+				return rc.errorResult("topic", response.Err)
 			}
 
-			cw, ok := w.(*domain.ChannelWindow)
+			topic, ok := topicFromResponse(response)
 			if !ok {
-				return rc.errorEvent("topic", fmt.Errorf("%s is not a channel", channel))
+				return rc.errorResult("topic", fmt.Errorf("server returned no topic for %s", channel))
+			}
+			if issuingChannel == nil {
+				return rc.errorResult("topic", fmt.Errorf("server returned a topic for non-channel %s", channel))
 			}
 
-			return TopicInfoResult{Window: cw}
+			return TopicInfoResult{Topic: topic}
 		}
 	}
 
@@ -1103,30 +1117,45 @@ func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 	}
 
 	if c.Topic == nil {
-		w, err := tc.Session.GetWindow(ctx, ch)
+		response, err := tc.Send(ctx, protocol.TopicQuery{Channel: ch})
 		if err != nil {
 			return toolExecutionFailure(err)
 		}
+		if response.Err != nil {
+			return toolRefusal(response.Err)
+		}
 
-		cw, isChannel := w.(*domain.ChannelWindow)
-		if !isChannel {
-			return toolResult(modelclient.ToolResultPayload{OK: false, Error: fmt.Sprintf("%s is not a channel", ch)})
+		topic, ok := topicFromResponse(response)
+		if !ok {
+			return toolResult(modelclient.ToolResultPayload{OK: false, Error: fmt.Sprintf("server returned no topic for %s", ch)})
 		}
 
 		return toolResult(modelclient.ToolResultPayload{
 			OK:      true,
 			Summary: "returned current topic",
-			Data:    cw,
+			Data:    topic,
 		})
 	}
 
 	return sendToolCommand(ctx, tc, c, "updated topic for "+string(ch))
 }
 
+func topicFromResponse(response protocol.Response) (domain.TopicInfo, bool) {
+	return singleResponseEvent[domain.TopicInfo](response.Events)
+}
+
 // MeCommand represents `/me <action>`.
 type MeCommand struct {
 	Action ActionBodies        `arg:"" passthrough:"all" xor:"content" max:"4" tool:"One to 4 non-empty plain actions to send in order. Each array element becomes a separate IRC action." help:"Plain action text"`
 	Spans  protocol.ReplySpans `cli:"-" xor:"content" max:"32" tool:"One to 32 styled spans for one IRC action. Each span has non-empty text and optional style (bold, italic, underline, reverse, strike, fg, bg); fg and bg use palette values 0..15." help:"Styled IRC action spans"`
+}
+
+type noMessageTargetError struct {
+	Window domain.ChannelName
+}
+
+func (e noMessageTargetError) Error() string {
+	return fmt.Sprintf("window %q has no message target", e.Window)
 }
 
 // ToCommand builds the wire-protocol command for `/me`. The action
@@ -1137,16 +1166,23 @@ func (c MeCommand) ToCommand(rc Context) (protocol.Command, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rc.Active == nil {
+		return nil, fmt.Errorf("me requires an active conversation")
+	}
+	target, ok := protocol.TargetForWindow(rc.Active)
+	if !ok {
+		return nil, noMessageTargetError{Window: rc.Active.Name()}
+	}
 
 	return protocol.Action{
-		Target: protocol.TargetForWindow(rc.Active),
+		Target: target,
 		Body:   body,
 	}, nil
 }
 
 // Run implements Command.
 func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.Active == nil {
+	if rc.Active == nil || rc.Active.Kind() == domain.KindStatus {
 		return noChannelCmd("me")
 	}
 
@@ -1156,7 +1192,7 @@ func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			return usageCmd("me", "/me <action>")
 		}
 
-		return func() tea.Msg { return rc.errorEvent("me", err) }
+		return func() tea.Msg { return rc.errorResult("me", err) }
 	}
 
 	return func() tea.Msg {
@@ -1198,7 +1234,7 @@ func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mode
 	}
 
 	return sendToolMessages(ctx, tc, protocol.ReplyAction, messages, func(body string) (protocol.Response, error) {
-		return tc.Client.Send(ctx, protocol.Action{Target: tc.Target, Body: body})
+		return tc.Send(ctx, protocol.Action{Target: tc.Target, Body: body})
 	}, nil, "sent action to "+tc.Target.String(), "actions to "+tc.Target.String())
 }
 
@@ -1216,9 +1252,7 @@ func (WhoisCommand) Sources() map[string]command.SuggestionSource[CompletionCont
 // the issuing window so the dispatcher can stamp it onto the reply's
 // render target.
 func (c WhoisCommand) ToCommand(ctx Context) (protocol.Command, error) {
-	channel, _ := ctx.ActiveName()
-
-	return protocol.Whois{Nick: domain.Nick(c.Nick), Channel: channel}, nil
+	return protocol.Whois{Nick: domain.Nick(c.Nick), Window: ctx.activeWindowTarget()}, nil
 }
 
 // Run implements Command. The dispatcher returns the canonical
@@ -1235,9 +1269,12 @@ func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // window the lookup was issued from, so it renders where the model
 // asked; a DM window is named by its counterpart's id.
 func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
-	window, _ := protocol.WindowName(tc.Target)
+	cmd, err := c.ToCommand(toolContext(tc))
+	if err != nil {
+		return toolRefusal(err)
+	}
 
-	resp, err := tc.Client.Send(ctx, protocol.Whois{Nick: domain.Nick(c.Nick), Channel: window})
+	resp, err := tc.Send(ctx, cmd)
 	if err != nil {
 		return toolExecutionFailure(err)
 	}
@@ -1245,7 +1282,7 @@ func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 		return toolRefusal(resp.Err)
 	}
 
-	whois, ok := responseWhois(resp.Events)
+	whois, ok := singleResponseEvent[domain.Whois](resp.Events)
 	if !ok {
 		return toolExecutionFailure(&MissingWhoisResponseError{Nick: domain.Nick(c.Nick)})
 	}
@@ -1257,14 +1294,19 @@ func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 	})
 }
 
-func responseWhois(events []protocol.Event) (domain.Whois, bool) {
-	for _, evt := range events {
-		if whois, ok := evt.(domain.Whois); ok {
-			return whois, true
-		}
+func singleResponseEvent[T any](events []protocol.Event) (T, bool) {
+	var zero T
+	if len(events) != 1 {
+		return zero, false
 	}
 
-	return domain.Whois{}, false
+	for _, event := range events {
+		value, ok := event.(T)
+
+		return value, ok
+	}
+
+	return zero, false
 }
 
 // MissingWhoisResponseError reports a successful WHOIS command whose
@@ -1363,7 +1405,7 @@ func (PersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		personas, err := rc.Manager.ListPersonas(ctx)
 		if err != nil {
-			return rc.errorEvent("personas", err)
+			return rc.errorResult("personas", err)
 		}
 
 		return PersonasListResult(personas)
@@ -1378,7 +1420,7 @@ func (RegeneratePersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		personas, err := rc.Manager.RegeneratePersonas(ctx)
 		if err != nil {
-			return rc.errorEvent("regenerate-personas", err)
+			return rc.errorResult("regenerate-personas", err)
 		}
 
 		return PersonasRegeneratedResult{Count: len(personas)}

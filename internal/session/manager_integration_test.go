@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -50,6 +51,85 @@ func (*upstreamListModelsError) Error() string {
 
 func (*upstreamListModelsError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("kind", "upstream unavailable"))
+}
+
+type blockedInstanceRepliesStore struct {
+	*storemod.SQLiteStore
+
+	started chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+}
+
+type transientDMHistoryStore struct {
+	*storemod.SQLiteStore
+
+	failScrollback atomic.Bool
+	failReplies    atomic.Bool
+	err            error
+}
+
+func (s *transientDMHistoryStore) DMEventsBefore(
+	ctx context.Context,
+	self domain.InstanceID,
+	peer domain.InstanceID,
+	before *int64,
+	n int,
+) ([]domain.StoredEvent, error) {
+	if s.failScrollback.CompareAndSwap(true, false) {
+		return nil, s.err
+	}
+
+	return s.SQLiteStore.DMEventsBefore(ctx, self, peer, before, n)
+}
+
+func (s *transientDMHistoryStore) InstanceRepliesForWindowBefore(
+	ctx context.Context,
+	id domain.InstanceID,
+	window protocol.WindowTarget,
+	before *int64,
+	n int,
+) ([]storemod.InstanceReplyRecord, error) {
+	if window != nil && s.failReplies.CompareAndSwap(true, false) {
+		return nil, s.err
+	}
+
+	return s.SQLiteStore.InstanceRepliesForWindowBefore(ctx, id, window, before, n)
+}
+
+func (s *blockedInstanceRepliesStore) InstanceRepliesBefore(
+	ctx context.Context,
+	id domain.InstanceID,
+	before *int64,
+	n int,
+) ([]storemod.InstanceReplyRecord, error) {
+	s.once.Do(func() { close(s.started) })
+
+	select {
+	case <-s.proceed:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	return s.SQLiteStore.InstanceRepliesBefore(ctx, id, before, n)
+}
+
+func (s *blockedInstanceRepliesStore) InstanceRepliesForWindowBefore(
+	ctx context.Context,
+	id domain.InstanceID,
+	window protocol.WindowTarget,
+	before *int64,
+	n int,
+) ([]storemod.InstanceReplyRecord, error) {
+	s.once.Do(func() { close(s.started) })
+
+	select {
+	case <-s.proceed:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	return s.SQLiteStore.InstanceRepliesForWindowBefore(ctx, id, window, before, n)
 }
 
 func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo, error) {
@@ -175,14 +255,17 @@ func newTestSessionWithManager(
 	})
 	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 
-	sess := session.New(t.Context, store, mgr, nil)
+	userCredential := protocol.NewUserCredential()
+	sess := session.New(t.Context(), store, mgr, nil,
+		session.WithUserCredential(userCredential))
 	// The manager's cleanup was registered first, so it runs last:
 	// `Shutdown` closes the gate the pumps exit on, and `DetachAll`
 	// then joins every dispatch goroutine, the released ones
 	// included.
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
-	user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))
+	user := userclient.New("testuser", sess, store,
+		userclient.NewStoreReplyLog(store), userCredential)
 	require.NoError(t, user.Attach(t.Context()))
 
 	return sess, store, mgr, user
@@ -232,6 +315,23 @@ func addModelViaWire(ctx context.Context, t testing.TB, user *userclient.UserCli
 	return resp.Err
 }
 
+func singleResponseMessage(t *testing.T, response protocol.Response) domain.Message {
+	t.Helper()
+
+	var message domain.Message
+	for _, event := range response.Events {
+		if value, ok := event.(domain.Message); ok {
+			message = value
+		}
+	}
+
+	require.Equal(t, protocol.Response{
+		Events: []protocol.Event{message},
+	}, response)
+
+	return message
+}
+
 func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(t *testing.T) {
 	fake := &apitest.Fake{
 		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
@@ -239,7 +339,7 @@ func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(
 		},
 	}
 
-	sess, _, mgr, user := newTestSessionWithManager(t, fake, "")
+	_, eventStore, mgr, user := newTestSessionWithManager(t, fake, "")
 	ctx := t.Context()
 	personaID := strings.Repeat("template-", 51)
 	require.NoError(t, mgr.SetPersona(ctx, personaID, "checks the source before reaching a conclusion"))
@@ -247,9 +347,160 @@ func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(
 	seedChannel(t, user, "#dev")
 	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", personaID))
 
-	inst, err := sess.ResolveNick(ctx, "careful-reader")
+	inst, err := eventStore.ResolveNick(ctx, "careful-reader")
 	require.NoError(t, err)
 	require.Equal(t, "checks the source before reaching a conclusion", inst.Persona())
+}
+
+func TestSession_AddModel_does_not_admit_a_client_killed_during_attach(t *testing.T) {
+	store := &blockedInstanceRepliesStore{
+		SQLiteStore: storetest.NewMemoryStore(t),
+		started:     make(chan struct{}),
+		proceed:     make(chan struct{}),
+	}
+	fake := &apitest.Fake{
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+			return "botty", nil
+		},
+	}
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:       store,
+		APIClient:   fake,
+		BaseContext: t.Context,
+	})
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+
+	userCredential := protocol.NewUserCredential()
+	sess := session.New(t.Context(), store, mgr, nil,
+		session.WithUserCredential(userCredential))
+	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+
+	user := userclient.New("testuser", sess, store,
+		userclient.NewStoreReplyLog(store), userCredential)
+	require.NoError(t, user.Attach(t.Context()))
+	seedChannel(t, user, "#dev")
+
+	added := make(chan error, 1)
+	go func() {
+		added <- addModelViaWire(t.Context(), t, user, "#dev", "test/model", "quiet regular")
+	}()
+
+	<-store.started
+
+	resp, err := user.Send(t.Context(), protocol.Kill{Nick: "botty", Reason: "test teardown"})
+	require.NoError(t, err)
+	require.NoError(t, resp.Err)
+
+	close(store.proceed)
+	require.ErrorIs(t, <-added, protocol.ErrSubscriptionClosed)
+
+	_, err = store.ResolveNick(t.Context(), "botty")
+	require.ErrorIs(t, err, storemod.ErrNoSuchNick)
+
+	windowValue, err := user.Window(t.Context(), "#dev")
+	require.NoError(t, err)
+	require.Equal(t, protocol.ChannelWindowTarget("#dev"), windowValue.Target())
+}
+
+func TestSession_AddModel_does_not_deliver_channel_traffic_before_join(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &blockedInstanceRepliesStore{
+			SQLiteStore: storetest.NewMemoryStore(t),
+			started:     make(chan struct{}),
+			proceed:     make(chan struct{}),
+		}
+		turns := make(chan []protocol.IRCMessage, 1)
+		fake := &apitest.Fake{
+			GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+				return "botty", nil
+			},
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
+				turns <- slices.Clone(events)
+				return api.CompletionResult{}, nil
+			},
+		}
+		mgr := modelmanager.New(modelmanager.Config{
+			Store:       store,
+			APIClient:   fake,
+			BaseContext: t.Context,
+		})
+		t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+
+		userCredential := protocol.NewUserCredential()
+		sess := session.New(t.Context(), store, mgr, nil,
+			session.WithUserCredential(userCredential))
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+
+		user := userclient.New("testuser", sess, store,
+			userclient.NewStoreReplyLog(store), userCredential)
+		require.NoError(t, user.Attach(t.Context()))
+		seedChannel(t, user, "#dev")
+
+		added := make(chan error, 1)
+		go func() {
+			added <- addModelViaWire(t.Context(), t, user, "#dev", "test/model", "quiet regular")
+		}()
+
+		<-store.started
+		_, err := user.SendMessage(t.Context(), domain.NewChannelWindow("#dev", time.Time{}), "before join")
+		require.NoError(t, err)
+
+		close(store.proceed)
+		require.NoError(t, <-added)
+		synctest.Wait()
+
+		after, err := user.SendMessage(t.Context(), domain.NewChannelWindow("#dev", time.Time{}), "after join")
+		require.NoError(t, err)
+		want, ok := protocol.FromChannelEvent(after)
+		require.True(t, ok)
+		synctest.Wait()
+
+		require.Equal(t, []protocol.IRCMessage{want}, <-turns)
+	})
+}
+
+func TestSession_AddModel_refuses_admission_after_the_issuer_parts(t *testing.T) {
+	eventStore := &blockedInstanceRepliesStore{
+		SQLiteStore: storetest.NewMemoryStore(t),
+		started:     make(chan struct{}),
+		proceed:     make(chan struct{}),
+	}
+	fake := &apitest.Fake{
+		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+			return "botty", nil
+		},
+	}
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:       eventStore,
+		APIClient:   fake,
+		BaseContext: t.Context,
+	})
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+
+	userCredential := protocol.NewUserCredential()
+	sess := session.New(t.Context(), eventStore, mgr, nil,
+		session.WithUserCredential(userCredential))
+	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+
+	user := userclient.New("testuser", sess, eventStore,
+		userclient.NewStoreReplyLog(eventStore), userCredential)
+	require.NoError(t, user.Attach(t.Context()))
+	seedChannel(t, user, "#dev")
+
+	added := make(chan error, 1)
+	go func() {
+		added <- addModelViaWire(t.Context(), t, user, "#dev", "test/model", "quiet regular")
+	}()
+
+	<-eventStore.started
+	require.NoError(t, user.Part(t.Context(), "#dev", "leaving"))
+	close(eventStore.proceed)
+
+	var notOnChannel domain.NotOnChannelError
+	require.ErrorAs(t, <-added, &notOnChannel)
+
+	_, err := eventStore.ResolveNick(t.Context(), "botty")
+	require.ErrorIs(t, err, storemod.ErrNoSuchNick)
 }
 
 // collectUserEvents drains every event currently buffered on the
@@ -317,11 +568,7 @@ func TestSession_AddModel_retries_on_nick_collision(t *testing.T) {
 		// turn — it has nothing to say about its own arrival.
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "fresh",
-				InstanceID: fresh.ID(),
-				At:         emittedAt,
-				Instance:   fresh,
+				Target: "#dev", Source: domain.ClientSource(fresh.ID(), domain.Nick("fresh")), At: emittedAt,
 			},
 		}, collectUserEvents(user))
 
@@ -415,18 +662,10 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		// turn — neither has anything to say about its own arrival.
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#general",
-				Nick:       "fakenick",
-				InstanceID: first.ID(),
-				At:         emittedAt,
-				Instance:   first,
+				Target: "#general", Source: domain.ClientSource(first.ID(), domain.Nick("fakenick")), At: emittedAt,
 			},
 			domain.Join{
-				Target:     "#random",
-				Nick:       "fakenick1",
-				InstanceID: second.ID(),
-				At:         emittedAt,
-				Instance:   second,
+				Target: "#random", Source: domain.ClientSource(second.ID(), domain.Nick("fakenick1")), At: emittedAt,
 			},
 		}, collectUserEvents(user))
 
@@ -565,7 +804,7 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 
 		// The kill did what a kill does, and the join waited for what
 		// was left of it.
-		require.Nil(t, sess.LookupClient(protocol.ClientID(bot.ID())))
+		require.False(t, sess.ClientConnected(protocol.ClientID(bot.ID())))
 
 		_, err = store.GetInstanceByID(ctx, bot.ID())
 		require.Error(t, err)
@@ -677,8 +916,11 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 			Pacer: &modelclient.Pacer{},
 		})
 
-		sess := session.New(t.Context, store, mgr, nil)
-		user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))
+		userCredential := protocol.NewUserCredential()
+		sess := session.New(t.Context(), store, mgr, nil,
+			session.WithUserCredential(userCredential))
+		user := userclient.New("testuser", sess, store,
+			userclient.NewStoreReplyLog(store), userCredential)
 		require.NoError(t, user.Attach(t.Context()))
 
 		ctx := t.Context()
@@ -764,11 +1006,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 		// and a turn nobody asked for is a paid API call for nothing.
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "fakenick",
-				InstanceID: inst.ID(),
-				At:         emittedAt,
-				Instance:   inst,
+				Target: "#dev", Source: domain.ClientSource(inst.ID(), domain.Nick("fakenick")), At: emittedAt,
 			},
 		}, collectUserEvents(user))
 
@@ -936,7 +1174,7 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 					},
 				}
 
-				_, _, mgr, user := newTestSessionWithManager(t, fake, "test-key")
+				sess, _, mgr, user := newTestSessionWithManager(t, fake, "test-key")
 				ctx := t.Context()
 				eventAt := time.Now()
 
@@ -949,6 +1187,8 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 				seedChannel(t, user, "#dev")
 				require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", ""))
 				synctest.Wait()
+				modelID, modelNick, err := sess.ResolveNick(ctx, "fakenick")
+				require.NoError(t, err)
 
 				// Each body is long enough that two of them together
 				// overflow even the smallest budget
@@ -964,15 +1204,15 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 
 				join := protocol.IRCMessage{
 					Kind:   protocol.KindJoin,
-					From:   "testuser",
+					Source: domain.ClientSource(modelID, modelNick),
 					Target: "#dev",
-					At:     eventAt.UTC(),
+					At:     eventAt,
 				}
 				messages := map[string]protocol.IRCMessage{}
 				for _, label := range []string{"first", "second", "third"} {
 					messages[label] = protocol.IRCMessage{
 						Kind:   protocol.KindPrivMsg,
-						From:   "testuser",
+						Source: domain.ClientSource(protocol.UserClientID, "testuser"),
 						Target: "#dev",
 						Body:   label + " " + big,
 						At:     eventAt,
@@ -992,6 +1232,274 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 				}
 
 				require.Equal(t, wantHistories, histories)
+			})
+		})
+	}
+}
+
+func TestSession_peer_departure_interrupts_active_model_DM_window(t *testing.T) {
+	for _, action := range []string{"QUIT", "KILL"} {
+		t.Run(action, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				type providerEffect struct {
+					Instance      domain.InstanceID
+					Event         protocol.IRCMessage
+					Err           error
+					PeerConnected bool
+				}
+
+				ctx := t.Context()
+				errUnexpectedTurn := errors.New("unexpected provider turn")
+				dmStarted := make(chan struct{})
+				effects := make(chan providerEffect, 2)
+				var sess *session.Session
+				var peer *domain.Instance
+				fake := &apitest.Fake{
+					ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+						return []api.ModelInfo{
+							{ID: "test/responder", SupportedParameters: []string{"tools"}},
+							{ID: "test/peer", SupportedParameters: []string{"tools"}},
+						}, nil
+					},
+					SendEventsFn: func(
+						turnCtx context.Context,
+						_ domain.ModelID,
+						instanceID domain.InstanceID,
+						_ api.SystemPrompt,
+						_ []protocol.IRCMessage,
+						events []protocol.IRCMessage,
+					) (api.CompletionResult, error) {
+						event := events[len(events)-1]
+						event.At = time.Time{}
+
+						switch event.Body {
+						case "dm trigger":
+							close(dmStarted)
+							<-turnCtx.Done()
+							effects <- providerEffect{
+								Instance:      instanceID,
+								Event:         event,
+								Err:           turnCtx.Err(),
+								PeerConnected: sess.ClientConnected(protocol.ClientID(peer.ID())),
+							}
+
+							return api.CompletionResult{}, turnCtx.Err()
+						case "channel trigger":
+							effects <- providerEffect{
+								Instance:      instanceID,
+								Event:         event,
+								PeerConnected: sess.ClientConnected(protocol.ClientID(peer.ID())),
+							}
+
+							return api.CompletionResult{}, nil
+						default:
+							effects <- providerEffect{Instance: instanceID, Event: event, Err: errUnexpectedTurn}
+
+							return api.CompletionResult{}, nil
+						}
+					},
+				}
+
+				var eventStore *storemod.SQLiteStore
+				var mgr *modelmanager.Manager
+				var user *userclient.UserClient
+				sess, eventStore, mgr, user = newTestSessionWithManager(t, fake, "test-key")
+				responder := seedStoreInstance(t, eventStore, "responder", "test/responder")
+				peer = seedStoreInstance(t, eventStore, "peer", "test/peer")
+				require.NoError(t, mgr.Start(ctx, sess))
+
+				responderClient, err := mgr.Attach(ctx, sess, responder, nil)
+				require.NoError(t, err)
+				peerClient, err := mgr.Attach(ctx, sess, peer, nil)
+				require.NoError(t, err)
+
+				seedChannel(t, user, "#other")
+				joinResponse, err := responderClient.Send(ctx, protocol.Join{
+					Channels: []domain.ChannelName{"#other"},
+				})
+				require.NoError(t, err)
+				require.NoError(t, joinResponse.Err)
+				synctest.Wait()
+
+				dmResponse, err := peerClient.Send(ctx, protocol.PrivMsg{
+					Target: protocol.ClientTarget(responder.ID()),
+					Body:   "dm trigger",
+				})
+				require.NoError(t, err)
+				require.NoError(t, dmResponse.Err)
+				synctest.Wait()
+				<-dmStarted
+
+				var teardownResponse protocol.Response
+				switch action {
+				case "QUIT":
+					teardownResponse, err = peerClient.Send(ctx, protocol.Quit{Reason: "gone"})
+				case "KILL":
+					teardownResponse, err = user.Send(ctx, protocol.Kill{Nick: peer.Nick(), Reason: "gone"})
+				}
+				require.NoError(t, err)
+				require.Equal(t, protocol.Response{}, teardownResponse)
+
+				synctest.Wait()
+				cancelled := <-effects
+				_, err = user.SendMessage(ctx, domain.WindowKey("#other"), "channel trigger")
+				require.NoError(t, err)
+				synctest.Wait()
+				completed := <-effects
+
+				_, peerErr := eventStore.ResolveNick(ctx, peer.Nick())
+				require.ErrorIs(t, peerErr, storemod.ErrNoSuchNick)
+				storedWindow, err := eventStore.GetWindow(ctx, "#other")
+				require.NoError(t, err)
+				other, ok := storedWindow.(*domain.ChannelWindow)
+				require.True(t, ok)
+
+				wantMembers := domain.NewMemberList()
+				wantMembers.AddIdentity(user.ID(), user.Nick())
+				wantMembers.SetModesID(user.ID(), domain.MemberModes{Operator: true})
+				wantMembers.Add(responder)
+				type finalState struct {
+					Effects            []providerEffect
+					PeerStored         bool
+					PeerConnected      bool
+					ResponderConnected bool
+					OtherMembers       domain.MemberList
+				}
+				require.Equal(t, finalState{
+					Effects: []providerEffect{
+						{
+							Instance: responder.ID(),
+							Event: protocol.IRCMessage{
+								Kind: protocol.KindPrivMsg, Source: domain.ClientSource(peer.ID(), peer.Nick()),
+								Target: string(responder.Nick()), Body: "dm trigger",
+							},
+							Err: context.Canceled,
+						},
+						{
+							Instance: responder.ID(),
+							Event: protocol.IRCMessage{
+								Kind: protocol.KindPrivMsg, Source: domain.ClientSource(user.ID(), user.Nick()),
+								Target: "#other", Body: "channel trigger",
+							},
+						},
+					},
+					PeerStored:         false,
+					PeerConnected:      false,
+					ResponderConnected: true,
+					OtherMembers:       wantMembers,
+				}, finalState{
+					Effects:            []providerEffect{cancelled, completed},
+					PeerStored:         !errors.Is(peerErr, storemod.ErrNoSuchNick),
+					PeerConnected:      sess.ClientConnected(peerClient.Identity()),
+					ResponderConnected: sess.ClientConnected(responderClient.Identity()),
+					OtherMembers:       other.Members,
+				})
+			})
+		})
+	}
+}
+
+func TestDispatch_DM_history_recovery_retains_the_consumed_live_message(t *testing.T) {
+	tests := []struct {
+		name string
+		fail func(*transientDMHistoryStore)
+	}{
+		{
+			name: "scrollback read fails",
+			fail: func(store *transientDMHistoryStore) { store.failScrollback.Store(true) },
+		},
+		{
+			name: "reply read fails",
+			fail: func(store *transientDMHistoryStore) { store.failReplies.Store(true) },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				eventStore := &transientDMHistoryStore{
+					SQLiteStore: storetest.NewMemoryStore(t),
+					err:         errors.New("read DM history"),
+				}
+				tc.fail(eventStore)
+
+				type providerTurn struct {
+					History []protocol.IRCMessage
+					Events  []protocol.IRCMessage
+				}
+				turns := make(chan providerTurn, 1)
+				fake := &apitest.Fake{
+					GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
+						return "botty", nil
+					},
+					SendEventsFn: func(
+						_ context.Context,
+						_ domain.ModelID,
+						_ domain.InstanceID,
+						_ api.SystemPrompt,
+						history []protocol.IRCMessage,
+						events []protocol.IRCMessage,
+					) (api.CompletionResult, error) {
+						turns <- providerTurn{
+							History: slices.Clone(history),
+							Events:  slices.Clone(events),
+						}
+
+						return api.CompletionResult{}, nil
+					},
+				}
+				mgr := modelmanager.New(modelmanager.Config{
+					Store:       eventStore,
+					APIClient:   fake,
+					BaseContext: t.Context,
+				})
+				t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+
+				credential := protocol.NewUserCredential()
+				sess := session.New(ctx, eventStore, mgr, nil,
+					session.WithUserCredential(credential))
+				t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+				user := userclient.New("testuser", sess, eventStore,
+					userclient.NewStoreReplyLog(eventStore), credential)
+				require.NoError(t, user.Attach(ctx))
+				seedChannel(t, user, "#dev")
+				require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", "quiet regular"))
+				synctest.Wait()
+
+				model, err := eventStore.ResolveNick(ctx, "botty")
+				require.NoError(t, err)
+				firstResponse, err := user.Send(ctx, protocol.PrivMsg{
+					Target: protocol.ClientTarget(model.ID()), Body: "first",
+				})
+				require.NoError(t, err)
+				first := singleResponseMessage(t, firstResponse)
+				synctest.Wait()
+
+				secondResponse, err := user.Send(ctx, protocol.PrivMsg{
+					Target: protocol.ClientTarget(model.ID()), Body: "second",
+				})
+				require.NoError(t, err)
+				second := singleResponseMessage(t, secondResponse)
+				synctest.Wait()
+
+				firstIRC, ok := protocol.FromChannelEvent(first)
+				require.True(t, ok)
+				firstIRC.Target = "botty"
+				secondIRC, ok := protocol.FromChannelEvent(second)
+				require.True(t, ok)
+				secondIRC.Target = "botty"
+
+				select {
+				case turn := <-turns:
+					require.Equal(t, providerTurn{
+						History: []protocol.IRCMessage{firstIRC},
+						Events:  []protocol.IRCMessage{secondIRC},
+					}, turn)
+				case <-time.After(5 * time.Second):
+					t.Fatal("model did not recover after the DM history read succeeded")
+				}
 			})
 		})
 	}
@@ -1028,16 +1536,13 @@ func TestBootOrder_Start_leaves_the_connected_client_alone(t *testing.T) {
 		synctest.Wait()
 
 		members := domain.NewMemberList()
-		members.Add(user.Instance())
-		members.SetModes(user.Instance(), domain.MemberModes{Operator: true})
+		members.AddIdentity(user.ID(), user.Nick())
+		members.SetModesID(user.ID(), domain.MemberModes{Operator: true})
 
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:   "#general",
-				Nick:     "testuser",
-				Created:  true,
-				At:       joinedAt,
-				Instance: user.Instance(),
+				Target: "#general", Source: domain.ClientSource(user.ID(), domain.Nick("testuser")), Created: true,
+				At: joinedAt,
 			},
 			domain.NamesReplyEvent{Channel: "#general", Members: members, At: joinedAt},
 			domain.NamesEnd{Channel: "#general", At: joinedAt},

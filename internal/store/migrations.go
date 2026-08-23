@@ -3,8 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/laney/modeloff/internal/domain"
 )
 
 // SchemaVersion is the current on-disk schema version. Bumped by
@@ -22,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 6
+const SchemaVersion = 11
 
 type schemaTooNewError struct {
 	Found     int
@@ -194,6 +198,391 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		Version: 7,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			// Channel events are stored before recipient-specific wire
+			// projection. This table records the projected event each
+			// member received during its current membership interval. An old
+			// row does not record the recipient or the channel modes that
+			// controlled its delivery, so this migration cannot copy it
+			// verbatim. v9 performs a conservative content-only backfill.
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE IF NOT EXISTS channel_scrollback (
+					id          INTEGER PRIMARY KEY,
+					instance_id TEXT NOT NULL,
+					channel     TEXT NOT NULL REFERENCES channels(name) ON DELETE CASCADE,
+					type        TEXT NOT NULL,
+					data        TEXT NOT NULL,
+					at          TEXT NOT NULL
+				)
+			`); err != nil {
+				return fmt.Errorf("create channel_scrollback: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_channel_scrollback_actor_window
+					ON channel_scrollback (instance_id, channel, id)
+			`); err != nil {
+				return fmt.Errorf("index channel_scrollback: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 8,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS idx_events_dm_thread`); err != nil {
+				return fmt.Errorf("drop obsolete idx_events_dm_thread: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE events ADD COLUMN source_instance_id TEXT GENERATED ALWAYS AS
+					(coalesce(
+						json_extract(data, '$.data.source.instance_id'),
+						json_extract(data, '$.data.instance_id'),
+						''
+					)) VIRTUAL
+			`); err != nil {
+				return fmt.Errorf("add events.source_instance_id: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_events_source_thread
+					ON events (source_instance_id, type, channel, id)
+			`); err != nil {
+				return fmt.Errorf("create idx_events_source_thread: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 9,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE instance_replies ADD COLUMN window_kind INTEGER NOT NULL DEFAULT 0
+			`); err != nil {
+				return fmt.Errorf("add instance_replies.window_kind: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE instance_replies ADD COLUMN window_key TEXT NOT NULL DEFAULT ''
+			`); err != nil {
+				return fmt.Errorf("add instance_replies.window_key: %w", err)
+			}
+
+			// Old LIST rows do not record the window in which LIST ran.
+			// Other non-global replies with an empty channel are also
+			// ambiguous because the user DM uses the empty instance id.
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM instance_replies
+				 WHERE type = 'list_reply'
+				    OR (type != 'personas_list'
+				        AND coalesce(json_extract(data, '$.data.channel'), '') = '')
+			`); err != nil {
+				return fmt.Errorf("remove replies with ambiguous origin: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE instance_replies
+				   SET window_key = coalesce(json_extract(data, '$.data.channel'), ''),
+				       window_kind = CASE
+				           WHEN json_extract(data, '$.data.channel') GLOB '[#&]*' THEN 1
+				           WHEN coalesce(json_extract(data, '$.data.channel'), '') != '' THEN 2
+				           ELSE 0
+				       END
+				 WHERE type != 'personas_list'
+			`); err != nil {
+				return fmt.Errorf("scope existing instance replies: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_instance_replies_actor_window
+					ON instance_replies (instance_id, window_kind, window_key, id)
+			`); err != nil {
+				return fmt.Errorf("index instance reply windows: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 10,
+		Apply:   backfillSafeChannelScrollback,
+	},
+	{
+		Version: 11,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE IF NOT EXISTS model_turns (
+					id          INTEGER PRIMARY KEY,
+					instance_id TEXT NOT NULL,
+					window_kind INTEGER NOT NULL,
+					window_key  TEXT NOT NULL,
+					model_id    TEXT NOT NULL,
+					started_at  TEXT NOT NULL
+				)
+			`); err != nil {
+				return fmt.Errorf("create model_turns: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_model_turns_actor_window
+					ON model_turns (instance_id, window_kind, window_key, id)
+			`); err != nil {
+				return fmt.Errorf("index model turns: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE IF NOT EXISTS model_turn_entries (
+					id      INTEGER PRIMARY KEY,
+					turn_id INTEGER NOT NULL REFERENCES model_turns(id) ON DELETE CASCADE,
+					seq     INTEGER NOT NULL,
+					kind    TEXT NOT NULL,
+					data    TEXT NOT NULL,
+					at      TEXT NOT NULL
+				)
+			`); err != nil {
+				return fmt.Errorf("create model_turn_entries: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX IF NOT EXISTS idx_model_turn_entries_turn
+					ON model_turn_entries (turn_id, seq)
+			`); err != nil {
+				return fmt.Errorf("index model turn entries: %w", err)
+			}
+
+			return nil
+		},
+	},
+}
+
+type migrationStoredEvent struct {
+	id    int64
+	event domain.PersistableEvent
+}
+
+type migrationChannel struct {
+	name    domain.ChannelName
+	members domain.MemberList
+}
+
+func backfillSafeChannelScrollback(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT name, data FROM channels ORDER BY name`)
+	if err != nil {
+		return fmt.Errorf("list channels for scrollback backfill: %w", err)
+	}
+
+	var channels []migrationChannel
+	for rows.Next() {
+		var name domain.ChannelName
+		var data string
+		if err := rows.Scan(&name, &data); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan channel for scrollback backfill: %w", err)
+		}
+
+		var channel channelRow
+		if err := json.Unmarshal([]byte(data), &channel); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode channel %q for scrollback backfill: %w", name, err)
+		}
+		if channel.Kind != domain.KindChannel || channel.Members.Len() == 0 {
+			continue
+		}
+		channels = append(channels, migrationChannel{name: name, members: channel.Members})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read channels for scrollback backfill: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close channels for scrollback backfill: %w", err)
+	}
+
+	for _, channel := range channels {
+		events, err := migrationChannelEvents(ctx, tx, channel.name)
+		if err != nil {
+			return err
+		}
+		for member := range channel.members.All() {
+			if member.InstanceID == "" {
+				continue
+			}
+			if err := backfillMemberScrollback(ctx, tx, channel.name, member.InstanceID, events); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func migrationChannelEvents(
+	ctx context.Context,
+	tx *sql.Tx,
+	channel domain.ChannelName,
+) ([]migrationStoredEvent, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, data FROM events WHERE channel = ? ORDER BY id`, channel)
+	if err != nil {
+		return nil, fmt.Errorf("read events for channel %q: %w", channel, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var events []migrationStoredEvent
+	for rows.Next() {
+		var id int64
+		var data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, fmt.Errorf("scan event for channel %q: %w", channel, err)
+		}
+
+		event, err := domain.UnmarshalPersistableEvent([]byte(data))
+		if err != nil {
+			if errors.Is(err, domain.ErrUnknownEventType) {
+				continue
+			}
+
+			return nil, fmt.Errorf("decode event %d for channel %q: %w", id, channel, err)
+		}
+		events = append(events, migrationStoredEvent{id: id, event: event})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read events for channel %q: %w", channel, err)
+	}
+
+	return events, nil
+}
+
+func backfillMemberScrollback(
+	ctx context.Context,
+	tx *sql.Tx,
+	channel domain.ChannelName,
+	actor domain.InstanceID,
+	events []migrationStoredEvent,
+) error {
+	var existing int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM channel_scrollback
+			 WHERE instance_id = ? AND channel = ?
+		)
+	`, actor, channel).Scan(&existing); err != nil {
+		return fmt.Errorf("check scrollback for %q in %q: %w", actor, channel, err)
+	}
+	if existing != 0 {
+		return nil
+	}
+
+	start := -1
+	for index, stored := range events {
+		joined, ok := stored.event.(domain.Join)
+		if !ok {
+			continue
+		}
+		id, identified := joined.Source.InstanceID()
+		if identified && id == actor {
+			start = index
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	joined := events[start].event.(domain.Join)
+	if migrationMembershipClosed(events[start+1:], actor, joined.Source.Nick()) {
+		return nil
+	}
+
+	for _, stored := range events[start:] {
+		projected := safeMigrationProjection(stored.event, actor)
+		if projected == nil {
+			continue
+		}
+		data, err := domain.MarshalPersistableEvent(projected)
+		if err != nil {
+			return fmt.Errorf("encode scrollback event %d for %q: %w", stored.id, actor, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO channel_scrollback
+				(instance_id, channel, type, data, at)
+			VALUES (?, ?, ?, ?, ?)
+		`, actor, channel, domain.EventType(projected), string(data),
+			domain.EventTime(projected).Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("backfill scrollback event %d for %q: %w", stored.id, actor, err)
+		}
+	}
+
+	return nil
+}
+
+func migrationMembershipClosed(
+	events []migrationStoredEvent,
+	actor domain.InstanceID,
+	nick domain.Nick,
+) bool {
+	for _, stored := range events {
+		switch event := stored.event.(type) {
+		case domain.Part:
+			if sourceBelongsToMigrationActor(event.Source, actor, nick) {
+				return true
+			}
+		case domain.Quit:
+			if sourceBelongsToMigrationActor(event.Source, actor, nick) {
+				return true
+			}
+		case domain.Kicked:
+			if domain.EqualNick(event.Subject, nick) {
+				return true
+			}
+		case domain.NickChange:
+			if sourceBelongsToMigrationActor(event.Source, actor, nick) {
+				nick = event.NewNick
+			}
+		}
+	}
+
+	return false
+}
+
+func sourceBelongsToMigrationActor(
+	source domain.Source,
+	actor domain.InstanceID,
+	nick domain.Nick,
+) bool {
+	id, identified := source.InstanceID()
+	if identified {
+		return id == actor
+	}
+
+	return domain.EqualNick(source.Nick(), nick)
+}
+
+func safeMigrationProjection(
+	event domain.PersistableEvent,
+	actor domain.InstanceID,
+) domain.PersistableEvent {
+	switch event := event.(type) {
+	case domain.Message:
+		id, identified := event.Source.InstanceID()
+		if !identified || id != actor {
+			event.Source = domain.AnonymousSource()
+		}
+
+		return event
+	case domain.TopicChange:
+		id, identified := event.Source.InstanceID()
+		if !identified || id != actor {
+			event.Source = domain.AnonymousSource()
+		}
+
+		return event
+	default:
+		return nil
+	}
 }
 
 // applyMigrations reconciles the recorded schema version against

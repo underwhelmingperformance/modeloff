@@ -2,8 +2,9 @@ package modelclient
 
 import (
 	"context"
-	"log/slog"
-	"reflect"
+	"encoding/json"
+	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -72,9 +73,10 @@ func estimateEventTokens(se domain.StoredEvent) int {
 // them, so trimming that block needs its own entry point onto the
 // same heuristic.
 func estimateMessageTokens(msg protocol.IRCMessage) int {
-	chars := len(msg.From) + len(msg.Target) + len(msg.Subject) + len(msg.Body)
+	msg.Source = msg.Source.WithoutInstanceID()
+	rendered, _ := json.Marshal(msg)
 
-	return chars / bytesPerEstimatedToken
+	return len(rendered) / bytesPerEstimatedToken
 }
 
 // sumEventTokens totals [estimateEventTokens] over events.
@@ -107,19 +109,26 @@ func sumMessageTokens(msgs []protocol.IRCMessage) int {
 // the loop below reaches exactly that outcome on its own (the first
 // older candidate always fails the fits-in-budget check). The
 // composition-wide "no budget known for this turn at all" case is
-// handled by [composeTranscriptBudget], the only caller, before this
-// function ever runs — this function only ever sees a genuine
-// (possibly tight) allocation.
+// handled before either trimming helper runs. This function only
+// receives a genuine, possibly tight, allocation.
 func trimToTokenBudget(events []domain.StoredEvent, budget int) []domain.StoredEvent {
+	return trimToTokenBudgetWith(events, budget, estimateEventTokens)
+}
+
+func trimToTokenBudgetWith(
+	events []domain.StoredEvent,
+	budget int,
+	estimate func(domain.StoredEvent) int,
+) []domain.StoredEvent {
 	if len(events) == 0 {
 		return events
 	}
 
 	kept := 1
-	total := estimateEventTokens(events[len(events)-1])
+	total := estimate(events[len(events)-1])
 
 	for i := len(events) - 2; i >= 0; i-- {
-		cost := estimateEventTokens(events[i])
+		cost := estimate(events[i])
 		if total+cost > budget {
 			break
 		}
@@ -131,21 +140,30 @@ func trimToTokenBudget(events []domain.StoredEvent, budget int) []domain.StoredE
 	return events[len(events)-kept:]
 }
 
-// trimMessagesToTokenBudget is [trimToTokenBudget] for a slice of
-// already-rendered [protocol.IRCMessage] — the shape a dispatch
-// turn's trigger block arrives in. Same newest-first retention, same
-// always-keep-the-newest floor, same treatment of a zero or negative
-// budget as a hard-but-not-empty allocation.
-func trimMessagesToTokenBudget(msgs []protocol.IRCMessage, budget int) []protocol.IRCMessage {
+// trimMessagesToTokenBudget keeps the newest part of the current
+// burst within budget. It normally retains a contiguous suffix. When
+// that suffix would omit the newest dispatch trigger, it prepends the
+// trigger to the suffix. The provider then sees why the turn ran and
+// the newest state reached after it, even when those two mandatory
+// entries exceed the remaining budget.
+func trimMessagesToTokenBudgetWith(
+	msgs []protocol.IRCMessage,
+	latestTrigger int,
+	budget int,
+	estimate func(protocol.IRCMessage) int,
+) []protocol.IRCMessage {
 	if len(msgs) == 0 {
 		return msgs
 	}
+	if latestTrigger < 0 || latestTrigger >= len(msgs) {
+		latestTrigger = len(msgs) - 1
+	}
 
 	kept := 1
-	total := estimateMessageTokens(msgs[len(msgs)-1])
+	total := estimate(msgs[len(msgs)-1])
 
 	for i := len(msgs) - 2; i >= 0; i-- {
-		cost := estimateMessageTokens(msgs[i])
+		cost := estimate(msgs[i])
 		if total+cost > budget {
 			break
 		}
@@ -154,14 +172,68 @@ func trimMessagesToTokenBudget(msgs []protocol.IRCMessage, budget int) []protoco
 		kept++
 	}
 
-	return msgs[len(msgs)-kept:]
+	start := len(msgs) - kept
+	if start <= latestTrigger {
+		return msgs[start:]
+	}
+
+	trimmed := make([]protocol.IRCMessage, 0, 1+kept)
+	trimmed = append(trimmed, msgs[latestTrigger])
+
+	return append(trimmed, msgs[start:]...)
+}
+
+func trimRepliesToTokenBudget(replies []storedReply, budget int) []storedReply {
+	return trimRepliesToTokenBudgetWith(replies, budget, func(reply storedReply) int {
+		return estimateEventTokens(reply.event)
+	})
+}
+
+func trimRepliesToTokenBudgetWith(
+	replies []storedReply,
+	budget int,
+	estimate func(storedReply) int,
+) []storedReply {
+	if len(replies) == 0 {
+		return replies
+	}
+
+	kept := 1
+	total := estimate(replies[len(replies)-1])
+
+	for i := len(replies) - 2; i >= 0; i-- {
+		cost := estimate(replies[i])
+		if total+cost > budget {
+			break
+		}
+
+		total += cost
+		kept++
+	}
+
+	return replies[len(replies)-kept:]
+}
+
+func sumReplyTokens(replies []storedReply) int {
+	return sumReplyTokensWith(replies, func(reply storedReply) int {
+		return estimateEventTokens(reply.event)
+	})
+}
+
+func sumReplyTokensWith(replies []storedReply, estimate func(storedReply) int) int {
+	total := 0
+	for _, reply := range replies {
+		total += estimate(reply)
+	}
+
+	return total
 }
 
 // composeTranscriptBudget spends a turn's transcript token budget
 // once, across the four pieces that make it up. Trimming each of
 // them independently, each against the full budget, is how a channel
 // ring at 4185 tokens, a replies ring at another 4185, and an
-// unbounded trigger block together overran an 8192-token model's
+// unbounded current-event block together overran an 8192-token model's
 // entire context, even though each individual piece looked correctly
 // bounded in isolation.
 //
@@ -171,17 +243,19 @@ func trimMessagesToTokenBudget(msgs []protocol.IRCMessage, budget int) []protoco
 // other three are apportioned out of what is left.
 // [capMemoriesForPrompt] is what keeps that first charge bounded.
 //
-// Triggers are what the turn is about, so they are costed and
-// trimmed next, against everything the context lines left. That is a
-// backstop for a pathological burst (see [drain], which can coalesce
-// up to a channel's full send-queue allowance into one trigger
-// block). What triggers leave unspent is split between replies and
-// history: replies get up to half of it, and history gets whatever
-// neither of the other two claimed. Any of those shares can be zero
-// or negative once an earlier piece has spent most or all of the
-// budget; [trimToTokenBudget] and [trimMessagesToTokenBudget] both
-// handle that on their own, by keeping each piece's mandatory newest
-// item, so no special case is needed here for it.
+// Current events are what the turn is about, so they are costed and
+// trimmed next, against everything the context lines left. The newest
+// dispatch trigger is mandatory even when sender history or a state
+// change follows it. This is a backstop for a pathological burst (see
+// [drain], which admits at most [modelHistorySize] queued deliveries
+// to one batch). What current events leave unspent is split between
+// replies and history: replies get up to half of it, and history gets
+// whatever neither of the other two claimed. Any of those shares can
+// be zero or negative once an earlier piece has spent most or all of
+// the budget; [trimToTokenBudget] and [trimMessagesToTokenBudget]
+// both handle that on their own. Each historical piece retains its
+// newest item, and the current block retains its newest dispatch
+// trigger.
 //
 // A non-positive budget for the whole turn disables every trim,
 // leaving each piece's own [modelHistorySize] event-count cap as the
@@ -191,25 +265,67 @@ func trimMessagesToTokenBudget(msgs []protocol.IRCMessage, budget int) []protoco
 func composeTranscriptBudget(
 	contextLines []protocol.IRCMessage,
 	history []domain.StoredEvent,
-	replies []domain.StoredEvent,
-	triggers []protocol.IRCMessage,
+	replies []storedReply,
+	events []protocol.IRCMessage,
+	latestTrigger int,
 	budget int,
-) (trimmedHistory, trimmedReplies []domain.StoredEvent, trimmedTriggers []protocol.IRCMessage) {
+) ([]domain.StoredEvent, []storedReply, []protocol.IRCMessage) {
+	return composeProjectedTranscriptBudget(
+		providerTargetProjection{}, contextLines, history, replies, events, latestTrigger, budget,
+	)
+}
+
+func composeProjectedTranscriptBudget(
+	projection providerTargetProjection,
+	contextLines []protocol.IRCMessage,
+	history []domain.StoredEvent,
+	replies []storedReply,
+	events []protocol.IRCMessage,
+	latestTrigger int,
+	budget int,
+) ([]domain.StoredEvent, []storedReply, []protocol.IRCMessage) {
 	if budget <= 0 {
-		return history, replies, triggers
+		return history, replies, events
 	}
 
-	budget -= sumMessageTokens(contextLines)
+	estimateMessage := func(message protocol.IRCMessage) int {
+		return estimateMessageTokens(projection.message(message))
+	}
+	estimateEvent := func(event domain.StoredEvent) int {
+		message, ok := protocol.FromChannelEvent(event.Event)
+		if !ok {
+			return 0
+		}
 
-	trimmedTriggers = trimMessagesToTokenBudget(triggers, budget)
-	remaining := budget - sumMessageTokens(trimmedTriggers)
+		return estimateMessage(message)
+	}
+	estimateReply := func(reply storedReply) int {
+		message, ok := protocol.FromChannelEvent(reply.event.Event)
+		if !ok {
+			return 0
+		}
 
-	trimmedReplies = trimToTokenBudget(replies, remaining/2)
-	remaining -= sumEventTokens(trimmedReplies)
+		return estimateMessageTokens(projection.reply(reply.window, message))
+	}
 
-	trimmedHistory = trimToTokenBudget(history, remaining)
+	contextCost := 0
+	for _, message := range contextLines {
+		contextCost += estimateMessage(message)
+	}
+	budget -= contextCost
 
-	return trimmedHistory, trimmedReplies, trimmedTriggers
+	trimmedEvents := trimMessagesToTokenBudgetWith(events, latestTrigger, budget, estimateMessage)
+	remaining := budget
+	for _, message := range trimmedEvents {
+		remaining -= estimateMessage(message)
+	}
+
+	trimmedReplies := trimRepliesToTokenBudgetWith(replies, remaining/2, estimateReply)
+	remaining -= sumReplyTokensWith(trimmedReplies, estimateReply)
+
+	trimmedHistory := trimToTokenBudgetWith(history, remaining, estimateEvent)
+
+	return trimmedHistory, trimmedReplies, trimmedEvents
 }
 
 // history holds the local memory a model uses to construct each
@@ -220,22 +336,24 @@ func composeTranscriptBudget(
 //     Channel buffers are loaded at attach, join-scoped, by
 //     [ModelClient.loadHistory]; DM targets are lazy-seeded on first
 //     event arrival.
-//   - a single rolling buffer of the model's own point-to-point
-//     replies (its `/whois` and `/list` results). These are not
-//     channel traffic and are never broadcast, so they carry no
-//     channel key.
+//   - a rolling buffer of the model's own point-to-point replies
+//     (its `/whois` and `/list` results). Each reply records the
+//     window in which the model issued the command so closing that
+//     window removes the derived context.
 //
 // All access is under `mu` so no concurrent appender can interleave
 // with a seed.
 type history struct {
-	mu      sync.Mutex
-	buf     map[domain.ChannelName][]domain.StoredEvent
-	replies []domain.StoredEvent
+	mu           sync.Mutex
+	buf          map[domain.ChannelName][]domain.StoredEvent
+	unseeded     map[domain.ChannelName][]domain.StoredEvent
+	replies      []storedReply
+	subscription protocol.Subscription
 
 	// maxContextTokens is the turn's transcript token budget, spent
 	// once across history, replies and triggers together by
 	// [composeTranscriptBudget] — not by [history.snapshot] or
-	// [history.snapshotReplies] individually, which return their
+	// [history.snapshotRepliesFor] individually, which return their
 	// buffer's full contents (bounded only by [modelHistorySize]) and
 	// leave composition to whoever holds all three pieces. Zero — the
 	// value newHistory leaves it at — means no budget is in effect
@@ -243,8 +361,23 @@ type history struct {
 	maxContextTokens int
 }
 
+type storedReply struct {
+	window protocol.WindowTarget
+	event  domain.StoredEvent
+}
+
 func newHistory() *history {
-	return &history{buf: make(map[domain.ChannelName][]domain.StoredEvent)}
+	return &history{
+		buf:      make(map[domain.ChannelName][]domain.StoredEvent),
+		unseeded: make(map[domain.ChannelName][]domain.StoredEvent),
+	}
+}
+
+func (h *history) bind(subscription protocol.Subscription) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.subscription = subscription
 }
 
 // SetContextLen derives a transcript token budget from a model's
@@ -293,58 +426,100 @@ func (h *history) seedChannel(ch domain.ChannelName, events []domain.StoredEvent
 	h.buf[ch] = events
 }
 
-// seedReplies populates the model's own private-replies buffer with
-// a pre-fetched slice. Used by [ModelClient.loadHistory] at attach to
-// fill the buffer from the instance-reply log.
-func (h *history) seedReplies(events []domain.StoredEvent) {
+func (h *history) forget(target domain.ChannelName) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.replies = events
+	delete(h.buf, target)
+	delete(h.unseeded, target)
+	window := protocol.WindowTargetForKey(target)
+	h.replies = slices.DeleteFunc(h.replies, func(reply storedReply) bool {
+		return protocol.EqualWindowTarget(reply.window, window)
+	})
+}
+
+// seedReplies populates the model's own private-replies buffer with
+// a pre-fetched slice. Used by [ModelClient.loadHistory] at attach to
+// fill the buffer from the instance-reply log.
+func (h *history) seedReplies(window protocol.WindowTarget, entries []protocol.ReplyEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seedRepliesLocked(window, entries)
+}
+
+func (h *history) seedRepliesLocked(window protocol.WindowTarget, entries []protocol.ReplyEntry) {
+	h.replies = slices.DeleteFunc(h.replies, func(reply storedReply) bool {
+		return protocol.EqualWindowTarget(reply.window, window)
+	})
+	for _, entry := range entries {
+		h.replies = append(h.replies, storedReply{
+			window: window,
+			event:  domain.StoredEvent{Event: entry.Event},
+		})
+	}
+	h.sortRepliesLocked()
+}
+
+func (h *history) sortRepliesLocked() {
+	slices.SortStableFunc(h.replies, func(a, b storedReply) int {
+		return domain.EventTime(a.event.Event).Compare(domain.EventTime(b.event.Event))
+	})
 }
 
 // appendReply records `ev` against the private-replies buffer. These
 // are the model's `/whois` and `/list` results: its own point-to-point
-// replies, kept so the model re-experiences them. The buffer trims to
-// [modelHistorySize] from the older end so a chatty lookup history
-// cannot grow it without bound.
-func (h *history) appendReply(ev domain.StoredEvent) {
+// replies, kept so the model re-experiences them. Each issuing window
+// trims to [modelHistorySize] from its older end. Traffic in another
+// window therefore cannot evict the replies this window needs.
+func (h *history) appendReply(window protocol.WindowTarget, ev domain.StoredEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.replies = append(h.replies, ev)
-	if len(h.replies) > modelHistorySize {
-		h.replies = h.replies[len(h.replies)-modelHistorySize:]
+	h.replies = append(h.replies, storedReply{window: window, event: ev})
+	h.sortRepliesLocked()
+	matching := 0
+	for i, reply := range slices.Backward(h.replies) {
+		if !protocol.EqualWindowTarget(reply.window, window) {
+			continue
+		}
+		matching++
+		if matching <= modelHistorySize {
+			continue
+		}
+
+		h.replies = slices.Delete(h.replies, i, i+1)
+		break
 	}
 }
 
-// snapshotReplies returns a defensive copy of the private-replies
-// buffer, bounded only by the ring's own [modelHistorySize] event-
-// count cap. The token budget is not applied here: it is spent once,
-// across this buffer, [history.snapshot]'s and the turn's trigger
-// block together, by [composeTranscriptBudget] — trimming each
-// independently against the full budget would let the three
-// overrun the model's context between them. The dispatch turn
-// iterates the slice without holding the lock, so the snapshot must
-// not alias the live backing array.
-func (h *history) snapshotReplies() []domain.StoredEvent {
+// snapshotRepliesFor returns a defensive copy of the replies `target`
+// may read: the ones issued in that window and the ones issued in no
+// window at all. Each issuing window has its own [modelHistorySize]
+// event cap. The dispatch turn iterates the slice without holding the
+// lock, so the snapshot must not alias the live backing array.
+func (h *history) snapshotRepliesFor(target domain.ChannelName) []storedReply {
 	h.mu.Lock()
-	replies := h.replies
-	h.mu.Unlock()
+	defer h.mu.Unlock()
 
+	window := protocol.WindowTargetForKey(target)
+	replies := make([]storedReply, 0, len(h.replies))
+	for _, reply := range h.replies {
+		if reply.window != nil && !protocol.EqualWindowTarget(reply.window, window) {
+			continue
+		}
+
+		replies = append(replies, reply)
+	}
 	if len(replies) == 0 {
 		return nil
 	}
 
-	dst := make([]domain.StoredEvent, len(replies))
-	copy(dst, replies)
-
-	return dst
+	return replies
 }
 
 // snapshot returns a defensive copy of the buffer for `target`,
 // bounded only by the ring's own [modelHistorySize] event-count cap
-// — see [history.snapshotReplies] for where the token budget is
+// — see [history.snapshotRepliesFor] for where the token budget is
 // actually spent. The dispatch turn iterates the slice without
 // holding the lock, so the snapshot must not alias the live backing
 // array.
@@ -354,23 +529,20 @@ func (h *history) snapshotReplies() []domain.StoredEvent {
 // reports a conversation as empty because its load had not run.
 func (h *history) snapshot(
 	ctx context.Context,
-	sess Session,
-	selfID domain.InstanceID,
 	target domain.ChannelName,
-) []domain.StoredEvent {
+) ([]domain.StoredEvent, error) {
 	h.mu.Lock()
-	h.seedDM(ctx, sess, selfID, target)
-	src := h.buf[target]
+	if err := h.seedDM(ctx, target); err != nil {
+		h.mu.Unlock()
+		return nil, err
+	}
+	dst := slices.Clone(h.buf[target])
 	h.mu.Unlock()
-
-	if len(src) == 0 {
-		return nil
+	if len(dst) == 0 {
+		return nil, nil
 	}
 
-	dst := make([]domain.StoredEvent, len(src))
-	copy(dst, src)
-
-	return dst
+	return dst, nil
 }
 
 // append records `ev` against `target` in the rolling buffer. The
@@ -381,35 +553,58 @@ func (h *history) snapshot(
 // first, under the same lock the live append takes, so no concurrent
 // appender can interleave between the load and the append.
 //
-// Skips a duplicate if the incoming event matches the buffer's
-// most-recent entry by concrete type and timestamp; protects
-// against the seed-then-live-emit race where a producer persists
-// and is mid-fan-out while a concurrent registration's seed reads
-// the event from the store and then receives the same event again
-// via fan-out.
-//
 // The buffer trims to [modelHistorySize] from the older end on
 // every append so a chatty target cannot grow it without bound.
 func (h *history) append(
 	ctx context.Context,
-	sess Session,
-	selfID domain.InstanceID,
 	ev domain.StoredEvent,
 	target domain.ChannelName,
+) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if err := h.seedDM(ctx, target); err != nil {
+		h.appendUnseededLocked(target, ev)
+		return err
+	}
+
+	h.buf[target] = appendAndTrim(h.buf[target], ev)
+
+	return nil
+}
+
+// appendAfterSeedFailure retains another live event from a batch
+// whose first event could not seed its DM history. The next batch
+// retries the seed and merges these events after the stored prefix.
+func (h *history) appendAfterSeedFailure(
+	target domain.ChannelName,
+	ev domain.StoredEvent,
 ) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.seedDM(ctx, sess, selfID, target)
-
-	if buf := h.buf[target]; len(buf) > 0 && sameStoredEvent(buf[len(buf)-1], ev) {
+	if _, seeded := h.buf[target]; seeded {
+		h.buf[target] = appendAndTrim(h.buf[target], ev)
 		return
 	}
 
-	h.buf[target] = append(h.buf[target], ev)
-	if len(h.buf[target]) > modelHistorySize {
-		h.buf[target] = h.buf[target][len(h.buf[target])-modelHistorySize:]
+	h.appendUnseededLocked(target, ev)
+}
+
+func (h *history) appendUnseededLocked(
+	target domain.ChannelName,
+	ev domain.StoredEvent,
+) {
+	h.unseeded[target] = appendAndTrim(h.unseeded[target], ev)
+}
+
+func appendAndTrim(events []domain.StoredEvent, ev domain.StoredEvent) []domain.StoredEvent {
+	events = append(events, ev)
+	if len(events) > modelHistorySize {
+		events = events[len(events)-modelHistorySize:]
 	}
+
+	return events
 }
 
 // seedDM fills the buffer for a DM window this client has not seen
@@ -421,66 +616,40 @@ func (h *history) append(
 // The caller holds `h.mu`, which is what makes a load and the read or
 // append it precedes one step: a concurrent appender cannot land
 // between them, and a turn cannot snapshot a window whose load is
-// half done. A failed load leaves the buffer empty and marked as
-// loaded, so the turn runs on what it has and the store is asked
-// once per window, not once per event.
-func (h *history) seedDM(ctx context.Context, sess Session, selfID domain.InstanceID, target domain.ChannelName) {
+// half done. The buffer and its replies become visible together only
+// after both reads succeed. A later delivery can therefore retry a
+// failed load without mistaking partial data for a complete seed.
+func (h *history) seedDM(ctx context.Context, target domain.ChannelName) error {
 	if _, ok := h.buf[target]; ok {
-		return
+		return nil
 	}
 
 	if domain.InferChannelKind(target) != domain.KindDM {
-		return
+		return nil
 	}
 
-	seed, err := sess.DMEventsBefore(ctx, selfID, domain.InstanceID(target), nil, modelHistorySize)
+	if h.subscription == nil {
+		return protocol.ErrSubscriptionClosed
+	}
+
+	replies, err := h.subscription.Replies(
+		ctx, protocol.DirectWindowTarget(domain.InstanceID(target)), modelHistorySize,
+	)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "load DM history",
-			"component", "modelclient",
-			"instance_id", selfID,
-			"peer", target,
-			"error", err,
-		)
-
-		h.buf[target] = nil
-
-		return
+		return fmt.Errorf("load DM replies for %q: %w", target, err)
 	}
 
-	h.buf[target] = seed
-}
-
-// sameStoredEvent reports whether `a` and `b` represent the same
-// persisted event. The match handles two shapes:
-//
-//   - Both carry an ID (both loaded from the store): the row id
-//     is the canonical identity.
-//   - Exactly one carries an ID: this is the seed-then-fanout
-//     race shape — a registering consumer's seed read the event
-//     from the store while the producer's fan-out was still in
-//     flight, then the same event arrived again ID-less over the
-//     bus. Same concrete type + same timestamp identifies the
-//     pair.
-//
-// When both ids are zero the events arrived through separate
-// append paths (one from the dispatch loop, one from the model-
-// client's own send) and are kept as distinct entries.
-func sameStoredEvent(a, b domain.StoredEvent) bool {
-	if a.ID != 0 && b.ID != 0 {
-		return a.ID == b.ID
+	seed, err := h.subscription.Scrollback(ctx, protocol.WindowTargetForKey(target), modelHistorySize)
+	if err != nil {
+		return fmt.Errorf("load DM scrollback for %q: %w", target, err)
 	}
 
-	if a.ID == 0 && b.ID == 0 {
-		return false
+	h.buf[target] = append(storedScrollback(seed), h.unseeded[target]...)
+	if len(h.buf[target]) > modelHistorySize {
+		h.buf[target] = h.buf[target][len(h.buf[target])-modelHistorySize:]
 	}
+	delete(h.unseeded, target)
+	h.seedRepliesLocked(protocol.DirectWindowTarget(domain.InstanceID(target)), replies)
 
-	if a.Event == nil || b.Event == nil {
-		return false
-	}
-
-	if reflect.TypeOf(a.Event) != reflect.TypeOf(b.Event) {
-		return false
-	}
-
-	return domain.EventTime(a.Event).Equal(domain.EventTime(b.Event))
+	return nil
 }

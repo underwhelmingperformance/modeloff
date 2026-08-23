@@ -61,7 +61,7 @@ func TestChannelDestroy_forced_teardown_cleans_a_cold_channel_after_load_failure
 		backing := storetest.NewMemoryStore(t)
 		loadErr := errors.New("load failed")
 		wrapped := &failingLoadStore{Store: backing, err: loadErr}
-		sess := New(t.Context, wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		sess := New(t.Context(), wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -91,7 +91,7 @@ func TestForcedTeardown_masks_an_unreadable_anonymous_channel(t *testing.T) {
 		backing := storetest.NewMemoryStore(t)
 		loadErr := errors.New("load failed")
 		wrapped := &failingLoadStore{Store: backing, err: loadErr}
-		sess := New(t.Context, wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		sess := New(t.Context(), wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -101,7 +101,7 @@ func TestForcedTeardown_masks_an_unreadable_anonymous_channel(t *testing.T) {
 			ModelID:  "test/model",
 			Channels: testChannels("#secret"),
 		})
-		attachBareClient(t, sess, botty)
+		client := attachBareClient(t, sess, botty)
 		window := domain.NewChannelWindow("#secret", fixedTime)
 		window.Members.Add(userInstance(t, sess))
 		window.Members.Add(botty)
@@ -113,32 +113,62 @@ func TestForcedTeardown_masks_an_unreadable_anonymous_channel(t *testing.T) {
 
 		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{Nick: botty.Nick(), Reason: "spam"})
 		require.ErrorIs(t, err, loadErr)
-		require.Equal(t, protocol.Response{}, resp)
-		require.Equal(t, []domain.Event{domain.Part{
-			Target:  "#secret",
-			Nick:    domain.AnonymousNick,
-			Message: "Killed by testuser (spam)",
-			At:      fixedTime,
-		}}, collectEmittedEvents(t, sess))
+		userEvents := collectEmittedEvents(t, sess)
+		var terminalEvents []domain.Event
+		for range 4 {
+			terminalEvents = append(terminalEvents, (<-client.Events()).Event)
+		}
+		<-client.sub.Done()
 
 		stored, err := backing.EventsBefore(t.Context(), "#secret", nil, 10)
 		require.NoError(t, err)
-		require.Equal(t, []domain.StoredEvent{{
-			ID: 1,
-			Event: domain.Part{
-				Target:  "#secret",
-				Nick:    domain.AnonymousNick,
-				Message: "Killed by testuser (spam)",
-				At:      fixedTime,
+		part := domain.Part{
+			Target:  "#secret",
+			Source:  domain.AnonymousSource(),
+			Message: "Killed by testuser (spam)",
+			At:      fixedTime,
+		}
+		require.Equal(t, struct {
+			Response       protocol.Response
+			UserEvents     []domain.Event
+			TerminalEvents []domain.Event
+			Stored         []domain.StoredEvent
+		}{
+			Response:   protocol.Response{},
+			UserEvents: []domain.Event{part},
+			TerminalEvents: []domain.Event{
+				domain.KillNotice{
+					Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
+					Subject: "botty", Reason: "spam", At: fixedTime,
+				},
+				part,
+				domain.Quit{
+					Source:  domain.ClientSource(botty.ID(), "botty"),
+					Message: "Killed by testuser (spam)", At: fixedTime,
+				},
+				domain.ConnectionError{
+					Reason: "Killed by testuser (spam)", At: fixedTime,
+				},
 			},
-		}}, stored)
+			Stored: []domain.StoredEvent{{ID: 1, Event: part}},
+		}, struct {
+			Response       protocol.Response
+			UserEvents     []domain.Event
+			TerminalEvents []domain.Event
+			Stored         []domain.StoredEvent
+		}{
+			Response:       resp,
+			UserEvents:     userEvents,
+			TerminalEvents: terminalEvents,
+			Stored:         stored,
+		})
 	})
 }
 
 func TestQuit_preserves_a_surviving_case_equivalent_channel_row(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backing := storetest.NewMemoryStore(t)
-		sess := New(t.Context, backing, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		sess := New(t.Context(), backing, newTestModelClientFactory(t, &apitest.Fake{}), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -164,23 +194,47 @@ func TestQuit_preserves_a_surviving_case_equivalent_channel_row(t *testing.T) {
 		require.NoError(t, backing.SaveWindow(t.Context(), preserved))
 
 		require.NoError(t, sess.quitAs(t.Context(), departing, "bye"))
+		synctest.Wait()
 
 		stored, err := backing.GetWindow(t.Context(), "#Dev")
 		require.NoError(t, err)
 		live, err := sess.loadChannelWindow(t.Context(), "#Dev")
 		require.NoError(t, err)
+		scrollback, err := backing.ChannelScrollback(
+			t.Context(), survivor.ID(), preserved.Name(), 100,
+		)
+		require.NoError(t, err)
+		events, err := backing.EventsBefore(t.Context(), preserved.Name(), nil, 100)
+		require.NoError(t, err)
+		quit := domain.Quit{
+			Source:  domain.ClientSource(departing.ID(), departing.Nick()),
+			Message: "bye",
+			At:      fixedTime,
+		}
 		require.Equal(t, struct {
-			Stored domain.Window
-			Live   *domain.ChannelWindow
+			Stored        domain.Window
+			Live          *domain.ChannelWindow
+			Connected     bool
+			Scrollback    []domain.StoredEvent
+			ChannelEvents []domain.StoredEvent
 		}{
-			Stored: preserved,
-			Live:   preserved,
+			Stored:        preserved,
+			Live:          preserved,
+			Connected:     true,
+			Scrollback:    []domain.StoredEvent{{ID: 1, Event: quit}},
+			ChannelEvents: []domain.StoredEvent{{ID: 1, Event: quit}},
 		}, struct {
-			Stored domain.Window
-			Live   *domain.ChannelWindow
+			Stored        domain.Window
+			Live          *domain.ChannelWindow
+			Connected     bool
+			Scrollback    []domain.StoredEvent
+			ChannelEvents []domain.StoredEvent
 		}{
-			Stored: stored,
-			Live:   live,
+			Stored:        stored,
+			Live:          live,
+			Connected:     sess.ClientConnected(protocol.ClientID(survivor.ID())),
+			Scrollback:    scrollback,
+			ChannelEvents: events,
 		})
 	})
 }

@@ -83,8 +83,25 @@ type blockingHistoryStore struct {
 	release chan struct{}
 }
 
-func (s *blockingHistoryStore) EventsBefore(
+type failingHistoryStore struct {
+	*storemod.SQLiteStore
+
+	err error
+}
+
+func (s *failingHistoryStore) ChannelScrollbackBefore(
+	context.Context,
+	domain.InstanceID,
+	domain.ChannelName,
+	*int64,
+	int,
+) ([]domain.StoredEvent, error) {
+	return nil, s.err
+}
+
+func (s *blockingHistoryStore) ChannelScrollbackBefore(
 	ctx context.Context,
+	actor domain.InstanceID,
 	ch domain.ChannelName,
 	before *int64,
 	n int,
@@ -97,7 +114,7 @@ func (s *blockingHistoryStore) EventsBefore(
 		return nil, ctx.Err()
 	}
 
-	return s.SQLiteStore.EventsBefore(ctx, ch, before, n)
+	return s.SQLiteStore.ChannelScrollbackBefore(ctx, actor, ch, before, n)
 }
 
 // attachTestInstance saves and attaches a model instance under fx's
@@ -108,8 +125,7 @@ func attachTestInstance(t *testing.T, fx *managerFixture, sess *session.Session,
 	inst := domain.NewModelInstance(id, "botty", "test/model", "", nil)
 	require.NoError(t, fx.store.SaveInstance(t.Context(), inst))
 
-	_, err := fx.mgr.Attach(t.Context(), sess, inst)
-	require.NoError(t, err)
+	require.NoError(t, sess.StartModelClients(t.Context()))
 
 	return inst
 }
@@ -118,7 +134,7 @@ func TestManager_Forget_deletes_the_instances_memory_collection(t *testing.T) {
 	spy := &spyMemoryDeleter{}
 	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}, Memory: spy})
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	inst := attachTestInstance(t, fx, sess, "inst-botty")
@@ -151,7 +167,7 @@ func TestManager_Forget_keeps_the_marker_when_the_index_is_unavailable(t *testin
 		Memory:    memory.NewStoreAdapter(s),
 	})
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	inst := attachTestInstance(t, fx, sess, "inst-botty")
@@ -196,17 +212,15 @@ func TestManager_DetachAndForget_waits_for_the_dispatch_goroutine(t *testing.T) 
 		Memory:      spy,
 		BaseContext: func() context.Context { return baseCtx },
 	})
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	inst := attachTestInstance(t, fx, sess, "inst-botty")
-	client := sess.LookupClient(protocol.ClientID(inst.ID()))
-	require.NotNil(t, client)
-	resp, err := client.Send(t.Context(), protocol.Join{Channels: []domain.ChannelName{"#room"}})
-	require.NoError(t, err)
-	require.Equal(t, protocol.Response{Events: []domain.ProtocolEvent{
-		domain.JoinedChannel{Channel: "#room"},
-	}}, resp)
+	inst.JoinChannel("#room", fixedTime)
+	require.NoError(t, fx.store.SaveInstance(t.Context(), inst))
+	window := domain.NewChannelWindow("#room", fixedTime)
+	window.Members.Add(inst)
+	require.NoError(t, fx.store.SaveWindow(t.Context(), window))
 	require.NoError(t, sess.PokeNow(t.Context()))
 	<-started
 
@@ -276,7 +290,7 @@ func TestManager_DetachAll_does_not_delete_memory_collections(t *testing.T) {
 	spy := &spyMemoryDeleter{}
 	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}, Memory: spy})
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	attachTestInstance(t, fx, sess, "inst-botty")
@@ -288,13 +302,13 @@ func TestManager_DetachAll_does_not_delete_memory_collections(t *testing.T) {
 
 func TestManager_DetachAll_refuses_later_attachments(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}})
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	require.NoError(t, fx.mgr.DetachAll(t.Context()))
 
 	inst := domain.NewModelInstance("inst-late", "late", "test/model", "", nil)
-	client, err := fx.mgr.Attach(t.Context(), sess, inst)
+	client, err := fx.mgr.Attach(t.Context(), sess, inst, nil)
 	var draining *modelmanager.ManagerDrainingError
 	require.ErrorAs(t, err, &draining)
 	require.Equal(t, struct {
@@ -320,21 +334,19 @@ func TestManager_DetachAll_interrupts_an_attachment_loading_history(t *testing.T
 			started:     make(chan struct{}),
 			release:     make(chan struct{}),
 		}
-		sess := session.New(t.Context, blocking, fx.mgr, nil)
+		sess := session.New(t.Context(), blocking, fx.mgr, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 		inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 		inst.JoinChannel("#room", fixedTime)
 		require.NoError(t, fx.store.SaveInstance(t.Context(), inst))
+		window := domain.NewChannelWindow("#room", fixedTime)
+		window.Members.Add(inst)
+		require.NoError(t, fx.store.SaveWindow(t.Context(), window))
 
-		type attachResult struct {
-			client protocol.Client
-			err    error
-		}
-		attached := make(chan attachResult, 1)
+		attached := make(chan error, 1)
 		go func() {
-			client, err := fx.mgr.Attach(t.Context(), sess, inst)
-			attached <- attachResult{client: client, err: err}
+			attached <- sess.StartModelClients(t.Context())
 		}()
 		<-blocking.started
 
@@ -343,35 +355,88 @@ func TestManager_DetachAll_interrupts_an_attachment_loading_history(t *testing.T
 		synctest.Wait()
 		close(blocking.release)
 
-		result := <-attached
+		attachErr := <-attached
 		var draining *modelmanager.ManagerDrainingError
-		require.ErrorAs(t, result.err, &draining)
+		require.ErrorAs(t, attachErr, &draining)
 		require.Equal(t, struct {
-			client    protocol.Client
 			draining  *modelmanager.ManagerDrainingError
 			drainErr  error
 			connected bool
 		}{
-			client:   nil,
 			draining: &modelmanager.ManagerDrainingError{InstanceID: inst.ID()},
 		}, struct {
-			client    protocol.Client
 			draining  *modelmanager.ManagerDrainingError
 			drainErr  error
 			connected bool
 		}{
-			client:    result.client,
 			draining:  draining,
 			drainErr:  <-drained,
-			connected: sess.LookupClient(protocol.ClientID(inst.ID())) != nil,
+			connected: sess.ClientConnected(protocol.ClientID(inst.ID())),
 		})
+	})
+}
+
+func TestManager_failed_attachment_finishes_pending_memory_deletion(t *testing.T) {
+	ctx := t.Context()
+	backing := storetest.NewMemoryStore(t)
+	blocking := &blockingHistoryStore{
+		SQLiteStore: backing,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	spy := &spyMemoryDeleter{}
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:       blocking,
+		Memory:      spy,
+		APIClient:   &apitest.Fake{},
+		BaseContext: t.Context,
+		Pacer:       &modelclient.Pacer{},
+	})
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+	sess := session.New(ctx, blocking, mgr, nil)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	inst.JoinChannel("#room", fixedTime)
+	require.NoError(t, backing.SaveInstance(ctx, inst))
+	window := domain.NewChannelWindow("#room", fixedTime)
+	window.Members.Add(inst)
+	require.NoError(t, backing.SaveWindow(ctx, window))
+
+	attachCtx, cancelAttach := context.WithCancel(ctx)
+	attached := make(chan error, 1)
+	go func() {
+		attached <- sess.StartModelClients(attachCtx)
+	}()
+	<-blocking.started
+
+	require.NoError(t, backing.DeleteInstanceByID(ctx, inst.ID()))
+	mgr.InstanceDeleted(protocol.ClientID(inst.ID()))
+	cancelAttach()
+	require.ErrorIs(t, <-attached, context.Canceled)
+	mgr.Detach(protocol.ClientID(inst.ID()))
+
+	pending, err := backing.ListPendingMemoryDeletions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, struct {
+		deleted []domain.InstanceID
+		pending []domain.InstanceID
+	}{
+		deleted: []domain.InstanceID{inst.ID()},
+		pending: nil,
+	}, struct {
+		deleted []domain.InstanceID
+		pending []domain.InstanceID
+	}{
+		deleted: spy.deletedIDs(),
+		pending: pending,
 	})
 }
 
 func TestManager_Detach_does_not_delete_memory(t *testing.T) {
 	spy := &spyMemoryDeleter{}
 	fx := newTestManager(t, modelmanager.Config{APIClient: &apitest.Fake{}, Memory: spy})
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	inst := attachTestInstance(t, fx, sess, "inst-botty")
@@ -411,11 +476,13 @@ func TestManager_Start_excludes_a_pending_instance_when_its_retry_fails(t *testi
 		Pacer:       &modelclient.Pacer{},
 	})
 	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
-	sess := session.New(t.Context, failing, mgr, nil)
+	sess := session.New(t.Context(), failing, mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	err := mgr.Start(ctx, sess)
 	require.ErrorIs(t, err, deleteErr)
+	var startErr *modelmanager.StartError
+	require.ErrorAs(t, err, &startErr)
 	pendingIDs, listErr := backing.ListPendingInstanceDeletions(ctx)
 	require.NoError(t, listErr)
 
@@ -424,21 +491,69 @@ func TestManager_Start_excludes_a_pending_instance_when_its_retry_fails(t *testi
 		pendingConnected bool
 		pendingIDs       []domain.InstanceID
 		forgotten        []domain.InstanceID
+		attachmentFailed bool
 	}{
 		activeConnected:  true,
 		pendingConnected: false,
 		pendingIDs:       []domain.InstanceID{pending.ID()},
 		forgotten:        nil,
+		attachmentFailed: false,
 	}, struct {
 		activeConnected  bool
 		pendingConnected bool
 		pendingIDs       []domain.InstanceID
 		forgotten        []domain.InstanceID
+		attachmentFailed bool
 	}{
-		activeConnected:  sess.LookupClient(protocol.ClientID(active.ID())) != nil,
-		pendingConnected: sess.LookupClient(protocol.ClientID(pending.ID())) != nil,
+		activeConnected:  sess.ClientConnected(protocol.ClientID(active.ID())),
+		pendingConnected: sess.ClientConnected(protocol.ClientID(pending.ID())),
 		pendingIDs:       pendingIDs,
 		forgotten:        spy.deletedIDs(),
+		attachmentFailed: startErr.AttachmentFailed(),
+	})
+}
+
+func TestManager_Start_marks_a_stored_client_attachment_failure(t *testing.T) {
+	ctx := t.Context()
+	backing := storetest.NewMemoryStore(t)
+	historyErr := errors.New("read history")
+	failing := &failingHistoryStore{SQLiteStore: backing, err: historyErr}
+	mgr := modelmanager.New(modelmanager.Config{
+		Store:       failing,
+		Memory:      &spyMemoryDeleter{},
+		APIClient:   &apitest.Fake{},
+		BaseContext: t.Context,
+		Pacer:       &modelclient.Pacer{},
+	})
+	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
+	sess := session.New(ctx, failing, mgr, nil)
+	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
+
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	inst.JoinChannel("#dev", fixedTime)
+	require.NoError(t, backing.SaveInstance(ctx, inst))
+	window := domain.NewChannelWindow("#dev", fixedTime)
+	window.Members.Add(inst)
+	require.NoError(t, backing.SaveWindow(ctx, window))
+
+	err := mgr.Start(ctx, sess)
+	var startErr *modelmanager.StartError
+	require.ErrorAs(t, err, &startErr)
+	require.Equal(t, struct {
+		HistoryFailed    bool
+		AttachmentFailed bool
+		Connected        bool
+	}{
+		HistoryFailed:    true,
+		AttachmentFailed: true,
+	}, struct {
+		HistoryFailed    bool
+		AttachmentFailed bool
+		Connected        bool
+	}{
+		HistoryFailed:    errors.Is(err, historyErr),
+		AttachmentFailed: startErr.AttachmentFailed(),
+		Connected:        sess.ClientConnected(protocol.ClientID(inst.ID())),
 	})
 }
 
@@ -450,7 +565,7 @@ func TestManager_Start_retries_pending_instance_deletion(t *testing.T) {
 	require.NoError(t, fx.store.SaveInstance(ctx, pending))
 	require.NoError(t, fx.store.MarkInstancePendingDeletion(ctx, pending.ID()))
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 	require.NoError(t, fx.mgr.Start(ctx, sess))
 
@@ -480,7 +595,7 @@ func TestManager_Start_retries_pending_instance_deletion(t *testing.T) {
 		instances []*domain.Instance
 		forgotten []domain.InstanceID
 	}{
-		connected: sess.LookupClient(protocol.ClientID(pending.ID())) != nil,
+		connected: sess.ClientConnected(protocol.ClientID(pending.ID())),
 		pending:   pendingIDs,
 		memory:    pendingMemoryIDs,
 		instances: instances,
@@ -497,7 +612,7 @@ func TestManager_Start_retries_pending_memory_deletion(t *testing.T) {
 	require.NoError(t, fx.store.SaveInstance(ctx, inst))
 	require.NoError(t, fx.store.DeleteInstanceByID(ctx, inst.ID()))
 
-	sess := session.New(t.Context, fx.store, fx.mgr, nil)
+	sess := session.New(t.Context(), fx.store, fx.mgr, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	err := fx.mgr.Start(ctx, sess)

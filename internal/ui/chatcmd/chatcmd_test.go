@@ -1,12 +1,15 @@
 package chatcmd
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 func TestContext_ActiveName_distinguishes_self_DM_from_absence(t *testing.T) {
@@ -33,13 +36,7 @@ func TestContext_ActiveName_distinguishes_self_DM_from_absence(t *testing.T) {
 	}
 }
 
-// TestContext_errorEvent_stamps_issuing_window proves errorEvent
-// carries the window the command was issued from (rc.Active) as
-// ErrorEvent.Target, the same role Whois.Target plays for a
-// `/whois` reply. Without it, a command issued in one window whose
-// failure arrives after the user has switched elsewhere would
-// report into the wrong conversation.
-func TestContext_errorEvent_stamps_issuing_window(t *testing.T) {
+func TestContext_errorResult_preserves_the_issuing_window(t *testing.T) {
 	tests := []struct {
 		name       string
 		active     domain.Window
@@ -55,13 +52,85 @@ func TestContext_errorEvent_stamps_issuing_window(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rc := Context{Active: tt.active}
+			message := (Context{Active: tt.active}).errorResult("join", wantErr)
+			result, ok := message.(CommandErrorResult)
+			if ok {
+				result.Error.At = time.Time{}
+			}
 
-			got := rc.errorEvent("join", wantErr)
-
-			require.Equal(t, tt.wantTarget, got.Target)
-			require.Equal(t, "join", got.Operation)
-			require.Equal(t, wantErr, got.Err)
+			require.Equal(t, struct {
+				OK     bool
+				Result CommandErrorResult
+			}{
+				OK: true,
+				Result: CommandErrorResult{
+					Error: domain.ErrorEvent{
+						Operation: "join", Err: wantErr, Target: tt.wantTarget,
+					},
+				},
+			}, struct {
+				OK     bool
+				Result CommandErrorResult
+			}{
+				OK:     ok,
+				Result: result,
+			})
 		})
 	}
+}
+
+func TestInviteCommand_Run_preserves_reply_events_with_a_typed_refusal(t *testing.T) {
+	at := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	notice := domain.SystemNotice{
+		Target: "#dev", Text: "no such nick: nobody", At: at,
+	}
+	refusal := domain.UnknownNickError{Nick: "nobody", At: at}
+	client := toolTestClient{send: func(
+		_ context.Context,
+		command protocol.Command,
+	) (protocol.Response, error) {
+		require.Equal(t, protocol.Invite{
+			Nick: "nobody", Channel: "#dev",
+			Window: protocol.ChannelWindowTarget("#dev"),
+		}, command)
+
+		return protocol.Response{
+			Events: []protocol.Event{notice},
+			Err:    refusal,
+		}, nil
+	}}
+
+	message := (InviteCommand{Nick: "nobody"}).Run(t.Context(), Context{
+		Client: client,
+		Active: domain.WindowKey("#dev"),
+	})()
+	reply, ok := message.(ReplyEvents)
+	var gotRefusal domain.UnknownNickError
+	if ok && reply.Error != nil {
+		reply.Error.At = time.Time{}
+		require.ErrorAs(t, reply.Error.Err, &gotRefusal)
+		gotRefusal.At = time.Time{}
+		reply.Error.Err = gotRefusal
+	}
+
+	require.Equal(t, struct {
+		OK    bool
+		Reply ReplyEvents
+	}{
+		OK: true,
+		Reply: ReplyEvents{
+			Events: []domain.ProtocolEvent{notice},
+			Error: &domain.ErrorEvent{
+				Operation: "invite",
+				Err:       domain.UnknownNickError{Nick: "nobody"},
+				Target:    "#dev",
+			},
+		},
+	}, struct {
+		OK    bool
+		Reply ReplyEvents
+	}{
+		OK:    ok,
+		Reply: reply,
+	})
 }

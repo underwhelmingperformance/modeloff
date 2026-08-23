@@ -114,7 +114,10 @@ func newChatAppInChannel(t *testing.T, channel domain.ChannelName) (*uitest.App,
 // markers means a draining seed phase is the only legal
 // observation when the test proceeds.
 func waitForChannelSeedDrain(tm *uitest.App) {
-	tm.WaitFor("Created channel #general")
+	tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "Created channel #general") &&
+			strings.Contains(view, "▸#general")
+	})
 }
 
 // waitForChannelAndModelSeedDrain extends [waitForChannelSeedDrain]
@@ -123,10 +126,11 @@ func waitForChannelSeedDrain(tm *uitest.App) {
 // `fakenick`, the line that needs pinning before the trigger
 // submits.
 func waitForChannelAndModelSeedDrain(tm *uitest.App) {
-	tm.WaitFor(
-		"Created channel #general",
-		"fakenick has joined #general",
-	)
+	tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "Created channel #general") &&
+			strings.Contains(view, "fakenick has joined #general") &&
+			strings.Contains(view, "▸#general")
+	})
 }
 
 // newValidatedSmallModelHarness builds a session whose config names a
@@ -337,12 +341,9 @@ func TestChatScreen_rejoin_hides_pre_session_history(t *testing.T) {
 	// memory of channel activity while the user was offline, not the
 	// user's scrollback. Mirrors IRC's "you don't see what happened
 	// before you joined" rule.
-	_, err := s.AppendEvent(ctx, "#general", domain.Message{
-		Target: "#general",
-		From:   "oldnick",
-		Body:   "previous session message",
-		At:     oldTime,
-	})
+	_, err := s.AppendEvent(ctx, "#general", domain.Message{Source: domain.LegacyClientSource(
+
+		"oldnick"), Target: "#general", Body: "previous session message", At: oldTime})
 	require.NoError(t, err)
 
 	apiClient := &uitest.FakeAPI{}
@@ -458,12 +459,17 @@ func TestChatScreen_nick_command_updates_input_bar(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/nick newnick")
-	tm.WaitFor("testuser is now known as newnick")
-
-	body, _ := uitest.SplitBodyAndStatus(tm.CurrentView())
-	content := uitest.WithoutHeader(uitest.NonEmptyColumn(uitest.VisibleColumns(body)[1]))
-	require.Equal(t, "newnick >", uitest.CompactLine(content[len(content)-1]),
-		"input bar should show the new nick after /nick command")
+	want := [][]string{
+		{"Channels", "&modeloff", "▸#general"},
+		{
+			"*** Created channel #general",
+			"*** testuser is now known as newnick",
+			"newnick >",
+		},
+		{"Nicks", "@newnick"},
+	}
+	view := waitForVisibleColumns(tm, want)
+	require.Equal(t, want, normalisedVisibleColumns(view))
 }
 
 func TestChatScreen_nick_command_reports_persist_error(t *testing.T) {
@@ -533,7 +539,7 @@ func TestChatScreen_whois_does_not_pollute_channel_log(t *testing.T) {
 	// only. No Whois numeric reaches any channel's shared event log —
 	// that log holds genuine channel activity a model later loads.
 	whoisCount := func(ch domain.ChannelName) int {
-		events, err := h.sess.EventsBefore(t.Context(), ch, nil, 100)
+		events, err := h.sess.AuditEventsBefore(t.Context(), ch, nil, 100)
 		require.NoError(t, err)
 
 		count := 0
@@ -613,7 +619,7 @@ func TestChatScreen_invite_existing_instance(t *testing.T) {
 	tm.WaitFor("#random")
 
 	tm.Submit("/invite fakenick")
-	tm.WaitFor("testuser invited fakenick to #random")
+	tm.WaitFor("Invited fakenick to #random")
 }
 
 func TestChatScreen_invite_unknown_nick_shows_notice(t *testing.T) {

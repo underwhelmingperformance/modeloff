@@ -36,6 +36,19 @@ func (c *passiveClient) Events() <-chan protocol.Delivery {
 
 func (c *passiveClient) Caps() command.CapabilityHolder { return command.NoCapabilities() }
 
+func mustWindowGuard(
+	t *testing.T,
+	client *passiveClient,
+	target protocol.WindowTarget,
+) protocol.WindowGuard {
+	t.Helper()
+
+	guard, err := client.sub.GuardWindow(t.Context(), target)
+	require.NoError(t, err)
+
+	return guard
+}
+
 // drainDeliveries non-blockingly returns every event currently queued
 // on the client's subscription, in arrival order.
 func drainDeliveries(c protocol.Client) []domain.Event {
@@ -71,7 +84,7 @@ func TestEchoToOriginator_without_cap_no_self_echo(t *testing.T) {
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 
 		bc := &passiveClient{id: protocol.ClientID(botty.ID())}
-		sub, err := sess.Subscribe(bc, protocol.SubscribeOptions{Instance: botty})
+		sub, err := subscribeTestClient(t.Context(), t, sess, bc, protocol.SubscribeOptions{})
 		require.NoError(t, err)
 		bc.sub = sub
 
@@ -82,5 +95,35 @@ func TestEchoToOriginator_without_cap_no_self_echo(t *testing.T) {
 		synctest.Wait()
 
 		require.Empty(t, drainDeliveries(bc))
+	})
+}
+
+func TestReplayClient_receives_its_own_message_for_ordered_history(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, dataStore := newTestSession(t)
+		botty := seedInstanceRow(t, dataStore, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#chan"),
+		})
+		seedChannelWithMembers(t, sess, dataStore, "#chan", "testuser", "botty")
+
+		client := &passiveClient{id: protocol.ClientID(botty.ID())}
+		sub, err := subscribeTestClient(t.Context(), t, sess, client, protocol.SubscribeOptions{
+			ReplayHistory: true,
+		})
+		require.NoError(t, err)
+		client.sub = sub
+		sub.Activate()
+		collectProtocolDeliveries(client)
+
+		message, err := sess.sendMessageAs(t.Context(), botty, "#chan", "anyone about?")
+		require.NoError(t, err)
+		synctest.Wait()
+
+		require.Equal(t, []protocol.Delivery{{
+			Event:       message,
+			HistoryOnly: true,
+		}}, collectProtocolDeliveries(client))
 	})
 }

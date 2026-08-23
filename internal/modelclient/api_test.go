@@ -29,7 +29,7 @@ func TestExecuteTools_refuses_a_tool_in_the_wrong_window(t *testing.T) {
 	outcome, err := executeTools(
 		t.Context(),
 		newFakeSession(),
-		ToolContext{Target: protocol.ClientTarget("peer")},
+		NewToolContext(validWindowGuard{}, nil, nil, protocol.ClientTarget("peer")),
 		registry,
 		[]api.PendingToolCall{{ID: "call-1", Name: "topic", Args: json.RawMessage(`{}`)}},
 		nil,

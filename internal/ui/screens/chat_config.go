@@ -21,33 +21,36 @@ import (
 // of the settings are ones the running screen reads for itself, the
 // API key, the highlight words and the timestamp format, and those
 // also republish the state they moved.
-func (s ChatScreen) routeConfigResults(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
+func (s ChatScreen) routeConfigResults(
+	issuingWindow domain.Window,
+	msg tea.Msg,
+) (ChatScreen, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case chatcmd.APIKeySetResult:
-		next, cmd := s.handleAPIKeySet(msg)
+		next, cmd := s.handleAPIKeySet(issuingWindow, msg)
 		return next, cmd, true
 
 	case chatcmd.PokeIntervalSetResult:
-		return s, s.notice(settingNotice("Poke interval", humanDuration(msg.Interval), msg.Reset)), true
+		return s, s.notice(issuingWindow, settingNotice("Poke interval", humanDuration(msg.Interval), msg.Reset)), true
 
 	case chatcmd.DrainTimeoutSetResult:
-		return s, s.notice(settingNotice("Drain timeout", humanDuration(msg.Timeout), msg.Reset)), true
+		return s, s.notice(issuingWindow, settingNotice("Drain timeout", humanDuration(msg.Timeout), msg.Reset)), true
 
 	case chatcmd.SmallModelSetResult:
-		return s, s.notice(settingNotice("Small model", string(msg.ModelID), msg.Reset)), true
+		return s, s.notice(issuingWindow, settingNotice("Small model", string(msg.ModelID), msg.Reset)), true
 
 	case chatcmd.EmbeddingModelSetResult:
-		return s, s.notice(settingNotice("Embedding model", string(msg.ModelID), msg.Reset)), true
+		return s, s.notice(issuingWindow, settingNotice("Embedding model", string(msg.ModelID), msg.Reset)), true
 
 	case chatcmd.BaseURLSetResult:
-		return s, s.notice(settingNotice("Base URL", msg.URL, msg.Reset)), true
+		return s, s.notice(issuingWindow, settingNotice("Base URL", msg.URL, msg.Reset)), true
 
 	case chatcmd.HighlightWordsSetResult:
-		next, cmd := s.handleHighlightWordsSet(msg)
+		next, cmd := s.handleHighlightWordsSet(issuingWindow, msg)
 		return next, cmd, true
 
 	case chatcmd.TimestampFormatSetResult:
-		return s, s.handleTimestampFormatSet(msg), true
+		return s, s.handleTimestampFormatSet(issuingWindow, msg), true
 
 	case chatcmd.PersonasListResult:
 		personasList := domain.PersonasList{
@@ -56,18 +59,18 @@ func (s ChatScreen) routeConfigResults(msg tea.Msg) (ChatScreen, tea.Cmd, bool) 
 		}
 
 		return s, tea.Batch(
-			s.logAndShow(personasList),
-			s.recordReply(personasList),
+			s.logReplyEvent(issuingWindow, personasList),
+			s.recordReply(nil, personasList),
 		), true
 
 	case chatcmd.PersonasRegeneratedResult:
-		return s, s.notice(fmt.Sprintf("Generated %d personas.", msg.Count)), true
+		return s, s.notice(issuingWindow, fmt.Sprintf("Generated %d personas.", msg.Count)), true
 
 	case chatcmd.PersonaSetResult:
-		return s, s.notice(fmt.Sprintf("Persona %s saved.", msg.ID)), true
+		return s, s.notice(issuingWindow, fmt.Sprintf("Persona %s saved.", msg.ID)), true
 
 	case chatcmd.PersonaResetResult:
-		return s, s.notice(fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count)), true
+		return s, s.notice(issuingWindow, fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count)), true
 	}
 
 	return s, nil, false
@@ -75,9 +78,9 @@ func (s ChatScreen) routeConfigResults(msg tea.Msg) (ChatScreen, tea.Cmd, bool) 
 
 // notice renders a one-line confirmation in the window the command was
 // issued from, or in `&modeloff` when the user has no window open.
-func (s ChatScreen) notice(text string) tea.Cmd {
-	return s.logAndShow(domain.SystemNotice{
-		Target: s.activeName(),
+func (s ChatScreen) notice(window domain.Window, text string) tea.Cmd {
+	return s.logReplyEvent(window, domain.SystemNotice{
+		Target: issuingWindowName(window),
 		Text:   text,
 		At:     time.Now(),
 	})
@@ -101,7 +104,10 @@ func settingNotice(subject, value string, wasReset bool) string {
 // seed run against the new one. With no channel open the user is on
 // the welcome screen, where the checklist carries the confirmation and
 // a notice would have nowhere to render.
-func (s ChatScreen) handleAPIKeySet(msg chatcmd.APIKeySetResult) (ChatScreen, tea.Cmd) {
+func (s ChatScreen) handleAPIKeySet(
+	issuingWindow domain.Window,
+	msg chatcmd.APIKeySetResult,
+) (ChatScreen, tea.Cmd) {
 	text := "OpenRouter API key saved and activated."
 	if msg.Reset {
 		text = "OpenRouter API key cleared."
@@ -125,7 +131,7 @@ func (s ChatScreen) handleAPIKeySet(msg chatcmd.APIKeySetResult) (ChatScreen, te
 
 	return s, tea.Batch(
 		rebind,
-		s.notice(text),
+		s.notice(issuingWindow, text),
 		s.loadLiveModels(),
 		s.ensurePersonas(),
 	)
@@ -134,7 +140,10 @@ func (s ChatScreen) handleAPIKeySet(msg chatcmd.APIKeySetResult) (ChatScreen, te
 // handleHighlightWordsSet caches the new highlight set on the screen,
 // which is what the per-message mention check reads, and publishes it
 // to the renderer.
-func (s ChatScreen) handleHighlightWordsSet(msg chatcmd.HighlightWordsSetResult) (ChatScreen, tea.Cmd) {
+func (s ChatScreen) handleHighlightWordsSet(
+	issuingWindow domain.Window,
+	msg chatcmd.HighlightWordsSetResult,
+) (ChatScreen, tea.Cmd) {
 	s.highlightWords = msg.Words
 
 	text := fmt.Sprintf("Highlight words set to: %s.", humanWordList(msg.Words))
@@ -143,7 +152,7 @@ func (s ChatScreen) handleHighlightWordsSet(msg chatcmd.HighlightWordsSetResult)
 	}
 
 	return s, tea.Batch(
-		s.notice(text),
+		s.notice(issuingWindow, text),
 		msgCmd(components.HighlightWordsMsg{
 			Words:    msg.Words,
 			UserNick: s.user.Nick(),
@@ -155,7 +164,10 @@ func (s ChatScreen) handleHighlightWordsSet(msg chatcmd.HighlightWordsSetResult)
 // the renderer. The three outcomes are a format the user typed, the
 // default the `--reset` flag put back, and timestamps switched off
 // with an empty format.
-func (s ChatScreen) handleTimestampFormatSet(msg chatcmd.TimestampFormatSetResult) tea.Cmd {
+func (s ChatScreen) handleTimestampFormatSet(
+	issuingWindow domain.Window,
+	msg chatcmd.TimestampFormatSetResult,
+) tea.Cmd {
 	var text string
 
 	switch {
@@ -168,7 +180,7 @@ func (s ChatScreen) handleTimestampFormatSet(msg chatcmd.TimestampFormatSetResul
 	}
 
 	return tea.Batch(
-		s.notice(text),
+		s.notice(issuingWindow, text),
 		msgCmd(components.TimestampFormatMsg{
 			Format: msg.Format,
 			Locale: uitimestamp.CurrentLocale(),

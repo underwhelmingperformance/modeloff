@@ -10,7 +10,7 @@ import (
 )
 
 func TestDispatchTrigger(t *testing.T) {
-	self := domain.InstanceID("inst-self")
+	self := domain.NewModelInstance("inst-self", "me", "test/model", "", nil)
 	other := domain.InstanceID("inst-other")
 	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
@@ -20,13 +20,12 @@ func TestDispatchTrigger(t *testing.T) {
 		channel domain.ChannelName
 		ok      bool
 	}{
-		{"message triggers", domain.Message{Target: "#dev", From: "alice", InstanceID: other, Body: "hi", At: at}, "#dev", true},
-		{"join triggers", domain.Join{Target: "#dev", Nick: "alice", InstanceID: other, At: at}, "#dev", true},
-		{"join by self does not trigger", domain.Join{Target: "#dev", Nick: "me", InstanceID: self, At: at}, "", false},
-		{"part by another triggers", domain.Part{Target: "#dev", Nick: "alice", InstanceID: other, At: at}, "#dev", true},
-		{"part by self does not trigger", domain.Part{Target: "#dev", Nick: "me", InstanceID: self, At: at}, "", false},
-		{"invite addressed to self triggers", domain.Invited{Target: "#dev", Nick: "me", InstanceID: self, By: "alice", At: at}, "#dev", true},
-		{"invite addressed to another does not trigger", domain.Invited{Target: "#dev", Nick: "alice", InstanceID: other, By: "bob", At: at}, "", false},
+		{"message triggers", domain.Message{Source: domain.ClientSource(other, "alice"), Target: "#dev", Body: "hi", At: at}, "#dev", true},
+		{"join triggers", domain.Join{Source: domain.ClientSource(other, "alice"), Target: "#dev", At: at}, "#dev", true},
+		{"join by self does not trigger", domain.Join{Source: domain.ClientSource(self.ID(), "me"), Target: "#dev", At: at}, "", false},
+		{"part by another triggers", domain.Part{Source: domain.ClientSource(other, "alice"), Target: "#dev", At: at}, "#dev", true},
+		{"part by self does not trigger", domain.Part{Source: domain.ClientSource(self.ID(), "me"), Target: "#dev", At: at}, "", false},
+		{"delivered invite triggers", domain.Invited{Source: domain.ClientSource(other, "alice"), Target: "#dev", Invitee: "me", At: at}, "#dev", true},
 		{"poke triggers", domain.PokeEvent{Channel: "#dev", At: at}, "#dev", true},
 		{"quit does not trigger", domain.Quit{At: at}, "", false},
 	}

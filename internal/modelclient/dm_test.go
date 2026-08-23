@@ -1,6 +1,8 @@
 package modelclient
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,7 +21,10 @@ var dmAt = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 func windowHistory(t *testing.T, mc *ModelClient, window domain.ChannelName) []domain.StoredEvent {
 	t.Helper()
 
-	return mc.hist.snapshot(t.Context(), mc.sess, mc.instance.ID(), window)
+	events, err := mc.hist.snapshot(t.Context(), window)
+	require.NoError(t, err)
+
+	return events
 }
 
 // inboundDM is a DM from alice to the model-client under test. A
@@ -27,22 +32,16 @@ func windowHistory(t *testing.T, mc *ModelClient, window domain.ChannelName) []d
 // target, which is what the wire form says: `:alice PRIVMSG botty`.
 func inboundDM(body string, at time.Time) domain.Message {
 	return domain.Message{
-		Target:     "inst-botty",
-		From:       "alice",
-		InstanceID: "inst-alice",
-		Body:       body,
-		At:         at,
+		Source: domain.ClientSource("inst-alice", "alice"),
+		Target: "inst-botty", Body: body, At: at,
 	}
 }
 
 // outboundDM is the model-client's own answer to alice.
 func outboundDM(body string, at time.Time) domain.Message {
 	return domain.Message{
-		Target:     "inst-alice",
-		From:       "botty",
-		InstanceID: "inst-botty",
-		Body:       body,
-		At:         at,
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Target: "inst-alice", Body: body, At: at,
 	}
 }
 
@@ -65,26 +64,20 @@ func TestModelClient_DM_is_one_buffer_keyed_by_the_counterpart(t *testing.T) {
 
 	inbound := inboundDM("you around?", dmAt)
 	answer := outboundDM("yep", dmAt.Add(time.Second))
-
-	sess.handleFn = func(protocol.Command) protocol.Response {
-		return protocol.Response{Events: []protocol.Event{answer}}
-	}
-
 	inboundIRC, _ := protocol.FromChannelEvent(inbound)
+	answerIRC, _ := protocol.FromChannelEvent(answer)
 
-	batches := mc.fileBatch(t.Context(), []protocol.Delivery{{Event: inbound}})
+	batches := mc.fileBatch(t.Context(), []protocol.Delivery{
+		{Event: inbound},
+		{Event: answer, HistoryOnly: true},
+	})
 
 	require.Equal(t, []turnBatch{{
 		channel:  "inst-alice",
+		events:   []protocol.IRCMessage{inboundIRC, answerIRC},
 		triggers: []protocol.IRCMessage{inboundIRC},
 		causes:   []trace.SpanContext{{}},
 	}}, derefBatches(batches))
-
-	_, err := mc.Send(t.Context(), protocol.PrivMsg{
-		Target: protocol.NickTarget("alice"),
-		Body:   "yep",
-	})
-	require.NoError(t, err)
 
 	require.Equal(t, []domain.StoredEvent{
 		{Event: inbound},
@@ -93,6 +86,65 @@ func TestModelClient_DM_is_one_buffer_keyed_by_the_counterpart(t *testing.T) {
 
 	require.Empty(t, windowHistory(t, mc, "inst-botty"),
 		"a model's own id names the conversation, not a buffer of its own")
+}
+
+func TestModelClient_history_only_DM_recovers_after_a_history_load_failure(t *testing.T) {
+	t.Parallel()
+
+	historyErr := errors.New("read DM history")
+	answer := outboundDM("sent once", dmAt)
+	unavailable := true
+	sess := newFakeSession()
+	sess.sub.scrollback = func(
+		context.Context,
+		protocol.WindowTarget,
+		int,
+	) ([]protocol.ScrollbackEntry, error) {
+		if unavailable {
+			return nil, historyErr
+		}
+
+		return nil, nil
+	}
+	mc := newTestModelClient(sess)
+
+	batches := mc.fileBatch(t.Context(), []protocol.Delivery{{
+		Event:       answer,
+		HistoryOnly: true,
+	}})
+	require.Empty(t, batches)
+
+	unavailable = false
+	loaded, err := mc.hist.snapshot(t.Context(), "inst-alice")
+	require.NoError(t, err)
+	require.Equal(t, []domain.StoredEvent{{Event: answer}}, loaded)
+}
+
+func TestModelClient_history_only_DM_files_without_starting_a_turn(t *testing.T) {
+	t.Parallel()
+
+	answer := outboundDM("sent once", dmAt)
+	sess := newFakeSession()
+	mc := newTestModelClient(sess)
+
+	batches := mc.fileBatch(t.Context(), []protocol.Delivery{{
+		Event:       answer,
+		HistoryOnly: true,
+	}})
+	loaded := windowHistory(t, mc, "inst-alice")
+
+	require.Equal(t, struct {
+		Batches []*turnBatch
+		History []domain.StoredEvent
+	}{
+		History: []domain.StoredEvent{{Event: answer}},
+	}, struct {
+		Batches []*turnBatch
+		History []domain.StoredEvent
+	}{
+		Batches: batches,
+		History: loaded,
+	})
 }
 
 // TestModelClient_first_DM_turn_reads_the_persisted_thread pins that
@@ -121,12 +173,35 @@ func TestModelClient_first_DM_turn_reads_the_persisted_thread(t *testing.T) {
 
 	require.Equal(t, []turnBatch{{
 		channel:  "inst-alice",
-		history:  []domain.StoredEvent{{ID: 7, Event: earlier}},
+		history:  []domain.StoredEvent{{Event: earlier}},
+		events:   []protocol.IRCMessage{inboundIRC},
 		triggers: []protocol.IRCMessage{inboundIRC},
 		causes:   []trace.SpanContext{{}},
 	}}, derefBatches(batches))
 
 	require.Equal(t, []dmRead{{self: "inst-botty", peer: "inst-alice"}}, sess.dmReadsSoFar())
+}
+
+func TestModelClient_first_DM_keeps_an_identical_earlier_message(t *testing.T) {
+	t.Parallel()
+
+	message := inboundDM("same words", dmAt)
+	sess := newFakeSession()
+	sess.dmThreads = map[domain.InstanceID][]domain.StoredEvent{
+		"inst-alice": {{ID: 7, Event: message}},
+	}
+	mc := newTestModelClient(sess)
+
+	trigger, _ := protocol.FromChannelEvent(message)
+	batches := mc.fileBatch(t.Context(), []protocol.Delivery{{Event: message}})
+
+	require.Equal(t, []turnBatch{{
+		channel:  "inst-alice",
+		history:  []domain.StoredEvent{{Event: message}},
+		events:   []protocol.IRCMessage{trigger},
+		triggers: []protocol.IRCMessage{trigger},
+		causes:   []trace.SpanContext{{}},
+	}}, derefBatches(batches))
 }
 
 // TestDispatchWindowFor covers the window a turn runs in. A DM window
@@ -137,43 +212,45 @@ func TestModelClient_first_DM_turn_reads_the_persisted_thread(t *testing.T) {
 func TestDispatchWindowFor(t *testing.T) {
 	t.Parallel()
 
-	alice := domain.NewModelInstance("inst-alice", "alice", "test/model-a", "", nil)
-	botty := domain.NewModelInstance("inst-botty", "botty", "test/model-b", "", nil)
-
-	sess := newFakeSession()
-	sess.instances = map[domain.InstanceID]*domain.Instance{"inst-alice": alice}
-
-	t.Run("a DM window names the counterpart", func(t *testing.T) {
+	t.Run("a direct context names only the counterpart", func(t *testing.T) {
 		t.Parallel()
 
-		window, err := dispatchWindowFor(t.Context(), sess, "inst-alice", botty)
+		want := testDirectContext("inst-alice")
+		window, err := dispatchWindowFor(t.Context(), validWindowGuard{window: want}, "inst-alice")
 		require.NoError(t, err)
 
-		require.Equal(t, domain.NewDMWindow(alice, sess.Now()), window)
+		require.Equal(t, want, window)
 	})
 
 	t.Run("a channel window is loaded by name", func(t *testing.T) {
 		t.Parallel()
+		window := testChannelContext(domain.NewChannelWindow("#dev", time.Time{}))
 
-		window, err := dispatchWindowFor(t.Context(), sess, "#dev", botty)
+		got, err := dispatchWindowFor(t.Context(), validWindowGuard{window: window}, "#dev")
 		require.NoError(t, err)
 
-		require.Equal(t, domain.NewChannelWindow("#dev", sess.Now()), window)
+		require.Equal(t, window, got)
+	})
+
+	t.Run("a departed channel is not dispatched", func(t *testing.T) {
+		t.Parallel()
+		_, err := dispatchWindowFor(t.Context(), nil, "#gone")
+		require.ErrorIs(t, err, errDispatchWindowClosed)
 	})
 
 	t.Run("a counterpart the store does not hold fails the turn", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := dispatchWindowFor(t.Context(), sess, "inst-gone", botty)
+		_, err := dispatchWindowFor(t.Context(), validWindowGuard{err: errors.New("counterpart gone")}, "inst-gone")
 		require.Error(t, err)
 	})
 
 	// Only a channel has a topic, and the window a DM turn runs in is
-	// a `*DMWindow`, so the turn's context lines carry none.
+	// a channel topic, so the turn's context lines carry none.
 	t.Run("a DM window carries no topic line", func(t *testing.T) {
 		t.Parallel()
 
-		window, err := dispatchWindowFor(t.Context(), sess, "inst-alice", botty)
+		window, err := dispatchWindowFor(t.Context(), validWindowGuard{window: testDirectContext("inst-alice")}, "inst-alice")
 		require.NoError(t, err)
 
 		require.Empty(t, contextReplies(window, nil))

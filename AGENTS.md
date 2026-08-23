@@ -34,11 +34,11 @@ IRC-like server; the only external service is the OpenRouter API.
 4. The user can `/part` a channel.
    1. A channel exists only while it has occupants; the last occupant
       parting destroys it, along with its topic, modes and invitation list
-      (RFC 2811 §2). The sidebar entry is client state and survives a
-      part. So is the autojoin list, and the client drops the channel
-      from it, because parting says the channel should not come back on
-      the next connection. If durable channels are ever wanted, the
-      mechanism is an explicit permanent-channel mode.
+      (RFC 2811 §2). PART also closes the client's window and discards
+      its scrollback. The client drops the channel from its durable
+      autojoin list because parting says the channel should not come
+      back on the next connection. If durable channels are ever wanted,
+      the mechanism is an explicit permanent-channel mode.
 5. The user can `/list` all channels, subject to the channel-visibility
    rule described below.
 6. The user can `/invite` models to add them to the channel, and `/kick`
@@ -112,8 +112,9 @@ to, and capability parity is enforced at the type level.
 `protocol.Command` is a closed sum, sealed via an unexported `isCommand()`
 method on each member. `protocol.Event` is an alias for `domain.ProtocolEvent`,
 also sealed via an unexported method declared on each event type in the
-`domain` package. Adding a new command type makes every dispatcher arm fail
-to build until it is handled — the migration path is mechanical.
+`domain` package. A completeness test derives the command variants from their
+seal methods and compares them with the dispatcher's type-switch cases. Adding
+a command therefore fails the test until the dispatcher handles it.
 
 Clients implement the small `Client` interface — `Identity()`, `Send(ctx,
 Command) (Response, error)`, `Events() <-chan Delivery`, `Caps()
@@ -129,7 +130,7 @@ any typed command failure (e.g. `domain.NotOperatorError`,
 `domain.UnknownNickError`); callers branch on it via `errors.As`. The
 `Response.Events` slot carries the dispatcher's synchronous numeric-reply
 payloads: the persisted `domain.Message` for `PrivMsg`/`Action`,
-`domain.Invited` for `Invite`, the `domain.Whois` snapshot for `Whois`,
+`domain.Inviting` for `Invite`, the `domain.Whois` snapshot for `Whois`,
 the `domain.ListReply` stream terminated by `domain.ListEnd` for `List`, and a
 `domain.SystemNotice` for each warning `ADDMODEL`'s preparation reported.
 Broadcast side effects flow asynchronously over `Client.Events()` to peers.
@@ -144,13 +145,18 @@ attach.
 Persistence is a property of identity and connection state, not of actor kind.
 A client that has not quit is still connected: the fiction the app maintains is
 that the server kept running while the user was away, so such a client returns
-with its context intact. The persisted event log (`store.EventsBefore` /
-`store.DMEventsBefore`) is the server's memory of channel activity; on
-(re)attach a model-client restores its context from it through the
-history-replay capability. A client that quit is gone, whatever kind it is:
-QUIT ends the client and frees its nick. The user-client does not request
-history replay, so it sees live traffic forward and nothing from before it
-connected — the chat-screen's scrollback is populated purely from live events.
+with its context intact. On attach, a model-client restores channel context
+from its recipient-projected `channel_scrollback` rows and restores direct
+messages from its bidirectional thread. An old audit row does not record its
+recipient or the channel modes that controlled delivery. The schema v9
+migration therefore backfills only message and topic content from the actor's
+latest surviving JOIN, masking every other actor. It does not copy the old
+event rows verbatim, and it skips an interval when a later PART, KICK or QUIT
+proves that the membership ended.
+A client that quit is gone, whatever kind it is: QUIT ends the client and frees
+its nick. The user-client does not request history replay, so it sees live
+traffic forward and nothing from before it connected. The chat-screen's
+scrollback is populated purely from live events.
 
 `Session.quitAs` is that one teardown, and it runs the same whoever sent
 the QUIT. A requested QUIT loads the actor's channels and deletes the
@@ -158,7 +164,12 @@ instance before making the departure observable. The event is then
 logged and broadcast while the actor is still on its channels, which
 is the order PART follows and what carries the QUIT to the peers who
 share them and to the departing client itself. Membership goes
-afterwards. Once every durable write succeeds, the session clears the
+afterwards. A model connection loses its command and addressing
+authority once the teardown commits. The accepted delivery prefix,
+including QUIT and the terminal ERROR, drains before its subscription
+closes. Teardown first cancels any active upstream request so the
+dispatch loop can resume reading that prefix. Once every durable write
+succeeds, the session clears the
 user's `session_active` marker. A failure after the event leaves that
 marker in place so the next connection reconciles any stale channel
 rows.
@@ -172,6 +183,11 @@ QUIT. The subscription is the only thing that survives. A later
 and restores the user instance so persisted member ids resolve again.
 It then reconciles stale memberships and reactivates the subscription.
 
+A dispatch-loop panic is the exception to terminal-prefix draining. The
+consumer has already failed, so nobody can read its remaining deliveries.
+The session still broadcasts the peer-visible QUIT, then reaps the failed
+subscription immediately instead of waiting on a full event buffer.
+
 A channel the departure empties is destroyed like a last PART (RFC
 2811 §2), and everything the channel held goes with it: its topic,
 its modes and its invitation list, and its event log too, which the
@@ -181,17 +197,21 @@ connection, empty, with the configured default modes and no history.
 A QUIT is therefore how a channel nobody else is in is forgotten, and
 `/part` is the same act said deliberately.
 
-Differences between the two kinds are expressed as server-side capabilities
-granted at attach (`SubscribeOptions.InitialModes`) and read live off the
-issuing `serverClient`, not as a branch on which kind of client it is.
+Differences between the two kinds are expressed as server-side
+capabilities read live from the issuing `serverClient`, not as a
+branch on which kind of client it is. The session grants `+o` only
+when the authenticated sentinel user identity attaches. Subscribe
+options cannot grant capabilities.
 
 ### Two client kinds
 
 - The user-client lives in the `internal/userclient` package. It is
   constructed in the repo-root `main.go` (or a test fixture), holds the
   user's `*domain.Instance`, and attaches to the session via the
-  public `Session.Subscribe(c, opts)` API with `+o` requested
-  through `protocol.SubscribeOptions.InitialModes`. Its
+  public `Session.Subscribe(ctx, c, opts)` API. The bootstrap creates
+  one `protocol.UserCredential` and gives the same pointer to the
+  session and user-client. The session grants `+o` only when that
+  credential authenticates the sentinel identity. Its
   `Identity()` is the sentinel `protocol.UserClientID` (the empty
   `ClientID`); its lifetime equals the session's. The chat-screen
   holds a `*userclient.UserClient` directly and reads identity,
@@ -209,8 +229,8 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   owns the dispatch goroutine, the per-channel history ring buffer
   used for prompt assembly, the memory-tool registry, and a getter
   for the live OpenRouter `api.Client`. `ModelClient.Attach`
-  registers with the session via the public `Session.Subscribe(c,
-  opts)` API, storing the resulting `protocol.Subscription`
+  registers with the session via the public `Session.Subscribe(ctx,
+  c, opts)` API, storing the resulting `protocol.Subscription`
   internally, and returns only an error. Ending the connection is
   two phases, because a model can end its own: `Release` cancels the
   loop's context and unsubscribes, and is safe from any goroutine —
@@ -255,13 +275,12 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   The wait runs on a goroutine of its own and the turn returns to the
   loop's select, so the queue keeps draining while it runs; a second
   failure stays failed. A turn raised for the same window during the
-  delay supersedes the pending one, which is what keeps a message from
-  reaching the model twice: `fileBatch` files every delivery into the
-  ring as it arrives, so the failed turn's traffic is already the
-  superseding turn's transcript, and re-asking about it afterwards
-  would have the model answer a line it had just read. The loop's
-  `redispatchSet` is where the two arms agree, and it is loop-owned,
-  so it needs no lock. A panic in
+  delay absorbs the pending turn's explicit triggers. `fileBatch` has
+  already filed those events into the ring, so the merge removes their
+  transcript copies and keeps each event in one prompt role. PART or
+  KICK cancels pending work for the closed window, and a later JOIN
+  starts a new backlog. The loop's `redispatchSet` is where the two
+  arms agree, and it is loop-owned, so it needs no lock. A panic in
   the loop ends the connection through `Session.Disconnect`, so a dead
   dispatch goroutine leaves a QUIT in the channel and no orphaned
   subscription behind it.
@@ -275,14 +294,13 @@ satisfies `session.ModelClientFactory`: the session's `addModelAs`
 model-client when a new instance is added to a channel, `KILL` /
 `QUIT` ask it to detach, and `ADDMODEL` asks it for persona
 arbitration and a unique nick via `PrepareInstance`. The chatcmd and chat-
-screen layers route persona / api-key / model-directory commands
-through the manager too; nothing LLM-shaped flows through the
-session router.
+screen layers also send persona, API-key and model-directory commands
+to the manager. The session does not own that LLM state.
 
 ### Dispatcher
 
 `Session.Handle(client, cmd)` is the single entry point for any model
-action. The dispatcher's exhaustive switch over `protocol.Command` resolves
+action. The dispatcher's type switch over `protocol.Command` resolves
 the issuing actor via `resolveClientActor`, runs an operator-mode check
 where required, then delegates to a per-command implementation in the
 `session` package. The actor surface (`joinAs`, `partAs`, `sendMessageAs`,
@@ -344,7 +362,7 @@ is the sequence a client goes through on a real server: register
 (claim the nick, record the instance — on the loop), connect (attach
 the model-client — off it), then join (on the loop). Attaching
 between the two is what lets the new client receive its own JOIN and
-the `RPL_NAMREPLY` / `RPL_TOPIC` that follow.
+the `RPL_TOPIC` / `RPL_NAMREPLY` replies that follow.
 
 No emitter ever blocks on a consumer. Each subscription owns an
 outbound queue and a pump goroutine: a producer — the command loop,
@@ -386,12 +404,20 @@ enter it on demand from the store and are written through to the
 store on every mutation; a read hands the caller its own copy, so
 readers on other goroutines (the fan-out's `+a` check, the send
 gates, a model assembling its prompt) never touch the record the
-next command will read, and never pay for a row fetch. Enumerating
-every channel (`LIST`, the poke scheduler) still reads the store,
-since live state holds only the channels this session has touched.
-The two agree while the write-through succeeds; when it fails they
-part company, and the persistence-failure counter is what reports
-it.
+next command will read, and never pay for a row fetch. `LIST` and the
+poke scheduler start from the stored directory because live state
+holds only the channels this session has touched. They then overlay
+the live records and omit stored rows for channels destroyed in this
+session. A failed write therefore does not make directory answers
+contradict the current server state. The persistence-failure counter
+still reports that durable state has fallen behind.
+
+JOIN changes both the channel's member list and the actor's channel
+set. The store commits those records and the JOIN event in one
+transaction before the session installs the live membership or emits
+the event. A failed JOIN therefore leaves neither side claiming the
+membership, and a retry starts from the same state on disk and in the
+session.
 
 The nick space is claimed on the loop for the same reason: `NICK`
 checks and takes a nick as one step, and `ADDMODEL` re-checks the
@@ -416,9 +442,21 @@ every dispatch goroutine and stops the command loop; then
 waits for every client finaliser, including those already draining;
 then `Session.Shutdown(ctx)` closes the registration and handler
 gates, waits for an accepted ADDMODEL to finish any rollback, and
-joins every subscription's outbound pump. Only then does the deferred
+joins every subscription's outbound pump. `UserClient.Drain(ctx)`
+closes the user's command gate and waits for the read-cursor and
+autojoin writes that follow an accepted command. Only then does the deferred
 `Store.Close` run, so on the clean path nothing is still reading or
 writing the database underneath it.
+
+Once deleting an instance row commits, the session calls
+`ModelClientFactory.InstanceDeleted` before terminal delivery draining
+begins. A failed ADDMODEL rollback still releases its provisional
+connection, but it does not announce a deletion if the row remains.
+The manager records the indexed-memory cleanup obligation and cancels
+the active turn. Either `Detach` or `DetachAll` performs the cleanup.
+Shutdown can therefore take a client while its terminal prefix is
+still draining without losing the obligation when it empties the
+client registry.
 
 The deadline is the `/config drain-timeout` setting, and it bounds
 the drain end to end. Releasing a client cancels the context its turn
@@ -686,23 +724,32 @@ separate inspector layer is needed.
 ### Anonymous channels
 
 Mode `+a` (RFC 2811 §4.2.1) means no member may learn who anyone
-else is. Three things follow, and all three happen at fan-out, where
+else is. The projection happens at fan-out, where
 the per-recipient channel intersection is already known:
 
 - chat traffic is attributed to `domain.AnonymousNick` before
   delivery, while the stored event keeps the real origin for audit;
+- `JOIN`, `PART`, `KICK`, `TOPIC` and member `MODE` events replace
+  other members' nicks and instance handles with the anonymous mask;
+- a `NICK` is withheld when the recipient shares only anonymous
+  channels with the actor;
 - a `QUIT` is delivered to the anonymous channel as a `PART` from
   the mask, so a member sees somebody leave the channel and cannot
   tell they left the server;
-- `ModelDispatchStarted` / `ModelDispatchDone` lose their instance
-  handle, which is the only thing in them that names anybody, so the
-  thinking indicator says that something is happening without saying
-  who is about to speak.
+- `ModelDispatchStarted` / `ModelDispatchDone` are withheld from peers in an
+  anonymous turn window.
 
-The last two are per recipient, not per event: a client that also
-shares an ordinary channel with the actor already knows who it is
-from there, and receives the `QUIT` and the named dispatch events
-scoped to those channels.
+An actor can still recognise its own membership and connection events. A client
+that also shares an ordinary channel with the actor receives actor-scoped
+events only under those named channels.
+
+A dispatch lifecycle is visible only inside the channel or direct-message
+window whose traffic caused the turn. A dispatch start captures its exact
+recipient set. Its completion goes to that set even if membership or channel
+modes change during the turn, so a client never retains a thinking indicator
+whose matching completion was lost. The delivery envelope carries that
+window as a recipient-relative `WindowTarget`: each participant in a direct
+message sees the other participant as its target.
 
 `domain.AnonymousNick` is reserved by `domain.ValidateNick`, so no
 client can take the mask and speak as it.
@@ -714,11 +761,11 @@ subscription's `Client.Events()` returns the per-client protocol bus.
 The session fans out the broadcast events — the wire-shaped PRIVMSG,
 JOIN, PART, TOPIC, MODE, NICK, KICK and QUIT, plus the session-emitted
 `PokeEvent`, `ModelDispatchStarted` and `ModelDispatchDone`. The
-point-to-point events — INVITE, `TopicInfo`, `NamesReplyEvent`/
-`NamesEnd`, `Whois`, `ListReply`/`ListEnd` and `SystemNotice` — are
-the numerics (341, 332/333, 353/366, 311–319, 322/323, and free-form
-notices), addressed to one client by construction, and are delivered
-to that client only. Every value the session emits implements
+point-to-point events include INVITE, `Inviting`, `TopicInfo`,
+`NamesReplyEvent`/`NamesEnd`, `Whois`, `ListReply`/`ListEnd` and
+`SystemNotice`. They represent command and numeric replies (341,
+332/333, 353/366, 311–319, 322/323, and free-form notices) that the
+session addresses to one client. Every value the session emits implements
 `domain.ProtocolEvent`, sealed via `isProtocolEvent()`.
 
 Chat-screen-local control signals — `domain.ErrorEvent` wrapping a
@@ -729,20 +776,19 @@ own `tea.Cmd`s and reach the Update loop directly. The session never
 puts them on the bus (`serverClient.canReceive` returns false for
 them); it is not the courier for them.
 
-`ErrorEvent.Target` and `CommandError.Target` name the window
-`ChatScreen.handleErrorEvent` renders a command failure into, a
-choice the chat-screen makes entirely on its own side. It carries no
-bus-addressing meaning the way `Whois.Target` does: the session never
-reads it, since an `ErrorEvent` never reaches the session at all.
+`ErrorEvent.Target` and `CommandError.Target` name the window where
+`ChatScreen.handleErrorEvent` renders a command failure. The
+chat-screen makes that choice entirely on its own side. The session
+never reads those fields because an `ErrorEvent` never reaches it.
 
 `ChatScreen.fallbackTarget` gives every reply the chat-screen renders
-the same answer, `Whois`, `Invited` and `SystemNotice` alongside the
-failure: a reply naming a window the user has since closed renders in
-the window they are looking at, and no closed window is reopened to
-hold it. `&modeloff` is exempt and resolves to itself whether or not a
-window is open for it, because it lives as long as the session and is
-the one window `appendToScrollback` can create from the name alone. A
-reply arriving while nothing is focused takes `logAndShow`'s answer,
+the same answer, including `Whois`, `Inviting` and `SystemNotice`: a
+reply for a window the user has since closed renders in the window
+they are looking at, and no closed window is reopened to hold it.
+`&modeloff` is exempt and resolves to itself whether or not a window
+is open for it, because it lives as long as the session and is the one
+window `appendToScrollback` can create from the name alone. A reply
+arriving while nothing is focused takes `logAndShow`'s answer,
 `&modeloff` with the focus moved there.
 
 ### Echo gate and membership filter
@@ -784,18 +830,19 @@ directly in that case.
 
 ### Operator capability
 
-User-mode `+o` is requested via
-`protocol.SubscribeOptions.InitialModes` when the user-client
-attaches; the session writes the granting `domain.UserModeChange` as
-the first event on the subscription's bus. The operator-gated
+The session grants user-mode `+o` when the authenticated sentinel
+user-client attaches. It writes the granting `domain.UserModeChange`
+as the first event on the subscription's bus. A caller-controlled
+subscribe option cannot grant modes, and knowing the empty sentinel
+identity does not provide the bootstrap's credential. The operator-gated
 commands today are `protocol.Kill` and `protocol.AddModel`;
 non-operator clients receive `domain.NotOperatorError` from the
 dispatcher (RFC 2812 numeric 481, ERR_NOPRIVILEGES). A wire `OPER`
 command (`protocol.Oper`, RFC 2812 §3.1.4) exists and is dispatched
 by `handleOper`; its `OperAuthenticator` defaults to rejecting every
 attempt, so credentialed operator promotion is a ready extension
-point rather than a live capability. The user-client's `+o` is still
-granted at attach via `InitialModes`, not acquired through `OPER`.
+point rather than a live capability. The user-client receives `+o`
+from its authenticated identity, not through `OPER`.
 
 The `+o` override reaches privileges among a channel's members and
 stops there. `Session.requireChannelOp` waives channel-op status for
@@ -904,16 +951,14 @@ quit would still need the services model described in point 6.2 of
 the flow.
 
 That row is what lets a channel record name the client in its member
-list. `store.resolveChannelMembers` resolves every member id through
-the registry, the empty one included, so a member entry keeps
-resolving to the same `*domain.Instance` the client holds and the
-pointer comparisons downstream keep matching. `Session.ResolveNick`
-and `Session.ResolveInstanceByID` therefore answer for every client
-the same way, out of the store, with no short-circuit for one of
-them. `Session.Instances` returns every row, this client's included;
-a caller that wants everybody but itself excludes its own identity,
-which is a question only that caller can answer, and the chat-screen
-does it for its completion sources.
+list. The store resolves member IDs to its canonical mutable records,
+but those pointers remain inside the session and store packages.
+Protocol events contain actor values, and public lookup methods return
+IDs, nicks or directory entries. A client can therefore observe an
+actor without acquiring a handle that can mutate server state outside
+the command loop. `Session.Instances` returns every directory row,
+including the caller's; a caller that wants everybody but itself
+excludes its own identity.
 
 A run that ends without a QUIT never runs the teardown, so the
 persisted member lists still name the client. `Connect` classifies
@@ -926,24 +971,44 @@ than the client's own channel set, because the client registered a
 moment ago with an empty one.
 
 The channel-keyed event log (`store.AppendEvent` /
-`store.EventsBefore` / `store.DMEventsBefore`) is the server-side
-record of channel history. A model-client loads it once at attach:
-per channel, a single bounded read of the most-recent events
-(`modelHistorySize`), kept to those at or after the instance's join
-time — a channel with no known join time loads nothing (fail-closed).
-From there the per-channel ring is appended live and read locally
-each dispatch turn; the store is not re-read per turn. The chat-screen
-does not read this log on focus changes — the in-memory scrollback
-buffer captures only events the user has seen this session, up to
-`components.ScrollbackLimit` per window, mirroring IRC's "you don't
-see what happened before you joined" rule.
+`store.EventsBefore`) is the server's audit record. It stores the real
+event before recipient-specific projection, so it is not an actor's
+scrollback. `channel_scrollback` records each channel delivery after
+the live fan-out has applied membership filtering and `+a` masking.
+The subscription is the actor's capability for reading those rows. It
+binds the actor at attach, accepts only a window and a limit, and
+returns no store row identifiers.
+
+A channel read checks the current subscription and membership before
+and after the database query. It also compares an internal membership
+generation across the read, so a concurrent PART followed by JOIN
+cannot release the previous interval. PART and KICK delete the actor's
+projected rows. JOIN also clears any stale rows before it adds the
+membership, which makes a missing or failed prior deletion fail closed.
+A model-client asks the session to hold live deliveries while it loads
+all channel snapshots. The snapshot ends before the earliest projected row
+already waiting in the live queue. The model therefore receives the bounded
+snapshot followed by every queued delivery in order, even when the queue is
+larger than the snapshot limit. One subscription lock orders a projected row
+and its queued delivery, so attach cannot observe one without the other.
+
+A model-client uses this capability once per channel at attach. From
+there the per-window ring is appended live and read locally each
+dispatch turn; the store is not re-read per turn. Its own PART or KICK
+deletes the ring, and its own JOIN starts an empty one. The chat-screen
+does not request persisted channel scrollback. Its in-memory buffer
+contains only events the user has seen while the window was open, up
+to `components.ScrollbackLimit`, and PART or KICK closes the window
+and deletes that buffer.
 
 A model's DM windows have no attach-time list to load from, so each
-is loaded the first time the client sees it, from
-`store.DMEventsBefore` between the instance and the counterpart. The
-load happens under the history lock as part of taking the turn's
-snapshot, which is what makes it one step with the read it precedes:
-a turn is never prompted from a window whose load has not run. Every
+is loaded through the same subscription capability when the client
+first sees it. The subscription derives one correspondent from the
+attached actor and accepts only the other. It returns the bidirectional
+message thread. A peer's NICK or QUIT from an unrelated channel is not
+part of that thread. The load happens under the history lock as part of
+taking the turn's snapshot, which makes the load and read one step: a
+turn is never prompted from a window whose load has not run. Every
 buffer, DM and channel alike, is keyed by the window
 `domain.Message.RoutingKey` places an event in, so a DM is one buffer
 holding both directions of the conversation and a model reads back
@@ -977,7 +1042,11 @@ where the client keeps it. `UserClient.Send` rewrites it after each
 JOIN, PART or KICK the client issues, from the channel set the command
 loop has just settled, and writes it through
 `userclient.Store.SetAutojoinChannels`; the session neither reads nor
-writes the table. QUIT is deliberately not one of those commands:
+writes the table. An inbound KICK also removes its target directly
+from the saved list. The user-client serialises these writes by
+revision because the TUI persists the KICK asynchronously. A later
+successful JOIN makes the older KICK write stale, so it cannot remove
+the rejoined channel. QUIT is deliberately not one of those commands:
 ending a connection does not say the channels should stay behind, and
 this list is what brings them back on the next one. A KICK naming
 somebody else costs one write that changes nothing, which is cheaper
@@ -991,56 +1060,106 @@ ended without a complete teardown therefore leaves the marker
 standing, and the next connect reconciles the memberships it left
 behind through `cleanupUncleanShutdown`.
 
-An issuer's own point-to-point replies (`WHOIS`, `LIST`, and the
-`domain.SystemNotice` a refused `INVITE` or a fallen-short `ADDMODEL`
-preparation answers with) are not channel activity, so they live in a
-private per-instance reply log
-(`store.AppendInstanceReply` / `store.InstanceRepliesBefore`), keyed
-by the issuer's identity, not the shared channel log. A model files
+An issuer's own point-to-point replies (`WHOIS`, `LIST`, `TOPIC`,
+`RPL_INVITING`, and the `domain.SystemNotice` a refused `INVITE` or a
+fallen-short `ADDMODEL` preparation answers with) are not channel
+activity. They live in a private per-instance reply log
+(`store.AppendInstanceReply` /
+`store.InstanceRepliesForWindowBefore`), keyed by the issuer's
+identity and issuing window, not the shared channel log. A model files
 the same set into its own in-memory replies ring as the reply comes
 back, so it meets a refusal on the turn that caused it and not only
 after a reattach reloads the log. Both actors
 write their replies the same way: the dispatcher records every
 issuer's reply there, the user-client included (under the empty id).
-The two actors differ only in whether they restore — a model loads
-its log once at attach, merging its own replies chronologically into
+The two actors differ only in whether they restore — a model reads
+its log once at attach through its actor-bound subscription, merging
+its own replies chronologically into
 the prompt transcript so it re-experiences its lookups across turns
 and reattach, as if its quit never happened; the user is transient
 and never restores, so its entries are the durable record a future
 restore or inspector would read, and the user sees nothing of them
 again this session. Another model in the channel never sees a peer's
-replies. The dispatcher also stamps the issuing window onto a reply it
-owns: `handleWhois` sets `domain.Whois.Target` to the window the
-`WHOIS` was issued from, so the issuer renders the reply where it
-asked. Numerics and UI notices the chat-screen raises locally (help,
+replies. The dispatcher stores the issuing window in the private log
+envelope, and the chat command carries the same typed window beside
+its response. The wire payload therefore needs no UI-routing field.
+The subscription chooses the identity and window, revalidates access
+after the read, and enforces the same server-side read cap as
+scrollback. A caller cannot select another actor, read a closed window
+or request an unbounded reply log. Numerics and UI notices the
+chat-screen raises locally (help,
 usage hints, system notices) stay out of the channel log entirely:
 they render to the in-memory scrollback only, so the shared channel
 log a model loads holds nothing but genuine channel activity.
 
+Every table the app writes for an actor is bounded, and the bounds are
+collected here so a new table is not added without one. Opening the
+store trims the channel event log, channel scrollback, DM events and
+the private reply log, and runs an orphan pass that removes rows whose
+instance or channel has been deleted. Model turns are trimmed inside
+the transaction that opens one, by turn count and by total entry
+bytes.
+
+### Window authority and the turn journal
+
+A model turn runs under a `protocol.WindowGuard` the session issues
+for one actor, one window and one membership interval. A guarded
+operation is not something the client performs: it is submitted to the
+session, which refuses a guard it did not issue and rechecks the
+actor's connection generation and the window's membership generation
+before and after the work. PART, KICK, QUIT and
+KILL revoke the interval, so a turn that outlives the membership that
+admitted it cannot write into the window's next incarnation. An
+INVITE earns a turn before the JOIN, and the guard for that turn holds
+no membership interval of its own.
+
+The turn journal is the operator's record of what a turn sent and
+received. `store.BeginModelTurn` opens one `model_turns` row per turn,
+and the writer appends `model_turn_entries` rows to it in four kinds:
+the rendered provider request, the assistant response with its request
+id and token usage, each batch of tool results, and the turn's
+outcome. The store checks only that an entry's payload is valid JSON,
+so a new entry kind needs no schema change.
+
+Journal writes stay off the dispatch goroutine. The writer marshals
+each entry, stamps it with its own sequence number and the time it was
+produced, and hands it to a queue of `journalQueueDepth` entries that
+one consumer goroutine drains, so the stored order is the order the
+turn produced. A failed write is logged and dropped, and
+`store.ErrModelTurnClosed` closes the journal for the rest of that
+turn. Nothing about the journal can fail a turn or hold one up: a full
+queue drops the entry rather than making the dispatch goroutine wait
+for a slot, because each write opens a store transaction that takes the
+actor's authority locks and a consumer that has fallen behind stays
+behind for as long as its timeout allows. Entries carry their
+producer's sequence number, so a reader sees a hole and not a
+reordering. Each write carries its own timeout on a context detached
+from the turn's, so a cancelled turn still records its outcome.
+
+Retention runs inside the `BeginModelTurn` transaction, which leaves
+an append writing one row and nothing else. It keeps
+`modelTurnRetentionHeadroom` turns and `modelTurnRetentionBytes` of
+entry data per actor, and always keeps the newest turn even when that
+turn alone exceeds the byte bound.
+
 ### Out of scope, design accommodates
 
-- The remaining tool-surface protocol-routing cleanup: the `topic`
-  tool still reads the current topic through `GetWindow`, and the
+- The remaining tool-surface protocol-routing cleanup: the
   chat-screen's `/msg` and `/query` still resolve a nick client-side
   to materialise the DM window they open. Both reach the session
   through the narrow `SessionReader` the chat-screen holds; routing
   them through the protocol is a follow-up. Message targets do not go
   this way; see Message targets above.
-- Bootstrap-time, `joined_at`-scoped replay of recent events into a
-  newly-allocated subscription, replacing the per-dispatch store read
-  and the model-client's eager seed. History replay is the IRCv3
-  `chathistory` capability, granted at attach via `SubscribeOptions`;
-  the user-client simply does not request it today.
 - A `WHO` command, which would answer under the same
   `Session.channelVisibleTo` predicate LIST, WHOIS and NAMES already
   do.
 - Credentialed operator promotion through `OPER`, backed by a real
   `OperAuthenticator`.
 - A user-restore-history feature that, on reconnect, routes each
-  persisted wire-command reply back to its source window.
-  `Whois.Target` already carries that window; `ListReply` and
-  `ListEnd` would need an issuing-window field added at that point,
-  since `RPL_LIST` carries no addressable target on the wire today.
+  persisted wire-command reply back to its source window. The private
+  reply log already stores that window separately from the IRC
+  payload, including for `RPL_LIST`, which has no addressable target
+  on the wire.
 
 ## External libraries
 

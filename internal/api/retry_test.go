@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
@@ -15,6 +17,16 @@ import (
 // response. Request and Response are populated because `Error()`
 // reads both.
 func apiError(t *testing.T, status int) error {
+	return apiErrorWithRetryHeader(t, status, "")
+}
+
+func apiErrorWithRetryHeader(t *testing.T, status int, retry string) error {
+	t.Helper()
+
+	return apiErrorWithHeaders(t, status, http.Header{"X-Should-Retry": []string{retry}})
+}
+
+func apiErrorWithHeaders(t *testing.T, status int, headers http.Header) error {
 	t.Helper()
 
 	req, err := http.NewRequest(http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", nil)
@@ -23,7 +35,105 @@ func apiError(t *testing.T, status int) error {
 	return &openai.Error{
 		StatusCode: status,
 		Request:    req,
-		Response:   &http.Response{StatusCode: status},
+		Response: &http.Response{
+			StatusCode: status,
+			Header:     headers,
+		},
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		err  func(t *testing.T) error
+		want time.Duration
+		ok   bool
+	}{
+		{
+			name: "seconds",
+			err: func(t *testing.T) error {
+				return apiErrorWithHeaders(t, http.StatusTooManyRequests,
+					http.Header{"Retry-After": []string{"10"}})
+			},
+			want: 10 * time.Second,
+			ok:   true,
+		},
+		{
+			name: "milliseconds take precedence",
+			err: func(t *testing.T) error {
+				return apiErrorWithHeaders(t, http.StatusTooManyRequests, http.Header{
+					"Retry-After-Ms": []string{"1500"},
+					"Retry-After":    []string{"10"},
+				})
+			},
+			want: 1500 * time.Millisecond,
+			ok:   true,
+		},
+		{
+			name: "http date",
+			err: func(t *testing.T) error {
+				return apiErrorWithHeaders(t, http.StatusServiceUnavailable,
+					http.Header{"Retry-After": []string{now.Add(30 * time.Second).Format(time.RFC1123)}})
+			},
+			want: 30 * time.Second,
+			ok:   true,
+		},
+		{
+			name: "wrapped response",
+			err: func(t *testing.T) error {
+				return fmt.Errorf("chat completion: %w", apiErrorWithHeaders(
+					t, http.StatusTooManyRequests, http.Header{"Retry-After": []string{"4"}},
+				))
+			},
+			want: 4 * time.Second,
+			ok:   true,
+		},
+		{
+			name: "elapsed date does not produce a negative wait",
+			err: func(t *testing.T) error {
+				return apiErrorWithHeaders(t, http.StatusServiceUnavailable,
+					http.Header{"Retry-After": []string{now.Add(-time.Minute).Format(time.RFC1123)}})
+			},
+			ok: true,
+		},
+		{
+			name: "malformed header",
+			err: func(t *testing.T) error {
+				return apiErrorWithHeaders(t, http.StatusTooManyRequests,
+					http.Header{"Retry-After": []string{"later"}})
+			},
+		},
+		{
+			name: "no provider response",
+			err: func(*testing.T) error {
+				return &url.Error{Op: "Post", URL: "https://openrouter.ai", Err: errors.New("offline")}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := RetryAfter(tc.err(t), now)
+
+			require.Equal(t, struct {
+				Delay time.Duration
+				OK    bool
+			}{
+				Delay: tc.want,
+				OK:    tc.ok,
+			}, struct {
+				Delay time.Duration
+				OK    bool
+			}{
+				Delay: got,
+				OK:    ok,
+			})
+		})
 	}
 }
 
@@ -50,6 +160,16 @@ func TestRetryable(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "request timeout",
+			err:  func(t *testing.T) error { return apiError(t, http.StatusRequestTimeout) },
+			want: true,
+		},
+		{
+			name: "conflict",
+			err:  func(t *testing.T) error { return apiError(t, http.StatusConflict) },
+			want: true,
+		},
+		{
 			name: "upstream server error",
 			err:  func(t *testing.T) error { return apiError(t, http.StatusInternalServerError) },
 			want: true,
@@ -63,6 +183,30 @@ func TestRetryable(t *testing.T) {
 			name: "wrapped rate limit",
 			err: func(t *testing.T) error {
 				return fmt.Errorf("chat completion: %w", apiError(t, http.StatusTooManyRequests))
+			},
+			want: true,
+		},
+		{
+			name: "response requests retry",
+			err: func(t *testing.T) error {
+				return apiErrorWithRetryHeader(t, http.StatusBadRequest, "true")
+			},
+			want: true,
+		},
+		{
+			name: "response refuses retry",
+			err: func(t *testing.T) error {
+				return apiErrorWithRetryHeader(t, http.StatusInternalServerError, "false")
+			},
+			want: false,
+		},
+		{
+			name: "connection failed before a response",
+			err: func(*testing.T) error {
+				return fmt.Errorf("chat completion: %w", &url.Error{
+					Op: "Post", URL: "https://openrouter.ai/api/v1/chat/completions",
+					Err: errors.New("connection unavailable"),
+				})
 			},
 			want: true,
 		},

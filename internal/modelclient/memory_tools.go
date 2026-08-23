@@ -32,13 +32,22 @@ var ErrNoAPIKey = errors.New("api key not configured")
 // a dedicated user notice.
 var ErrModelListUnavailable = errors.New("model list unavailable")
 
-// MemoryExecutor executes memory tool calls on behalf of a model
-// instance.
+// MemoryExecutor prepares memory mutations and executes read-only
+// searches on behalf of a model instance. Preparation may perform slow
+// embedding work, but it must not change persistent memory state.
 type MemoryExecutor interface {
-	WriteMemory(ctx context.Context, key, content string) error
-	DeleteMemory(ctx context.Context, key string) error
+	PrepareWriteMemory(ctx context.Context, key, content string) (memory.PreparedMutation, error)
+	PrepareDeleteMemory(ctx context.Context, key string) (memory.PreparedMutation, error)
 	SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error)
 }
+
+type memoryEffectFunc func(context.Context) error
+
+func (f memoryEffectFunc) Commit(ctx context.Context) error {
+	return f(ctx)
+}
+
+func (memoryEffectFunc) Finish(context.Context) {}
 
 // instanceMemory closes over an InstanceID and memory.Store to
 // implement MemoryExecutor. Keying by identity (not nick) means
@@ -56,12 +65,60 @@ type instanceMemory struct {
 	now func() time.Time
 }
 
+func (m *instanceMemory) PrepareWriteMemory(
+	ctx context.Context,
+	key string,
+	content string,
+) (memory.PreparedMutation, error) {
+	entry := memory.Entry{Key: key, Content: content, At: m.now()}
+	if preparer, ok := m.store.(memory.MutationPreparer); ok {
+		return preparer.PrepareWrite(ctx, m.instanceID, entry)
+	}
+
+	return memoryEffectFunc(func(ctx context.Context) error {
+		return m.store.Write(ctx, m.instanceID, entry)
+	}), nil
+}
+
+func (m *instanceMemory) PrepareDeleteMemory(
+	ctx context.Context,
+	key string,
+) (memory.PreparedMutation, error) {
+	if preparer, ok := m.store.(memory.MutationPreparer); ok {
+		return preparer.PrepareDelete(ctx, m.instanceID, key)
+	}
+
+	return memoryEffectFunc(func(ctx context.Context) error {
+		return m.store.Delete(ctx, m.instanceID, key)
+	}), nil
+}
+
 func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
-	return m.store.Write(ctx, m.instanceID, memory.Entry{Key: key, Content: content, At: m.now()})
+	effect, err := m.PrepareWriteMemory(ctx, key, content)
+	if err != nil {
+		return err
+	}
+	if err := effect.Commit(ctx); err != nil {
+		return err
+	}
+
+	effect.Finish(ctx)
+
+	return nil
 }
 
 func (m *instanceMemory) DeleteMemory(ctx context.Context, key string) error {
-	return m.store.Delete(ctx, m.instanceID, key)
+	effect, err := m.PrepareDeleteMemory(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := effect.Commit(ctx); err != nil {
+		return err
+	}
+
+	effect.Finish(ctx)
+
+	return nil
 }
 
 func (m *instanceMemory) SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error) {
@@ -99,7 +156,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					"additionalProperties": false,
 				},
 			},
-			Execute: func(ctx context.Context, _ ToolContext, rawArgs json.RawMessage) (ToolResultPayload, error) {
+			Execute: func(ctx context.Context, toolCtx ToolContext, rawArgs json.RawMessage) (ToolResultPayload, error) {
 				var args struct {
 					Key     string `json:"key"`
 					Content string `json:"content"`
@@ -109,7 +166,15 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					return ToolResultPayload{}, err
 				}
 
-				err := mem.WriteMemory(ctx, args.Key, args.Content)
+				effect, err := mem.PrepareWriteMemory(ctx, args.Key, args.Content)
+				if err == nil {
+					err = toolCtx.runWithAuthority(ctx, func() error {
+						return effect.Commit(ctx)
+					})
+				}
+				if err == nil {
+					effect.Finish(ctx)
+				}
 				recordMemoryTool(ctx, "write_memory", err)
 				if err != nil {
 					return ToolResultPayload{}, &ToolExecutionError{Tool: "write_memory", Err: err}
@@ -134,7 +199,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					"additionalProperties": false,
 				},
 			},
-			Execute: func(ctx context.Context, _ ToolContext, rawArgs json.RawMessage) (ToolResultPayload, error) {
+			Execute: func(ctx context.Context, toolCtx ToolContext, rawArgs json.RawMessage) (ToolResultPayload, error) {
 				var args struct {
 					Key string `json:"key"`
 				}
@@ -143,7 +208,15 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					return ToolResultPayload{}, err
 				}
 
-				err := mem.DeleteMemory(ctx, args.Key)
+				effect, err := mem.PrepareDeleteMemory(ctx, args.Key)
+				if err == nil {
+					err = toolCtx.runWithAuthority(ctx, func() error {
+						return effect.Commit(ctx)
+					})
+				}
+				if err == nil {
+					effect.Finish(ctx)
+				}
 				recordMemoryTool(ctx, "delete_memory", err)
 				if err != nil {
 					return ToolResultPayload{}, &ToolExecutionError{Tool: "delete_memory", Err: err}
@@ -175,7 +248,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					"additionalProperties": false,
 				},
 			},
-			Execute: func(ctx context.Context, _ ToolContext, rawArgs json.RawMessage) (ToolResultPayload, error) {
+			Execute: func(ctx context.Context, toolCtx ToolContext, rawArgs json.RawMessage) (ToolResultPayload, error) {
 				var args struct {
 					Query string `json:"query"`
 					Limit int    `json:"limit"`
@@ -186,12 +259,20 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 				}
 
 				results, err := mem.SearchMemory(ctx, args.Query, args.Limit)
+				var authorisedResults []memory.SearchResult
+				if err == nil {
+					err = toolCtx.runWithAuthority(ctx, func() error {
+						authorisedResults = results
+
+						return nil
+					})
+				}
 				recordMemoryTool(ctx, "search_memory", err)
 				if err != nil {
 					return ToolResultPayload{}, &ToolExecutionError{Tool: "search_memory", Err: err}
 				}
 
-				return ToolResultPayload{OK: true, Summary: fmt.Sprintf("found %d matching memories", len(results)), Data: results}, nil
+				return ToolResultPayload{OK: true, Summary: fmt.Sprintf("found %d matching memories", len(authorisedResults)), Data: authorisedResults}, nil
 			},
 		})
 	}

@@ -37,13 +37,29 @@ func TestSession_model_channel_tool_is_refused_in_a_DM(t *testing.T) {
 
 		dispatchUserMessage(t.Context(), t, sess, domain.ChannelName(botty.ID()), "you there?")
 
-		require.Len(t, results, 1)
-		var payload modelclient.ToolResultPayload
-		require.NoError(t, json.Unmarshal([]byte(results[0].Content), &payload))
-		require.Equal(t, modelclient.ToolResultPayload{
-			OK:    false,
-			Error: `tool "topic" is not available in this window`,
-		}, payload)
+		type observedToolResult struct {
+			ToolCallID   string
+			OK           bool
+			Summary      string
+			Data         any
+			ErrorPresent bool
+		}
+		observed := make([]observedToolResult, 0, len(results))
+		for _, result := range results {
+			var payload modelclient.ToolResultPayload
+			require.NoError(t, json.Unmarshal([]byte(result.Content), &payload))
+			observed = append(observed, observedToolResult{
+				ToolCallID:   result.ToolCallID,
+				OK:           payload.OK,
+				Summary:      payload.Summary,
+				Data:         payload.Data,
+				ErrorPresent: payload.Error != "",
+			})
+		}
+		require.Equal(t, []observedToolResult{{
+			ToolCallID:   "topic-1",
+			ErrorPresent: true,
+		}}, observed)
 	})
 }
 
@@ -71,20 +87,104 @@ func TestSession_model_action_in_a_DM_reaches_the_counterpart(t *testing.T) {
 
 		require.Equal(t, []domain.Message{
 			{
+				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
 				Target: domain.ChannelName(botty.ID()),
-				From:   "testuser",
 				Body:   "you there?",
 				At:     fixedTime,
 			},
 			{
-				Target:     "",
-				From:       "botty",
-				InstanceID: botty.ID(),
-				Body:       "waves",
-				Action:     true,
-				At:         fixedTime,
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "",
+				Body:   "waves",
+				Action: true,
+				At:     fixedTime,
 			},
 		}, dmThreadMessages(t, s, "", botty.ID()))
+	})
+}
+
+func TestSession_model_DM_reply_keeps_the_projected_peer_identity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		providerStarted := make(chan struct{})
+		resumeProvider := make(chan struct{})
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				close(providerStarted)
+				<-resumeProvider
+
+				return msgToolCalls(t, "shared", "reply to the original peer"), nil
+			},
+		}
+
+		sess, dataStore := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+
+		responder := seedInstance(t, sess, dataStore, instanceSpec{
+			Nick: "responder", ModelID: "test/responder",
+		})
+		original := seedInstanceRow(t, dataStore, instanceSpec{
+			InstanceID: "original-peer", Nick: "shared", ModelID: "test/peer",
+		})
+		originalClient := &passiveClient{id: protocol.ClientID(original.ID())}
+		originalSub, err := subscribeTestClient(ctx, t, sess, originalClient, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+		originalClient.sub = originalSub
+
+		replacement := seedInstanceRow(t, dataStore, instanceSpec{
+			InstanceID: "replacement-peer", Nick: "replacement", ModelID: "test/peer",
+		})
+		replacementClient := &passiveClient{id: protocol.ClientID(replacement.ID())}
+		replacementSub, err := subscribeTestClient(ctx, t, sess, replacementClient, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+		replacementClient.sub = replacementSub
+
+		response, err := sess.Handle(ctx, originalClient, protocol.PrivMsg{
+			Target: protocol.ClientTarget(responder.ID()),
+			Body:   "question for responder",
+		})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		<-providerStarted
+
+		response, err = sess.Handle(ctx, originalClient, protocol.Nick{New: "renamed"})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		response, err = sess.Handle(ctx, replacementClient, protocol.Nick{New: "shared"})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		synctest.Wait()
+		drainDeliveries(originalClient)
+		drainDeliveries(replacementClient)
+
+		close(resumeProvider)
+		synctest.Wait()
+
+		reply := domain.Message{
+			Source: domain.ClientSource(responder.ID(), "responder"),
+			Target: domain.ChannelName(original.ID()),
+			Body:   "reply to the original peer",
+			At:     fixedTime,
+		}
+		require.Equal(t, []domain.Event{
+			reply,
+			domain.ModelDispatchDone{
+				Source: domain.ClientSource(responder.ID(), "responder"),
+				At:     fixedTime,
+			},
+		}, drainDeliveries(originalClient))
+		require.Empty(t, drainDeliveries(replacementClient))
+
+		require.Equal(t, []domain.Message{
+			{
+				Source: domain.ClientSource(original.ID(), "shared"),
+				Target: domain.ChannelName(responder.ID()),
+				Body:   "question for responder",
+				At:     fixedTime,
+			},
+			reply,
+		}, dmThreadMessages(t, dataStore, responder.ID(), original.ID()))
+
+		require.Empty(t, dmThreadMessages(t, dataStore, responder.ID(), replacement.ID()))
 	})
 }
 
@@ -147,13 +247,9 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		// Response.Events carries the canonical persisted message back
 		// to the issuing client so the chat-screen renders against the
 		// session's clock rather than its own.
-		require.Equal(t, []protocol.Event{domain.Message{
-			Target:     domain.ChannelName(b.ID()),
-			From:       "alpha",
-			InstanceID: a.ID(),
-			Body:       "private to beta",
-			At:         fixedTime,
-		}}, resp.Events)
+		require.Equal(t, []protocol.Event{domain.Message{Source: domain.ClientSource(
+
+			a.ID(), "alpha"), Target: domain.ChannelName(b.ID()), Body: "private to beta", At: fixedTime}}, resp.Events)
 
 		synctest.Wait()
 
@@ -166,12 +262,11 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 		}, collectEmittedEvents(t, sess))
 
 		expectedTrigger := protocol.IRCMessage{
-			Kind:       protocol.KindPrivMsg,
-			From:       "alpha",
-			InstanceID: a.ID(),
-			Target:     string(b.ID()),
-			Body:       "private to beta",
-			At:         fixedTime,
+			Kind:   protocol.KindPrivMsg,
+			Source: domain.ClientSource(a.ID(), "alpha"),
+			Target: string(b.Nick()),
+			Body:   "private to beta",
+			At:     fixedTime,
 		}
 
 		require.Equal(t, []call{{
@@ -179,19 +274,18 @@ func TestSession_PrivMsg_to_model_routes_DM_to_counterpart_only(t *testing.T) {
 			trigger: []protocol.IRCMessage{expectedTrigger},
 		}}, calls,
 			"only B's dispatch turn should fire; A is suppressed by the echo gate, "+
-				"C by the membership filter (no channel overlap with A or B, and "+
-				"the DM target is B's id, not C's)")
+				"C by the membership filter; the provider receives B's current nick "+
+				"after the session routes the DM by B's stable id")
 
 		// The events log carries the message under the DM's channel name
 		// (B's instance id). Either party can read the conversation back
 		// from this single key — DMs are stateless on the server side.
 		persisted := channelMessages(t, s, domain.ChannelName(b.ID()))
 		require.Equal(t, []domain.Message{{
-			Target:     domain.ChannelName(b.ID()),
-			From:       "alpha",
-			InstanceID: a.ID(),
-			Body:       "private to beta",
-			At:         fixedTime,
+			Source: domain.ClientSource(a.ID(), "alpha"),
+			Target: domain.ChannelName(b.ID()),
+			Body:   "private to beta",
+			At:     fixedTime,
 		}}, persisted)
 	})
 }

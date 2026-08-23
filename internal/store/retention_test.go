@@ -1,12 +1,17 @@
 package store
 
 import (
+	"context"
+	"fmt"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 // TestSQLiteStore_pruneEvents_trims_channel_to_headroom pins the
@@ -36,6 +41,394 @@ func TestSQLiteStore_pruneEvents_trims_channel_to_headroom(t *testing.T) {
 		gotIDs[i] = e.ID
 	}
 	require.Equal(t, ids[extra:], gotIDs, "the newest eventRetentionHeadroom events survive")
+}
+
+func TestSQLiteStore_pruneEvents_trims_each_actor_scrollback(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		channel = domain.ChannelName("#dev")
+		actor   = domain.InstanceID("inst-botty")
+		extra   = 37
+	)
+
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow(channel, testTime)))
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(actor, "botty", "test/model", "", nil)))
+
+	records := make([]ChannelScrollbackRecord, 0, eventRetentionHeadroom+extra)
+	for i := range eventRetentionHeadroom + extra {
+		records = append(records, ChannelScrollbackRecord{
+			InstanceID: actor,
+			Channel:    channel,
+			Event: domain.Message{Source: domain.LegacyClientSource(
+
+				"alice"), Target: channel, Body: string(rune(i)), At: testTime.Add(time.Duration(i) * time.Second)},
+		})
+	}
+
+	ids, err := s.AppendChannelScrollback(ctx, records)
+	require.NoError(t, err)
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got, err := s.ChannelScrollback(ctx, actor, channel, eventRetentionHeadroom+extra)
+	require.NoError(t, err)
+
+	gotIDs := make([]int64, len(got))
+	for i, event := range got {
+		gotIDs[i] = event.ID
+	}
+	require.Equal(t, ids[extra:], gotIDs)
+}
+
+func TestSQLiteStore_pruneEvents_trims_each_private_reply_window(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		actor = domain.InstanceID("inst-botty")
+		extra = 37
+	)
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(actor, "botty", "test/model", "", nil)))
+
+	globalIDs := make([]int64, eventRetentionHeadroom+extra)
+	channelIDs := make([]int64, eventRetentionHeadroom+extra)
+	for i := range globalIDs {
+		globalID, err := s.AppendInstanceReply(ctx, actor, nil, domain.SystemNotice{
+			Text: "reply",
+			At:   testTime.Add(time.Duration(i) * time.Second),
+		})
+		require.NoError(t, err)
+		globalIDs[i] = globalID
+
+		channelID, err := s.AppendInstanceReply(ctx, actor,
+			protocol.ChannelWindowTarget("#dev"), domain.SystemNotice{
+				Target: "#dev", Text: "channel reply",
+				At: testTime.Add(time.Duration(i) * time.Second),
+			})
+		require.NoError(t, err)
+		channelIDs[i] = channelID
+	}
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	global, err := s.InstanceRepliesForWindowBefore(ctx, actor, nil, nil, len(globalIDs))
+	require.NoError(t, err)
+	channel, err := s.InstanceRepliesForWindowBefore(ctx, actor,
+		protocol.ChannelWindowTarget("#dev"), nil, len(channelIDs))
+	require.NoError(t, err)
+
+	globalGot := make([]int64, len(global))
+	for i, event := range global {
+		globalGot[i] = event.ID
+	}
+	channelGot := make([]int64, len(channel))
+	for i, event := range channel {
+		channelGot[i] = event.ID
+	}
+	require.Equal(t, globalIDs[extra:], globalGot)
+	require.Equal(t, channelIDs[extra:], channelGot)
+}
+
+func TestSQLiteStore_pruneEvents_removes_model_turns_outside_actor_visibility(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	live := domain.NewModelInstance("inst-live", "live", "test/model", "", nil)
+	live.JoinChannel("#dev", testTime)
+	departed := domain.NewModelInstance("inst-departed", "departed", "test/model", "", nil)
+	invited := domain.NewModelInstance("inst-invited", "invited", "test/model", "", nil)
+	peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+	for _, inst := range []*domain.Instance{live, departed, invited, peer} {
+		require.NoError(t, s.SaveInstance(ctx, inst))
+	}
+
+	window := domain.NewChannelWindow("#dev", testTime)
+	window.Members.Add(live)
+	window.Invitations.Add(invited.ID())
+	require.NoError(t, s.SaveWindow(ctx, window))
+
+	type turnFixture struct {
+		actor  domain.InstanceID
+		window protocol.WindowTarget
+	}
+	fixtures := []turnFixture{
+		{actor: live.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: departed.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: invited.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: live.ID(), window: protocol.ChannelWindowTarget("#gone")},
+		{actor: live.ID(), window: protocol.DirectWindowTarget(peer.ID())},
+		{actor: live.ID(), window: protocol.DirectWindowTarget("inst-gone")},
+		{actor: live.ID(), window: protocol.DirectWindowTarget("")},
+		{actor: "inst-gone", window: protocol.DirectWindowTarget(peer.ID())},
+	}
+	for _, fixture := range fixtures {
+		_, err := s.BeginModelTurn(ctx, ModelTurn{
+			InstanceID: fixture.actor,
+			Window:     fixture.window,
+			ModelID:    "test/model",
+			StartedAt:  testTime,
+		}, ModelTurnEntry{Kind: ModelTurnInput, Data: []byte(`{"input":"hello"}`), At: testTime})
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got := dumpTable(t, s.db, `
+		SELECT instance_id, window_kind, window_key
+		FROM model_turns
+		ORDER BY instance_id, window_kind, window_key
+	`)
+	require.Equal(t, []string{
+		"instance_id=inst-invited|window_kind=1|window_key=#dev",
+		"instance_id=inst-live|window_kind=1|window_key=#dev",
+		"instance_id=inst-live|window_kind=2|window_key=",
+		"instance_id=inst-live|window_kind=2|window_key=inst-peer",
+	}, got)
+
+	entries := dumpTable(t, s.db, `SELECT count(*) FROM model_turn_entries`)
+	require.Equal(t, []string{"count(*)=4"}, entries)
+}
+
+func TestSQLiteStore_BeginModelTurn_bounds_live_actor_journal(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	actor := domain.NewModelInstance("inst-live", "live", "test/model", "", nil)
+	actor.JoinChannel("#dev", testTime)
+	actor.JoinChannel("#ops", testTime)
+	require.NoError(t, s.SaveInstance(ctx, actor))
+
+	for _, channel := range []domain.ChannelName{"#dev", "#ops"} {
+		window := domain.NewChannelWindow(channel, testTime)
+		window.Members.Add(actor)
+		require.NoError(t, s.SaveWindow(ctx, window))
+	}
+
+	const extra = 3
+	turnIDs := make([]ModelTurnID, 0, modelTurnRetentionHeadroom+extra)
+	for i := range modelTurnRetentionHeadroom + extra {
+		channel := domain.ChannelName("#dev")
+		if i%2 != 0 {
+			channel = "#ops"
+		}
+		turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+			InstanceID: actor.ID(),
+			Window:     protocol.ChannelWindowTarget(channel),
+			ModelID:    actor.ModelID,
+			StartedAt:  testTime.Add(time.Duration(i) * time.Second),
+		}, ModelTurnEntry{
+			Kind: ModelTurnInput,
+			Data: fmt.Appendf(nil, `{"turn":%d}`, i),
+			At:   testTime.Add(time.Duration(i) * time.Second),
+		})
+		require.NoError(t, err)
+		turnIDs = append(turnIDs, turnID)
+	}
+
+	rows, err := queryRows(ctx, s.db, `SELECT id FROM model_turns ORDER BY id`, nil,
+		scalarColumn[ModelTurnID]())
+	require.NoError(t, err)
+	require.Equal(t, turnIDs[extra:], rows)
+
+	entries := dumpTable(t, s.db, `
+		SELECT turn_id, kind, data
+		FROM model_turn_entries
+		ORDER BY turn_id
+	`)
+	wantEntries := make([]string, 0, modelTurnRetentionHeadroom)
+	for i, turnID := range turnIDs[extra:] {
+		wantEntries = append(wantEntries, fmt.Sprintf(
+			"turn_id=%d|kind=input|data={\"turn\":%d}", turnID, i+extra,
+		))
+	}
+	sort.Strings(wantEntries)
+	require.Equal(t, wantEntries, entries)
+}
+
+func TestSQLiteStore_modelTurnRetention_counts_UTF8_bytes(t *testing.T) {
+	type trimFunc func(context.Context, *SQLiteStore, domain.InstanceID) error
+
+	tests := []struct {
+		name string
+		trim trimFunc
+	}{
+		{
+			name: "live admission",
+			trim: func(ctx context.Context, s *SQLiteStore, actor domain.InstanceID) error {
+				return trimModelTurns(ctx, s.db, actor, 500, 85)
+			},
+		},
+		{
+			name: "startup retention",
+			trim: func(ctx context.Context, s *SQLiteStore, _ domain.InstanceID) error {
+				_, err := s.pruneModelTurnsTo(ctx, 500, 85)
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			s := newTestStore(t)
+			const actor = domain.InstanceID("inst-live")
+
+			payload := []byte(`"éééééééééééééééééééé"`)
+
+			for i := range 3 {
+				_, err := s.BeginModelTurn(ctx, ModelTurn{
+					InstanceID: actor,
+					Window:     protocol.DirectWindowTarget("inst-peer"),
+					ModelID:    "test/model",
+					StartedAt:  testTime.Add(time.Duration(i) * time.Second),
+				}, ModelTurnEntry{
+					Kind: ModelTurnInput,
+					Data: payload,
+					At:   testTime.Add(time.Duration(i) * time.Second),
+				})
+				require.NoError(t, err)
+			}
+
+			require.NoError(t, test.trim(ctx, s, actor))
+
+			turns, err := queryRows(ctx, s.db, `SELECT id FROM model_turns ORDER BY id`, nil,
+				scalarColumn[ModelTurnID]())
+			require.NoError(t, err)
+			entries := dumpTable(t, s.db, `
+				SELECT turn_id, data FROM model_turn_entries ORDER BY turn_id
+			`)
+			require.Equal(t, struct {
+				Turns   []ModelTurnID
+				Entries []string
+			}{
+				Turns: []ModelTurnID{2, 3},
+				Entries: []string{
+					`turn_id=2|data="éééééééééééééééééééé"`,
+					`turn_id=3|data="éééééééééééééééééééé"`,
+				},
+			}, struct {
+				Turns   []ModelTurnID
+				Entries []string
+			}{
+				Turns: turns, Entries: entries,
+			})
+		})
+	}
+}
+
+func TestSQLiteStore_DeleteInstanceByID_removes_private_replies(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const actor = domain.InstanceID("inst-gone")
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(actor, "gone", "test/model", "", nil)))
+	_, err := s.AppendInstanceReply(ctx, actor, nil, domain.SystemNotice{Text: "before quit", At: testTime})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, actor))
+
+	got, err := s.InstanceRepliesBefore(ctx, actor, nil, 10)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSQLiteStore_DeleteInstanceByID_removes_replies_from_its_DM_peers(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, peer))
+
+	_, err := s.AppendInstanceReply(ctx, "", protocol.DirectWindowTarget(peer.ID()),
+		domain.SystemNotice{Text: "private DM reply", At: testTime})
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteInstanceByID(ctx, peer.ID()))
+
+	got, err := s.InstanceRepliesForWindowBefore(
+		ctx, "", protocol.DirectWindowTarget(peer.ID()), nil, 10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestSQLiteStore_DeleteInstanceByID_preserves_user_private_replies(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	user := domain.NewUserInstance("alice")
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	replies := []domain.IssuerReply{
+		domain.SystemNotice{Text: "first", At: testTime},
+		domain.SystemNotice{Text: "second", At: testTime.Add(time.Second)},
+	}
+
+	for _, inst := range []*domain.Instance{user, botty} {
+		require.NoError(t, s.SaveInstance(ctx, inst))
+	}
+	records := make([]InstanceReplyRecord, 0, len(replies))
+	for _, reply := range replies {
+		id, err := s.AppendInstanceReply(ctx, user.ID(), protocol.ChannelWindowTarget("#dev"), reply)
+		require.NoError(t, err)
+		records = append(records, InstanceReplyRecord{
+			ID: id, Window: protocol.ChannelWindowTarget("#dev"), Event: reply,
+		})
+	}
+	turnID, err := s.BeginModelTurn(ctx, ModelTurn{
+		InstanceID: botty.ID(),
+		Window:     protocol.DirectWindowTarget(user.ID()),
+		ModelID:    botty.ModelID,
+		StartedAt:  testTime,
+	}, ModelTurnEntry{
+		Kind: ModelTurnInput,
+		Data: []byte(`{"input":"private"}`),
+		At:   testTime,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, user.ID()))
+
+	reopened, err := NewSQLiteStore(ctx, s.db)
+	require.NoError(t, err)
+	gotReplies, err := reopened.InstanceRepliesBefore(ctx, user.ID(), nil, 10)
+	require.NoError(t, err)
+	gotTurnEntries, err := reopened.ModelTurnEntries(ctx, turnID)
+	require.NoError(t, err)
+	require.Equal(t, struct {
+		Replies     []InstanceReplyRecord
+		TurnEntries []ModelTurnEntry
+	}{
+		Replies: records,
+	}, struct {
+		Replies     []InstanceReplyRecord
+		TurnEntries []ModelTurnEntry
+	}{
+		Replies: gotReplies, TurnEntries: gotTurnEntries,
+	})
+}
+
+func TestSQLiteStore_pruneEvents_removes_quit_actor_scrollback(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		channel = domain.ChannelName("#dev")
+		actor   = domain.InstanceID("inst-gone")
+	)
+
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow(channel, testTime)))
+	_, err := s.AppendChannelScrollback(ctx, []ChannelScrollbackRecord{{
+		InstanceID: actor,
+		Channel:    channel,
+		Event: domain.Message{Source: domain.LegacyClientSource(
+
+			"gone"), Target: channel, Body: "before quit", At: testTime},
+	}})
+	require.NoError(t, err)
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got, err := s.ChannelScrollback(ctx, actor, channel, 10)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 // TestSQLiteStore_pruneEvents_leaves_a_channel_under_headroom_alone
@@ -133,14 +526,12 @@ func TestSQLiteStore_pruneEvents_deletes_dm_events_for_a_deleted_peer(t *testing
 	const bottyID domain.InstanceID = "inst-botty"
 	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(bottyID, "botty", "test/model", "", nil)))
 
-	_, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
-	})
+	_, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+		"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: testTime})
 	require.NoError(t, err)
 
-	_, err = s.AppendEvent(ctx, "", domain.Message{
-		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
-	})
+	_, err = s.AppendEvent(ctx, "", domain.Message{Source: domain.ClientSource(
+		bottyID, "botty"), Target: "", Body: "hello", At: testTime.Add(time.Second)})
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeleteInstanceByID(ctx, bottyID))
@@ -150,6 +541,32 @@ func TestSQLiteStore_pruneEvents_deletes_dm_events_for_a_deleted_peer(t *testing
 	count, err := s.CountDMEventsFrom(ctx, "", bottyID, nil)
 	require.NoError(t, err)
 	require.Zero(t, count)
+}
+
+func TestSQLiteStore_pruneEvents_deletes_both_directions_for_a_deleted_model_peer(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	alice := domain.NewModelInstance("inst-alice", "alice", "test/model", "", nil)
+	bob := domain.NewModelInstance("inst-bob", "bob", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, alice))
+	require.NoError(t, s.SaveInstance(ctx, bob))
+
+	_, err := s.AppendEvent(ctx, domain.ChannelName(bob.ID()), domain.Message{Source: domain.ClientSource(
+
+		alice.ID(), alice.Nick()), Target: domain.ChannelName(bob.ID()), Body: "from alice", At: testTime})
+	require.NoError(t, err)
+	_, err = s.AppendEvent(ctx, domain.ChannelName(alice.ID()), domain.Message{Source: domain.ClientSource(
+
+		bob.ID(), bob.Nick()), Target: domain.ChannelName(alice.ID()), Body: "from bob", At: testTime.Add(time.Second)})
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, alice.ID()))
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got, err := s.DMEventsBefore(ctx, alice.ID(), bob.ID(), nil, 100)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 // TestSQLiteStore_pruneEvents_leaves_dm_events_alone pins that a DM
@@ -163,14 +580,12 @@ func TestSQLiteStore_pruneEvents_leaves_dm_events_alone(t *testing.T) {
 	const bottyID domain.InstanceID = "inst-botty"
 	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(bottyID, "botty", "test/model", "", nil)))
 
-	toBotty, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{
-		Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: testTime,
-	})
+	toBotty, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+		"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: testTime})
 	require.NoError(t, err)
 
-	toUser, err := s.AppendEvent(ctx, "", domain.Message{
-		Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: testTime.Add(time.Second),
-	})
+	toUser, err := s.AppendEvent(ctx, "", domain.Message{Source: domain.ClientSource(
+		bottyID, "botty"), Target: "", Body: "hello", At: testTime.Add(time.Second)})
 	require.NoError(t, err)
 
 	require.NoError(t, s.pruneEvents(ctx))
@@ -208,13 +623,11 @@ func TestSQLiteStore_pruneEvents_trims_dm_thread_to_headroom(t *testing.T) {
 		)
 
 		if i%2 == 0 {
-			id, err = s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{
-				Target: domain.ChannelName(bottyID), From: "iain", Body: "hi", At: at,
-			})
+			id, err = s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+				"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: at})
 		} else {
-			id, err = s.AppendEvent(ctx, "", domain.Message{
-				Target: "", From: "botty", InstanceID: bottyID, Body: "hello", At: at,
-			})
+			id, err = s.AppendEvent(ctx, "", domain.Message{Source: domain.ClientSource(
+				bottyID, "botty"), Target: "", Body: "hello", At: at})
 		}
 
 		require.NoError(t, err)
@@ -254,14 +667,13 @@ func TestSQLiteStore_pruneEvents_tolerates_a_stale_channel_cursor(t *testing.T) 
 
 	ids := appendTestEvents(t, s, "#dev", eventRetentionHeadroom+200)
 
-	staleCursor := ids[0]
+	staleCursor := slices.Min(ids)
 	require.NoError(t, s.SetLastRead(ctx, "#dev", staleCursor))
 
 	require.NoError(t, s.pruneEvents(ctx), "a stale cursor must not fail the retention pass")
 
 	gotCursor, err := s.GetLastRead(ctx, "#dev")
 	require.NoError(t, err)
-	require.Equal(t, staleCursor, gotCursor, "the cursor's own row survives so the foreign key keeps holding")
 
 	// The cursor's row is the one exception carved out of an
 	// otherwise-full trim to eventRetentionHeadroom, so the channel
@@ -269,14 +681,40 @@ func TestSQLiteStore_pruneEvents_tolerates_a_stale_channel_cursor(t *testing.T) 
 	// plus the stale cursor row itself.
 	total, err := s.CountEventsFrom(ctx, "#dev", nil)
 	require.NoError(t, err)
-	require.Equal(t, eventRetentionHeadroom+1, total)
 
 	// UnreadCount's `id >= cursor` counting still answers correctly:
 	// the cursor's own row is the oldest surviving row, so counting
 	// from it counts everything left in the channel.
 	fromCursor, err := s.CountEventsFrom(ctx, "#dev", &staleCursor)
 	require.NoError(t, err)
-	require.Equal(t, total, fromCursor)
+	retained, err := s.EventsBefore(ctx, "#dev", nil, eventRetentionHeadroom+1)
+	require.NoError(t, err)
+	retainedIDs := make([]int64, len(retained))
+	for i, event := range retained {
+		retainedIDs[i] = event.ID
+	}
+	expectedIDs := append([]int64{staleCursor}, ids[200:]...)
+	require.Equal(t, struct {
+		Cursor     int64
+		Total      int
+		FromCursor int
+		IDs        []int64
+	}{
+		Cursor:     staleCursor,
+		Total:      eventRetentionHeadroom + 1,
+		FromCursor: eventRetentionHeadroom + 1,
+		IDs:        expectedIDs,
+	}, struct {
+		Cursor     int64
+		Total      int
+		FromCursor int
+		IDs        []int64
+	}{
+		Cursor:     gotCursor,
+		Total:      total,
+		FromCursor: fromCursor,
+		IDs:        retainedIDs,
+	})
 }
 
 // TestSQLiteStore_pruneEvents_tolerates_a_stale_dm_cursor is the same
@@ -289,18 +727,15 @@ func TestSQLiteStore_pruneEvents_tolerates_a_stale_dm_cursor(t *testing.T) {
 	const bottyID domain.InstanceID = "inst-botty"
 	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(bottyID, "botty", "test/model", "", nil)))
 
-	staleCursor, err := s.AppendEvent(ctx, "", domain.Message{
-		Target: "", From: "botty", InstanceID: bottyID, Body: "long ago", At: testTime,
-	})
+	staleCursor, err := s.AppendEvent(ctx, "", domain.Message{Source: domain.ClientSource(
+		bottyID, "botty"), Target: "", Body: "long ago", At: testTime})
 	require.NoError(t, err)
 
 	require.NoError(t, s.SetDMLastRead(ctx, bottyID, staleCursor))
 
 	for i := range eventRetentionHeadroom + 200 {
-		_, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{
-			Target: domain.ChannelName(bottyID), From: "iain", Body: "hi",
-			At: testTime.Add(time.Duration(i+1) * time.Second),
-		})
+		_, err := s.AppendEvent(ctx, domain.ChannelName(bottyID), domain.Message{Source: domain.LegacyClientSource(
+			"iain"), Target: domain.ChannelName(bottyID), Body: "hi", At: testTime.Add(time.Duration(i+1) * time.Second)})
 		require.NoError(t, err)
 	}
 
@@ -381,13 +816,9 @@ func TestSQLiteStore_pruneEvents_trims_every_dm_pair(t *testing.T) {
 			fromNick = "beta"
 		}
 
-		id, err := s.AppendEvent(ctx, domain.ChannelName(to), domain.Message{
-			Target:     domain.ChannelName(to),
-			From:       fromNick,
-			InstanceID: from,
-			Body:       "hi",
-			At:         at,
-		})
+		id, err := s.AppendEvent(ctx, domain.ChannelName(to), domain.Message{Source: domain.ClientSource(
+
+			from, fromNick), Target: domain.ChannelName(to), Body: "hi", At: at})
 		require.NoError(t, err)
 
 		ids[i] = id
@@ -423,12 +854,9 @@ func TestSQLiteStore_pruneEvents_trims_a_thread_a_client_holds_with_itself(t *te
 	ids := make([]int64, total)
 
 	for i := range total {
-		id, err := s.AppendEvent(ctx, "", domain.Message{
-			Target: "",
-			From:   "iain",
-			Body:   "note to self",
-			At:     testTime.Add(time.Duration(i) * time.Second),
-		})
+		id, err := s.AppendEvent(ctx, "", domain.Message{Source: domain.LegacyClientSource(
+
+			"iain"), Target: "", Body: "note to self", At: testTime.Add(time.Duration(i) * time.Second)})
 		require.NoError(t, err)
 
 		ids[i] = id

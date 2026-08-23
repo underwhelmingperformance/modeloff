@@ -17,7 +17,7 @@ const (
 	// eventRetentionHeadroom is how many of a conversation's most
 	// recent events survive a retention pass, whether the
 	// conversation is a channel (matched on the events.channel
-	// column) or a DM thread (matched via the dm_instance_id
+	// column) or a DM thread (matched via the source_instance_id
 	// generated column, the same column DMEventsBefore reads).
 	//
 	// A model-client's attach-time load never asks the store for more
@@ -30,6 +30,15 @@ const (
 	// room to grow before the next pass starts crowding the boundary
 	// a model's own read sits at.
 	eventRetentionHeadroom = 4 * 500
+
+	// modelTurnRetentionHeadroom bounds the full rendered requests
+	// retained for each actor. A turn duplicates its prompt and
+	// transcript, so a per-window limit would still let an actor grow
+	// the database by opening more windows. The byte bound retains the
+	// newest turn even when that request alone exceeds it, because an
+	// admitted turn must remain appendable until it finishes.
+	modelTurnRetentionHeadroom = 500
+	modelTurnRetentionBytes    = 64 << 20
 
 	// eventDeleteBatchSize bounds how many rows one DELETE statement
 	// in a retention pass removes. A database that has never been
@@ -81,14 +90,9 @@ const cursorExclusion = `id NOT IN (
 // correctness requirement the rest of the store depends on.
 func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.prune_events", nil, func(ctx context.Context, span trace.Span) error {
-		orphaned, err := s.pruneOrphanChannelEvents(ctx)
+		orphans, err := s.pruneOrphans(ctx)
 		if err != nil {
-			return fmt.Errorf("prune orphaned channel events: %w", err)
-		}
-
-		dmOrphaned, err := s.pruneOrphanDMEvents(ctx)
-		if err != nil {
-			return fmt.Errorf("prune orphaned dm events: %w", err)
+			return err
 		}
 
 		channelNames, err := queryRows(ctx, s.db, `SELECT name FROM channels ORDER BY name`, nil,
@@ -106,6 +110,16 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			channelTrimmed += n
 		}
 
+		scrollbackTrimmed, err := s.pruneChannelScrollback(ctx)
+		if err != nil {
+			return fmt.Errorf("prune channel scrollback: %w", err)
+		}
+
+		repliesTrimmed, err := s.pruneInstanceReplies(ctx)
+		if err != nil {
+			return fmt.Errorf("prune instance replies: %w", err)
+		}
+
 		pairs, err := s.dmPairs(ctx)
 		if err != nil {
 			return fmt.Errorf("list dm pairs: %w", err)
@@ -120,20 +134,38 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			dmTrimmed += n
 		}
 
+		modelTurnsTrimmed, err := s.pruneModelTurns(ctx)
+		if err != nil {
+			return fmt.Errorf("prune model turns: %w", err)
+		}
+
 		span.SetAttributes(
-			attribute.Int64("modeloff.retention.orphaned_removed", orphaned),
-			attribute.Int64("modeloff.retention.dm_orphaned_removed", dmOrphaned),
+			attribute.Int64("modeloff.retention.orphaned_removed", orphans.channelEvents),
+			attribute.Int64("modeloff.retention.dm_orphaned_removed", orphans.dmEvents),
+			attribute.Int64("modeloff.retention.channel_scrollback_orphaned_removed", orphans.channelScrollback),
+			attribute.Int64("modeloff.retention.instance_replies_orphaned_removed", orphans.instanceReplies),
+			attribute.Int64("modeloff.retention.model_turns_orphaned_removed", orphans.modelTurns),
 			attribute.Int64("modeloff.retention.channel_trimmed", channelTrimmed),
+			attribute.Int64("modeloff.retention.channel_scrollback_trimmed", scrollbackTrimmed),
+			attribute.Int64("modeloff.retention.instance_replies_trimmed", repliesTrimmed),
 			attribute.Int64("modeloff.retention.dm_trimmed", dmTrimmed),
+			attribute.Int64("modeloff.retention.model_turns_trimmed", modelTurnsTrimmed),
 		)
 
-		if orphaned+dmOrphaned+channelTrimmed+dmTrimmed > 0 {
+		if orphans.total()+
+			channelTrimmed+scrollbackTrimmed+repliesTrimmed+dmTrimmed+modelTurnsTrimmed > 0 {
 			slog.Default().InfoContext(ctx, "event retention pass",
 				"component", "store.sqlite",
-				"orphaned_removed", orphaned,
-				"dm_orphaned_removed", dmOrphaned,
+				"orphaned_removed", orphans.channelEvents,
+				"dm_orphaned_removed", orphans.dmEvents,
+				"channel_scrollback_orphaned_removed", orphans.channelScrollback,
+				"instance_replies_orphaned_removed", orphans.instanceReplies,
+				"model_turns_orphaned_removed", orphans.modelTurns,
 				"channel_trimmed", channelTrimmed,
+				"channel_scrollback_trimmed", scrollbackTrimmed,
+				"instance_replies_trimmed", repliesTrimmed,
 				"dm_trimmed", dmTrimmed,
+				"model_turns_trimmed", modelTurnsTrimmed,
 			)
 		}
 
@@ -148,6 +180,166 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 
 		return nil
 	})
+}
+
+type orphanRetention struct {
+	channelEvents     int64
+	dmEvents          int64
+	channelScrollback int64
+	instanceReplies   int64
+	modelTurns        int64
+}
+
+func (r orphanRetention) total() int64 {
+	return r.channelEvents + r.dmEvents + r.channelScrollback + r.instanceReplies + r.modelTurns
+}
+
+func (s *SQLiteStore) pruneOrphans(ctx context.Context) (orphanRetention, error) {
+	var removed orphanRetention
+	var err error
+
+	removed.channelEvents, err = s.pruneOrphanChannelEvents(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned channel events: %w", err)
+	}
+
+	removed.dmEvents, err = s.pruneOrphanDMEvents(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned dm events: %w", err)
+	}
+
+	removed.channelScrollback, err = s.pruneOrphanChannelScrollback(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned channel scrollback: %w", err)
+	}
+
+	removed.instanceReplies, err = s.pruneOrphanInstanceReplies(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned instance replies: %w", err)
+	}
+
+	removed.modelTurns, err = s.pruneOrphanModelTurns(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned model turns: %w", err)
+	}
+
+	return removed, nil
+}
+
+func (s *SQLiteStore) pruneOrphanChannelScrollback(ctx context.Context) (int64, error) {
+	query := `DELETE FROM channel_scrollback WHERE id IN (
+		SELECT id FROM channel_scrollback
+		WHERE instance_id != ''
+			AND instance_id NOT IN (SELECT instance_id FROM instances)
+		ORDER BY id LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, nil)
+}
+
+func (s *SQLiteStore) pruneOrphanInstanceReplies(ctx context.Context) (int64, error) {
+	query := `DELETE FROM instance_replies WHERE id IN (
+		SELECT id FROM instance_replies
+		WHERE (instance_id != ''
+				AND instance_id NOT IN (SELECT instance_id FROM instances))
+			OR (window_kind = 2 AND window_key != ''
+				AND window_key NOT IN (SELECT instance_id FROM instances))
+		ORDER BY id LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, nil)
+}
+
+func (s *SQLiteStore) pruneOrphanModelTurns(ctx context.Context) (int64, error) {
+	query := `DELETE FROM model_turns WHERE id IN (
+		SELECT turn.id FROM model_turns AS turn
+		WHERE turn.instance_id = ''
+			OR turn.instance_id NOT IN (SELECT instance_id FROM instances)
+			OR (turn.window_kind = 2 AND turn.window_key != ''
+				AND turn.window_key NOT IN (SELECT instance_id FROM instances))
+			OR (turn.window_kind = 1 AND NOT EXISTS (
+				SELECT 1 FROM channels AS channel
+				WHERE channel.name = turn.window_key COLLATE NOCASE
+					AND (
+						EXISTS (
+							SELECT 1 FROM json_each(channel.data, '$.Members') AS member
+							WHERE json_extract(member.value, '$.instance_id') = turn.instance_id
+						)
+						OR EXISTS (
+							SELECT 1 FROM json_each(channel.data, '$.Invitations') AS invitation
+							WHERE invitation.value = turn.instance_id
+						)
+					)
+			))
+		ORDER BY turn.id LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, nil)
+}
+
+func (s *SQLiteStore) pruneModelTurns(ctx context.Context) (int64, error) {
+	return s.pruneModelTurnsTo(
+		ctx, modelTurnRetentionHeadroom, modelTurnRetentionBytes,
+	)
+}
+
+func (s *SQLiteStore) pruneModelTurnsTo(
+	ctx context.Context,
+	maxTurns int,
+	maxBytes int64,
+) (int64, error) {
+	query := `DELETE FROM model_turns WHERE id IN (
+		WITH turn_sizes AS (
+			SELECT turn.id, turn.instance_id,
+				COALESCE(SUM(length(CAST(entry.data AS BLOB))), 0) AS bytes
+			FROM model_turns AS turn
+			LEFT JOIN model_turn_entries AS entry ON entry.turn_id = turn.id
+			GROUP BY turn.id
+		), ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY instance_id ORDER BY id DESC
+				) AS position,
+				SUM(bytes) OVER (
+					PARTITION BY instance_id ORDER BY id DESC
+				) AS retained_bytes
+			FROM turn_sizes
+		)
+		SELECT id FROM ranked
+		WHERE position > ? OR (position > 1 AND retained_bytes > ?)
+		ORDER BY id LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, []any{
+		maxTurns,
+		maxBytes,
+	})
+}
+
+func (s *SQLiteStore) pruneChannelScrollback(ctx context.Context) (int64, error) {
+	query := `DELETE FROM channel_scrollback WHERE id IN (
+		SELECT id FROM (
+			SELECT id, row_number() OVER (
+				PARTITION BY instance_id, channel ORDER BY id DESC
+			) AS position
+			FROM channel_scrollback
+		) WHERE position > ? LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, []any{eventRetentionHeadroom})
+}
+
+func (s *SQLiteStore) pruneInstanceReplies(ctx context.Context) (int64, error) {
+	query := `DELETE FROM instance_replies WHERE id IN (
+		SELECT id FROM (
+			SELECT id, row_number() OVER (
+				PARTITION BY instance_id, window_kind, window_key ORDER BY id DESC
+			) AS position
+			FROM instance_replies
+		) WHERE position > ? LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, []any{eventRetentionHeadroom})
 }
 
 // pruneOrphanChannelEvents removes event rows logged under a
@@ -209,25 +401,21 @@ func (s *SQLiteStore) pruneOrphanChannelEvents(ctx context.Context) (int64, erro
 	return removed, nil
 }
 
-// pruneOrphanDMEvents removes DM-shaped event rows whose peer
-// instance no longer has a row in instances. DeleteInstanceByID
-// evicts the peer's own row but has no foreign key to cascade
-// through to these rows (they are keyed by instance id inside the
-// channel column, not a real reference), and instance ids are never
-// reused, so nothing will ever address that thread again.
+// pruneOrphanDMEvents removes DM-shaped event rows when either
+// non-user correspondent no longer has a row in instances.
+// DeleteInstanceByID has no foreign key through which to cascade to
+// these rows, and instance ids are never reused, so nothing will
+// address that thread again.
 //
 // A DM message row carries no channel prefix in its channel column
-// (see domain.InferChannelKind): the direction the user sent has the
-// peer's InstanceID there and an empty dm_instance_id, and the
-// direction the peer sent has an empty channel and the peer's id in
-// the generated dm_instance_id column instead (see DMEventsBefore's
-// doc comment). Exactly one of the two names the peer for a given
-// row, so the CASE picks whichever is non-empty. Every other
-// persisted event type is logged under a real channel the actor was
-// in, which starts with a channel prefix and so never matches this
-// predicate, including the peer's own quit/nick_change rows
-// DMEventsBefore replays into the thread, which pruneChannelEvents
-// already governs (see pruneDMEvents's doc comment).
+// (see domain.InferChannelKind). The direction the user sent has the
+// peer's InstanceID there and an empty source_instance_id; the direction
+// the peer sent has an empty channel and the peer's id in
+// source_instance_id. A model-to-model row has both columns populated,
+// so both must still resolve. Empty is the user sentinel and remains
+// eligible. Every other persisted event type is logged under a real
+// channel the actor was in, which starts with a channel prefix and
+// never matches this predicate.
 func (s *SQLiteStore) pruneOrphanDMEvents(ctx context.Context) (int64, error) {
 	prefixes := []rune(domain.ChannelPrefixes)
 	placeholders := make([]string, len(prefixes))
@@ -238,12 +426,10 @@ func (s *SQLiteStore) pruneOrphanDMEvents(ctx context.Context) (int64, error) {
 		args[i] = string(r)
 	}
 
-	const peer = `CASE WHEN channel != '' THEN channel ELSE dm_instance_id END`
-
 	query := `DELETE FROM events WHERE id IN (
 		SELECT id FROM events WHERE substr(channel, 1, 1) NOT IN (` + strings.Join(placeholders, ",") + `)
-			AND ` + peer + ` != ''
-			AND ` + peer + ` NOT IN (SELECT instance_id FROM instances)
+			AND ((channel != '' AND channel NOT IN (SELECT instance_id FROM instances))
+				OR (source_instance_id != '' AND source_instance_id NOT IN (SELECT instance_id FROM instances)))
 			AND ` + cursorExclusion + `
 		ORDER BY id LIMIT ?
 	)`
@@ -291,13 +477,13 @@ type dmCorrespondents struct {
 // DM-shaped event rows.
 //
 // A DM row names both of them: `channel` carries the recipient's
-// InstanceID and the generated `dm_instance_id` column carries the
+// InstanceID and the generated `source_instance_id` column carries the
 // sender's. The pair therefore comes off the row itself, which is
 // what makes a thread between two models visible here; the instances
 // table names each client but says nothing about who talked to whom.
 // Channel activity is excluded by the same channel-prefix test
 // pruneOrphanDMEvents uses, since its `channel` column names a real
-// channel and its `dm_instance_id` is only the sender.
+// channel and its `source_instance_id` is only the sender.
 //
 // A row whose two ids are equal, which `/msg` against your own nick
 // writes, enumerates as a pair with itself, and the thread predicate
@@ -313,8 +499,8 @@ func (s *SQLiteStore) dmPairs(ctx context.Context) ([]dmCorrespondents, error) {
 	}
 
 	query := `SELECT DISTINCT
-			min(channel, dm_instance_id) AS self,
-			max(channel, dm_instance_id) AS peer
+			min(channel, source_instance_id) AS self,
+			max(channel, source_instance_id) AS peer
 		FROM events
 		WHERE substr(channel, 1, 1) NOT IN (` + strings.Join(placeholders, ",") + `)
 		ORDER BY self, peer`
@@ -330,19 +516,10 @@ func (s *SQLiteStore) dmPairs(ctx context.Context) ([]dmCorrespondents, error) {
 
 // pruneDMEvents trims the message rows of one pair's DM thread down
 // to eventRetentionHeadroom, matching the shape DMEventsBefore reads:
-// `(channel = peer, dm_instance_id = self)` for a line self sent, or
-// `(channel = self, dm_instance_id = peer)` for one peer sent back.
-//
-// The pair's actor-scoped events (quit, nick_change) that
-// DMEventsBefore also replays into the thread are not counted here.
-// Their `channel` column names the real channel the actor was in, not
-// the DM, so they are governed by that channel's own
-// pruneChannelEvents pass; eventRetentionHeadroom is generously past
-// what either read needs, so leaving them out of the DM count does
-// not risk trimming a thread down to fewer than the 500 events a
-// model's attach-time load actually asks for.
+// `(channel = peer, source_instance_id = self)` for a line self sent, or
+// `(channel = self, source_instance_id = peer)` for one peer sent back.
 func (s *SQLiteStore) pruneDMEvents(ctx context.Context, pair dmCorrespondents) (int64, error) {
-	const thread = `(channel = ? AND dm_instance_id = ?) OR (channel = ? AND dm_instance_id = ?)`
+	const thread = `(channel = ? AND source_instance_id = ?) OR (channel = ? AND source_instance_id = ?)`
 
 	query := `DELETE FROM events WHERE id IN (
 		SELECT id FROM events WHERE (` + thread + `) AND id NOT IN (

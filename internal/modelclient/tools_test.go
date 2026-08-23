@@ -141,22 +141,33 @@ func newFakeMemoryExecutor() *fakeMemoryExecutor {
 	return &fakeMemoryExecutor{written: make(map[string]string)}
 }
 
-func (f *fakeMemoryExecutor) WriteMemory(_ context.Context, key, content string) error {
-	if f.writeErr != nil {
-		return f.writeErr
-	}
+func (f *fakeMemoryExecutor) PrepareWriteMemory(
+	_ context.Context,
+	key string,
+	content string,
+) (memory.PreparedMutation, error) {
+	return memoryEffectFunc(func(context.Context) error {
+		if f.writeErr != nil {
+			return f.writeErr
+		}
 
-	f.written[key] = content
-	return nil
+		f.written[key] = content
+		return nil
+	}), nil
 }
 
-func (f *fakeMemoryExecutor) DeleteMemory(_ context.Context, key string) error {
-	if f.deleteErr != nil {
-		return f.deleteErr
-	}
+func (f *fakeMemoryExecutor) PrepareDeleteMemory(
+	_ context.Context,
+	key string,
+) (memory.PreparedMutation, error) {
+	return memoryEffectFunc(func(context.Context) error {
+		if f.deleteErr != nil {
+			return f.deleteErr
+		}
 
-	f.deleted = append(f.deleted, key)
-	return nil
+		f.deleted = append(f.deleted, key)
+		return nil
+	}), nil
 }
 
 func (f *fakeMemoryExecutor) SearchMemory(_ context.Context, _ string, _ int) ([]memory.SearchResult, error) {
@@ -216,7 +227,7 @@ func TestMemoryToolRegistry_write_executes(t *testing.T) {
 	require.True(t, ok)
 
 	args := json.RawMessage(`{"key": "mood", "content": "happy"}`)
-	payload, err := spec.Execute(t.Context(), ToolContext{}, args)
+	payload, err := spec.Execute(t.Context(), NewToolContext(validWindowGuard{}, nil, nil, nil), args)
 	require.NoError(t, err)
 	require.True(t, payload.OK)
 	require.Equal(t, "happy", mem.written["mood"])
@@ -230,7 +241,7 @@ func TestMemoryToolRegistry_delete_executes(t *testing.T) {
 	require.True(t, ok)
 
 	args := json.RawMessage(`{"key": "mood"}`)
-	payload, err := spec.Execute(t.Context(), ToolContext{}, args)
+	payload, err := spec.Execute(t.Context(), NewToolContext(validWindowGuard{}, nil, nil, nil), args)
 	require.NoError(t, err)
 	require.True(t, payload.OK)
 	require.Equal(t, []string{"mood"}, mem.deleted)
@@ -244,7 +255,7 @@ func TestMemoryToolRegistry_search_executes(t *testing.T) {
 	require.True(t, ok)
 
 	args := json.RawMessage(`{"query": "what mood", "limit": 5}`)
-	payload, err := spec.Execute(t.Context(), ToolContext{}, args)
+	payload, err := spec.Execute(t.Context(), NewToolContext(validWindowGuard{}, nil, nil, nil), args)
 	require.NoError(t, err)
 	require.True(t, payload.OK)
 }
@@ -285,7 +296,7 @@ func TestMemoryToolRegistry_store_failures_are_execution_errors(t *testing.T) {
 			spec, ok := registry.Find(tt.tool)
 			require.True(t, ok)
 
-			payload, err := spec.Execute(t.Context(), ToolContext{}, tt.args)
+			payload, err := spec.Execute(t.Context(), NewToolContext(validWindowGuard{}, nil, nil, nil), tt.args)
 			require.Equal(t, ToolResultPayload{}, payload)
 			require.ErrorIs(t, err, sentinel)
 

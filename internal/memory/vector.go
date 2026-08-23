@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	_ Store           = (*IndexedStore)(nil)
-	_ Searcher        = (*IndexedStore)(nil)
-	_ InstanceDeleter = (*IndexedStore)(nil)
+	_ Store            = (*IndexedStore)(nil)
+	_ Searcher         = (*IndexedStore)(nil)
+	_ InstanceDeleter  = (*IndexedStore)(nil)
+	_ MutationPreparer = (*IndexedStore)(nil)
 )
 
 // IndexedStore wraps a backing [Store] (in production, a
@@ -73,6 +74,35 @@ type IndexedStore struct {
 	// its spans. Defaults to `otel.GetTracerProvider()`; tests inject
 	// a per-test recorder via `WithTracerProvider`.
 	tracerProvider trace.TracerProvider
+}
+
+type preparedIndexedWrite struct {
+	store     *IndexedStore
+	id        domain.InstanceID
+	entry     Entry
+	embedding []float32
+}
+
+func (w *preparedIndexedWrite) Commit(ctx context.Context) error {
+	return w.store.commitPreparedWrite(ctx, w.id, w.entry)
+}
+
+func (w *preparedIndexedWrite) Finish(ctx context.Context) {
+	w.store.finishPreparedWrite(ctx, w.id, w.entry, w.embedding)
+}
+
+type preparedIndexedDelete struct {
+	store *IndexedStore
+	id    domain.InstanceID
+	key   string
+}
+
+func (d *preparedIndexedDelete) Commit(ctx context.Context) error {
+	return d.store.commitPreparedDelete(ctx, d.id, d.key)
+}
+
+func (d *preparedIndexedDelete) Finish(ctx context.Context) {
+	d.store.finishPreparedDelete(ctx, d.id, d.key)
 }
 
 // NewIndexedStore creates an IndexedStore backed by the given memory
@@ -301,20 +331,101 @@ func (s *IndexedStore) Write(ctx context.Context, id domain.InstanceID, entry En
 	return s.inSpan(ctx, "memory.write",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			if err := s.backing.Write(ctx, id, entry); err != nil {
+			prepared := s.prepareWrite(ctx, id, entry)
+			if err := prepared.Commit(ctx); err != nil {
 				return err
 			}
 
-			if err := s.index(ctx, id, entry); err != nil {
-				slog.Default().WarnContext(ctx, "failed to index memory",
-					"instance_id", string(id), "key", entry.Key, "error", err)
-			}
+			prepared.Finish(ctx)
 
 			return nil
 		})
 }
 
+// PrepareWrite computes the entry's embedding without changing the
+// backing store or vector index. Commit performs only the short durable
+// update, so a caller can revalidate actor authority between the network
+// request and the persistent effect.
+func (s *IndexedStore) PrepareWrite(
+	ctx context.Context,
+	id domain.InstanceID,
+	entry Entry,
+) (PreparedMutation, error) {
+	var prepared *preparedIndexedWrite
+	err := s.inSpan(ctx, "memory.prepare_write",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			prepared = s.prepareWrite(ctx, id, entry)
+
+			return nil
+		})
+
+	return prepared, err
+}
+
+func (s *IndexedStore) prepareWrite(
+	ctx context.Context,
+	id domain.InstanceID,
+	entry Entry,
+) *preparedIndexedWrite {
+	prepared := &preparedIndexedWrite{store: s, id: id, entry: entry}
+	embedding, err := s.embeddingFunc(ctx, memoryDocumentContent(entry))
+	if err != nil {
+		slog.Default().WarnContext(ctx, "failed to prepare memory index",
+			"instance_id", string(id), "key", entry.Key, "error", err)
+
+		return prepared
+	}
+
+	prepared.embedding = embedding
+
+	return prepared
+}
+
+func (s *IndexedStore) commitPreparedWrite(
+	ctx context.Context,
+	id domain.InstanceID,
+	entry Entry,
+) error {
+	return s.inSpan(ctx, "memory.commit_write",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			return s.backing.Write(ctx, id, entry)
+		})
+}
+
+func (s *IndexedStore) finishPreparedWrite(
+	ctx context.Context,
+	id domain.InstanceID,
+	entry Entry,
+	embedding []float32,
+) {
+	err := s.inSpan(ctx, "memory.finish_write",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			return s.indexPrepared(ctx, id, entry, embedding)
+		})
+	if err != nil {
+		slog.Default().WarnContext(ctx, "failed to index memory",
+			"instance_id", string(id), "key", entry.Key, "error", err)
+	}
+}
+
 func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry Entry) error {
+	embedding, err := s.embeddingFunc(ctx, memoryDocumentContent(entry))
+	if err != nil {
+		return err
+	}
+
+	return s.indexPrepared(ctx, id, entry, embedding)
+}
+
+func (s *IndexedStore) indexPrepared(
+	ctx context.Context,
+	id domain.InstanceID,
+	entry Entry,
+	embedding []float32,
+) error {
 	col, err := s.collection(id)
 	if err != nil {
 		return fmt.Errorf("get collection: %w", err)
@@ -322,10 +433,14 @@ func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry En
 
 	// Remove any existing document with this key so overwrites work.
 	_ = col.Delete(ctx, nil, nil, entry.Key)
+	if len(embedding) == 0 {
+		return errors.New("prepared embedding is empty")
+	}
 
 	doc := chromem.Document{
-		ID:      entry.Key,
-		Content: entry.Key + ": " + entry.Content,
+		ID:        entry.Key,
+		Content:   memoryDocumentContent(entry),
+		Embedding: embedding,
 		Metadata: map[string]string{
 			"key":     entry.Key,
 			"content": entry.Content,
@@ -333,7 +448,11 @@ func (s *IndexedStore) index(ctx context.Context, id domain.InstanceID, entry En
 		},
 	}
 
-	return col.AddDocuments(ctx, []chromem.Document{doc}, 1)
+	return col.AddDocument(ctx, doc)
+}
+
+func memoryDocumentContent(entry Entry) string {
+	return entry.Key + ": " + entry.Content
 }
 
 // parseEntryAt reads a chromem document's "at" metadata value back
@@ -349,24 +468,65 @@ func parseEntryAt(s string) time.Time {
 	return t
 }
 
-// Delete removes the entry from the vector index, then from the
-// backing store. If the vector delete fails, it is logged but the
-// backing store delete still proceeds.
+// Delete removes the entry from the backing store, then from the
+// vector index. If the vector delete fails, it is logged; the backing
+// store remains the source of truth and the next Search reconciles it.
 func (s *IndexedStore) Delete(ctx context.Context, id domain.InstanceID, key string) error {
 	return s.inSpan(ctx, "memory.delete",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			col, err := s.collection(id)
-			if err != nil {
-				slog.Default().WarnContext(ctx, "failed to get collection for delete",
-					"instance_id", string(id), "key", key, "error", err)
-			} else if err := col.Delete(ctx, nil, nil, key); err != nil {
-				slog.Default().WarnContext(ctx, "failed to remove memory from index",
-					"instance_id", string(id), "key", key, "error", err)
+			prepared := &preparedIndexedDelete{store: s, id: id, key: key}
+			if err := prepared.Commit(ctx); err != nil {
+				return err
 			}
 
+			prepared.Finish(ctx)
+
+			return nil
+		})
+}
+
+// PrepareDelete returns a deletion whose authoritative backing-store
+// commit is separate from best-effort vector-index cleanup.
+func (s *IndexedStore) PrepareDelete(
+	_ context.Context,
+	id domain.InstanceID,
+	key string,
+) (PreparedMutation, error) {
+	return &preparedIndexedDelete{store: s, id: id, key: key}, nil
+}
+
+func (s *IndexedStore) commitPreparedDelete(
+	ctx context.Context,
+	id domain.InstanceID,
+	key string,
+) error {
+	return s.inSpan(ctx, "memory.commit_delete",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
 			return s.backing.Delete(ctx, id, key)
 		})
+}
+
+func (s *IndexedStore) finishPreparedDelete(
+	ctx context.Context,
+	id domain.InstanceID,
+	key string,
+) {
+	err := s.inSpan(ctx, "memory.finish_delete",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			col, err := s.collection(id)
+			if err != nil {
+				return fmt.Errorf("get collection: %w", err)
+			}
+
+			return col.Delete(ctx, nil, nil, key)
+		})
+	if err != nil {
+		slog.Default().WarnContext(ctx, "failed to remove memory from index",
+			"instance_id", string(id), "key", key, "error", err)
+	}
 }
 
 // DeleteInstance removes the given instance's chromem-go vector

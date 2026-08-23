@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -35,12 +36,10 @@ func joinSetupEventsT(t *testing.T, sess *Session, bootAt time.Time, ch domain.C
 	return []domain.Event{
 		bootstrapModeChange(t, sess, bootAt),
 		domain.Join{
-			Target:     ch,
-			Nick:       user.Nick(),
-			InstanceID: user.ID(),
-			Created:    true,
-			At:         fixedTime,
-			Instance:   user,
+			Source:  domain.ClientSource(user.ID(), user.Nick()),
+			Target:  ch,
+			Created: true,
+			At:      fixedTime,
 		},
 		domain.NamesReplyEvent{
 			Channel: ch,
@@ -69,7 +68,7 @@ func TestHandleChannelMode_GrantsMemberOp(t *testing.T) {
 		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-		botty := seedInstance(t, sess, s, instanceSpec{
+		seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#chan"),
@@ -87,16 +86,67 @@ func TestHandleChannelMode_GrantsMemberOp(t *testing.T) {
 
 		require.Equal(t, append(prefix,
 			domain.ChannelModeChange{
-				Target:     "#chan",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        true,
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
+				Target:  "#chan",
+				Subject: "botty",
+				Flag:    domain.ModeOperator,
+				Add:     true,
+				At:      fixedTime,
 			},
 		), collectEmittedEvents(t, sess))
+	})
+}
+
+func TestHandleChannelMode_failed_member_mode_write_preserves_permissions(t *testing.T) {
+	sess, backing := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, userJoin(ctx, t, sess, "#chan"))
+	botty := seedInstance(t, sess, backing, instanceSpec{
+		Nick: "botty", ModelID: "test/model", Channels: testChannels("#chan"),
+	})
+	seedChannelWithMembers(t, sess, backing, "#chan", "testuser", "botty")
+
+	sentinel := errors.New("save failed")
+	failing := &teardownFailureStore{Store: backing, saveWindowErr: sentinel}
+	failing.armed.Store(true)
+	sess.store = failing
+
+	resp, err := userClient(t, sess).Send(ctx, protocol.ChannelMode{
+		Channel: "#chan",
+		Changes: []protocol.ChannelModeChange{
+			{Flag: domain.ModeOperator, Add: true, Target: "botty"},
+		},
+	})
+	window, windowErr := sess.loadChannelWindow(ctx, "#chan")
+	member, memberOK := window.Members.GetByInstance(botty)
+	gateErr := sess.requireChannelOp(botty, window, "INVITE", "#chan")
+
+	require.Equal(t, struct {
+		Response       protocol.Response
+		SaveFailed     bool
+		WindowError    error
+		MemberPresent  bool
+		Modes          domain.MemberModes
+		GateStillFails bool
+	}{
+		SaveFailed:     true,
+		MemberPresent:  true,
+		GateStillFails: true,
+	}, struct {
+		Response       protocol.Response
+		SaveFailed     bool
+		WindowError    error
+		MemberPresent  bool
+		Modes          domain.MemberModes
+		GateStillFails bool
+	}{
+		Response:       resp,
+		SaveFailed:     errors.Is(err, sentinel),
+		WindowError:    windowErr,
+		MemberPresent:  memberOK,
+		Modes:          member.Modes,
+		GateStillFails: gateErr != nil,
 	})
 }
 
@@ -137,14 +187,12 @@ func TestHandleChannelMode_RevokeMemberOp(t *testing.T) {
 
 		require.Equal(t, append(prefix,
 			domain.ChannelModeChange{
-				Target:     "#chan",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeOperator,
-				Add:        false,
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
+				Target:  "#chan",
+				Subject: "botty",
+				Flag:    domain.ModeOperator,
+				Add:     false,
+				At:      fixedTime,
 			},
 		), collectEmittedEvents(t, sess))
 	})
@@ -161,7 +209,7 @@ func TestHandleChannelMode_GrantMemberVoice(t *testing.T) {
 		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-		botty := seedInstance(t, sess, s, instanceSpec{
+		seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#chan"),
@@ -179,14 +227,12 @@ func TestHandleChannelMode_GrantMemberVoice(t *testing.T) {
 
 		require.Equal(t, append(prefix,
 			domain.ChannelModeChange{
-				Target:     "#chan",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Flag:       domain.ModeChannelVoice,
-				Add:        true,
-				By:         "testuser",
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
+				Target:  "#chan",
+				Subject: "botty",
+				Flag:    domain.ModeChannelVoice,
+				Add:     true,
+				At:      fixedTime,
 			},
 		), collectEmittedEvents(t, sess))
 	})
@@ -229,13 +275,9 @@ func TestHandleChannelMode_SetBooleanAttributes(t *testing.T) {
 
 		expected := append([]domain.Event(nil), prefix...)
 		for _, f := range flags {
-			expected = append(expected, domain.ChannelModeChange{
-				Target: "#chan",
-				Flag:   f,
-				Add:    true,
-				By:     "testuser",
-				At:     fixedTime,
-			})
+			expected = append(expected, domain.ChannelModeChange{Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+
+				Target: "#chan", Flag: f, Add: true, At: fixedTime})
 		}
 		require.Equal(t, expected, collectEmittedEvents(t, sess))
 
@@ -269,11 +311,11 @@ func TestHandleChannelMode_SetUserLimit(t *testing.T) {
 
 		require.Equal(t, append(prefix,
 			domain.ChannelModeChange{
+				Source: domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
 				Target: "#chan",
 				Flag:   domain.ModeUserLimit,
 				Add:    true,
 				Param:  "10",
-				By:     "testuser",
 				At:     fixedTime,
 			},
 		), collectEmittedEvents(t, sess))
@@ -306,11 +348,11 @@ func TestHandleChannelMode_SetKey(t *testing.T) {
 
 		require.Equal(t, append(prefix,
 			domain.ChannelModeChange{
+				Source: domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
 				Target: "#chan",
 				Flag:   domain.ModeKey,
 				Add:    true,
 				Param:  "secret",
-				By:     "testuser",
 				At:     fixedTime,
 			},
 		), collectEmittedEvents(t, sess))
@@ -350,8 +392,8 @@ func TestHandleChannelMode_ClearParametric(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, append(prefix,
-			domain.ChannelModeChange{Target: "#chan", Flag: domain.ModeUserLimit, Add: false, By: "testuser", At: fixedTime},
-			domain.ChannelModeChange{Target: "#chan", Flag: domain.ModeKey, Add: false, By: "testuser", At: fixedTime},
+			domain.ChannelModeChange{Source: domain.ClientSource(protocol.UserClientID, "testuser"), Target: "#chan", Flag: domain.ModeUserLimit, Add: false, At: fixedTime},
+			domain.ChannelModeChange{Source: domain.ClientSource(protocol.UserClientID, "testuser"), Target: "#chan", Flag: domain.ModeKey, Add: false, At: fixedTime},
 		), collectEmittedEvents(t, sess))
 
 		w, err = sess.loadChannelWindow(ctx, "#chan")
@@ -517,17 +559,21 @@ func TestHandleChannelMode_BatchAppliesInOrder(t *testing.T) {
 
 		require.Equal(t, append(prefix,
 			domain.ChannelModeChange{
-				Target: "#chan", Nick: "botty", InstanceID: botty.ID(),
-				Flag: domain.ModeOperator, Add: true,
-				By: "testuser", At: fixedTime, Instance: botty,
+				Source:  domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
+				Target:  "#chan",
+				Subject: "botty",
+				Flag:    domain.ModeOperator,
+				Add:     true,
+				At:      fixedTime,
 			},
+			domain.ChannelModeChange{Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+
+				Target: "#chan", Flag: domain.ModeTopicLock, Add: true, At: fixedTime},
+
 			domain.ChannelModeChange{
-				Target: "#chan", Flag: domain.ModeTopicLock, Add: true,
-				By: "testuser", At: fixedTime,
-			},
-			domain.ChannelModeChange{
+				Source: domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
 				Target: "#chan", Flag: domain.ModeUserLimit, Add: true, Param: "5",
-				By: "testuser", At: fixedTime,
+				At: fixedTime,
 			},
 		), collectEmittedEvents(t, sess))
 
@@ -735,7 +781,7 @@ func TestJoinAs_without_default_channel_modes_creates_a_modeless_channel(t *test
 func channelLogModeRows(t *testing.T, sess *Session, ch domain.ChannelName) []domain.ChannelModeChange {
 	t.Helper()
 
-	stored, err := sess.EventsBefore(t.Context(), ch, nil, 100)
+	stored, err := sess.store.EventsBefore(t.Context(), ch, nil, 100)
 	require.NoError(t, err)
 
 	var rows []domain.ChannelModeChange
@@ -767,7 +813,7 @@ func TestChannelMode_persists_to_channel_log_while_user_mode_does_not(t *testing
 		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
 		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
-		botty := seedInstance(t, sess, s, instanceSpec{
+		seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: testChannels("#chan"),
@@ -784,26 +830,23 @@ func TestChannelMode_persists_to_channel_log_while_user_mode_does_not(t *testing
 		synctest.Wait()
 
 		require.Equal(t, append(prefix, domain.ChannelModeChange{
-			Target:     "#chan",
-			Nick:       "botty",
-			InstanceID: botty.ID(),
-			Flag:       domain.ModeOperator,
-			Add:        true,
-			By:         "testuser",
-			At:         fixedTime,
-			Instance:   botty,
+			Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
+			Target:  "#chan",
+			Subject: "botty",
+			Flag:    domain.ModeOperator,
+			Add:     true,
+			At:      fixedTime,
 		}), collectEmittedEvents(t, sess))
 
 		// Yet the channel log holds only the channel-scoped row; the
 		// user-mode grant left no trace there.
 		require.Equal(t, []domain.ChannelModeChange{{
-			Target:     "#chan",
-			Nick:       "botty",
-			InstanceID: botty.ID(),
-			Flag:       domain.ModeOperator,
-			Add:        true,
-			By:         "testuser",
-			At:         fixedTime,
+			Source:  domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
+			Target:  "#chan",
+			Subject: "botty",
+			Flag:    domain.ModeOperator,
+			Add:     true,
+			At:      fixedTime,
 		}}, channelLogModeRows(t, sess, "#chan"))
 	})
 }

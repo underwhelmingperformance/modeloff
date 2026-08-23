@@ -204,7 +204,7 @@ func (r *dispatchRecorder) byModel() map[domain.ModelID][]protocol.IRCMessage {
 // answers one participant asks about the whole batch.
 func triggeredBy(events []protocol.IRCMessage, nick domain.Nick) bool {
 	return slices.ContainsFunc(events, func(e protocol.IRCMessage) bool {
-		return e.From == string(nick)
+		return e.Source.Nick() == nick
 	})
 }
 
@@ -237,7 +237,7 @@ func dispatchUserMessageAwaitingTurns(ctx context.Context, t *testing.T, sess *S
 func attachModelClient(t testing.TB, sess *Session, inst *domain.Instance) protocol.Client {
 	t.Helper()
 
-	client, err := sess.modelClientFactory.Attach(t.Context(), sess, inst)
+	client, err := sess.startModelClient(t.Context(), inst)
 	if err != nil {
 		t.Fatalf("attach model client: %v", err)
 	}
@@ -260,12 +260,15 @@ type testModelClientFactory struct {
 
 	// attachErr, when set, fails every attach. A model instance whose
 	// client cannot connect is what the ADDMODEL unwind is about.
-	attachErr error
+	attachErr   error
+	afterAttach func()
 
 	// prepareWarnings is what [testModelClientFactory.PrepareInstance]
 	// reports as having fallen short, standing in for the manager's
 	// persona-assignment failure.
-	prepareWarnings []string
+	prepareWarnings   []string
+	interruptTurnFn   func(protocol.ClientID)
+	interruptWindowFn func(protocol.ClientID, domain.ChannelName)
 
 	// clients and draining mirror the production manager's two sets:
 	// attached model-clients, and released ones whose dispatch
@@ -273,10 +276,13 @@ type testModelClientFactory struct {
 	// test that quits or kills a model does not leave its goroutine
 	// running past the end of the test with the `t`-scoped store
 	// still in hand.
-	mu        sync.Mutex
-	clients   map[protocol.ClientID]*modelclient.ModelClient
-	draining  []*modelclient.ModelClient
-	forgotten []protocol.ClientID
+	mu            sync.Mutex
+	attachedAs    map[protocol.ClientID]*domain.Instance
+	clients       map[protocol.ClientID]*modelclient.ModelClient
+	draining      []*modelclient.ModelClient
+	forgotten     []protocol.ClientID
+	deleted       []protocol.ClientID
+	pendingForget map[protocol.ClientID]struct{}
 }
 
 func newTestModelClientFactory(t testing.TB, apiClient api.Client) *testModelClientFactory {
@@ -285,11 +291,13 @@ func newTestModelClientFactory(t testing.TB, apiClient api.Client) *testModelCli
 
 func newTestModelClientFactoryWith(t testing.TB, apiClient api.Client, memStore memory.Store) *testModelClientFactory {
 	f := &testModelClientFactory{
-		t:         t,
-		apiClient: apiClient,
-		memStore:  memStore,
-		nick:      "fakenick",
-		clients:   make(map[protocol.ClientID]*modelclient.ModelClient),
+		t:             t,
+		apiClient:     apiClient,
+		memStore:      memStore,
+		nick:          "fakenick",
+		attachedAs:    make(map[protocol.ClientID]*domain.Instance),
+		clients:       make(map[protocol.ClientID]*modelclient.ModelClient),
+		pendingForget: make(map[protocol.ClientID]struct{}),
 	}
 	t.Cleanup(f.detachAll)
 	return f
@@ -304,7 +312,12 @@ func (f *testModelClientFactory) PrepareInstance(_ context.Context, _ *Session, 
 	return PreparedInstance{Nick: f.nick, Persona: persona, Warnings: f.prepareWarnings}, nil
 }
 
-func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst *domain.Instance) (protocol.Client, error) {
+func (f *testModelClientFactory) Attach(
+	ctx context.Context,
+	sess *Session,
+	inst *domain.Instance,
+	attachment *protocol.Attachment,
+) (protocol.Client, error) {
 	if f.attachErr != nil {
 		return nil, f.attachErr
 	}
@@ -318,7 +331,16 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 	}
 
 	apiClient := f.apiClient
-	mc := modelclient.New(inst, sess, func() api.Client { return apiClient }, f.memStore, chatcmdToolRegistry, nil, nil, sess.baseContext, nil)
+	mc := modelclient.New(modelclient.Config{
+		Instance:        inst,
+		Attachment:      attachment,
+		Session:         sess,
+		APIClient:       func() api.Client { return apiClient },
+		Memory:          f.memStore,
+		Tools:           chatcmdToolRegistry,
+		LifetimeContext: f.t.Context,
+	})
+	f.attachedAs[id] = inst
 	f.clients[id] = mc
 	f.mu.Unlock()
 
@@ -328,8 +350,66 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 		f.mu.Unlock()
 		return nil, fmt.Errorf("attach: %w", err)
 	}
+	if f.afterAttach != nil {
+		f.afterAttach()
+	}
 
 	return mc, nil
+}
+
+// attachedActor returns the actor value the factory was handed for
+// `id`, which is what a subscriber holds for the client it attached.
+func (f *testModelClientFactory) attachedActor(id protocol.ClientID) *domain.Instance {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.attachedAs[id]
+}
+
+func (f *testModelClientFactory) InstanceDeleted(id protocol.ClientID) {
+	f.mu.Lock()
+	f.deleted = append(f.deleted, id)
+	f.pendingForget[id] = struct{}{}
+	f.mu.Unlock()
+}
+
+func (f *testModelClientFactory) InterruptTurn(id protocol.ClientID) {
+	if f.interruptTurnFn != nil {
+		f.interruptTurnFn(id)
+
+		return
+	}
+
+	f.mu.Lock()
+	mc := f.clients[id]
+	f.mu.Unlock()
+
+	if mc != nil {
+		mc.InterruptTurn()
+	}
+}
+
+func (f *testModelClientFactory) InterruptWindow(id protocol.ClientID, window domain.ChannelName) {
+	if f.interruptWindowFn != nil {
+		f.interruptWindowFn(id, window)
+
+		return
+	}
+
+	f.mu.Lock()
+	mc := f.clients[id]
+	f.mu.Unlock()
+
+	if mc != nil {
+		mc.InterruptWindow(window)
+	}
+}
+
+func (f *testModelClientFactory) deletedInstances() []protocol.ClientID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]protocol.ClientID(nil), f.deleted...)
 }
 
 // Detach mirrors the production manager: release only, so a model
@@ -337,11 +417,25 @@ func (f *testModelClientFactory) Attach(ctx context.Context, sess *Session, inst
 // wait on the goroutine it is running on, with the released client
 // held for `detachAll` to join.
 func (f *testModelClientFactory) Detach(id protocol.ClientID) {
+	f.detach(id, false)
+}
+
+func (f *testModelClientFactory) DetachAndForget(id protocol.ClientID) {
+	f.detach(id, true)
+}
+
+func (f *testModelClientFactory) detach(id protocol.ClientID, forget bool) {
 	f.mu.Lock()
+	_, pending := f.pendingForget[id]
+	delete(f.pendingForget, id)
+	forget = forget || pending
 	mc, ok := f.clients[id]
 	if ok {
 		delete(f.clients, id)
 		f.draining = append(f.draining, mc)
+	}
+	if forget {
+		f.forgotten = append(f.forgotten, id)
 	}
 	f.mu.Unlock()
 
@@ -350,11 +444,6 @@ func (f *testModelClientFactory) Detach(id protocol.ClientID) {
 	}
 
 	mc.Release()
-}
-
-func (f *testModelClientFactory) DetachAndForget(id protocol.ClientID) {
-	f.Detach(id)
-	f.Forget(id)
 }
 
 func (f *testModelClientFactory) Forget(id protocol.ClientID) {

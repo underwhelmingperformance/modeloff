@@ -34,6 +34,11 @@ type Window struct {
 	// and [newWindow] is what makes it.
 	Scrollback *components.Scrollback
 
+	// Revision advances whenever the window receives new content or
+	// a later focus intent. A delayed command result captures the
+	// revision at invocation so it cannot override either change.
+	Revision uint64
+
 	// Unread is the count of messages addressed at this window
 	// the user has not yet seen. The sidebar surfaces it as a
 	// `(n)` suffix and a bold style. Cleared on focus.
@@ -76,6 +81,16 @@ type Window struct {
 // place from `Update`.
 func newWindow(w domain.Window) *Window {
 	return &Window{Window: w, Scrollback: components.NewScrollback()}
+}
+
+func (w *Window) appendToScrollback(event domain.Event) {
+	w.Scrollback.Append(event)
+	w.Revision++
+}
+
+func (w *Window) prependToScrollback(events []domain.Event) {
+	w.Scrollback.Prepend(events)
+	w.Revision += uint64(len(events))
 }
 
 // Less implements [set.Lesser] for `*Window`, delegating to the

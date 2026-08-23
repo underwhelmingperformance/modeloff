@@ -1041,6 +1041,22 @@ func TestInputBar_NickListUpdatedMsg_enables_nick_completion(t *testing.T) {
 	require.Equal(t, "alice: ", inputValue(t, m))
 }
 
+func TestInputBar_NickListUpdatedMsg_ignores_an_older_revision(t *testing.T) {
+	var m ui.Component = components.NewInputBar("")
+
+	current := domain.NewMemberList()
+	current.Add(domain.NewModelInstance("inst-alice", "alice", "", "", nil))
+	stale := domain.NewMemberList()
+	stale.Add(domain.NewModelInstance("inst-bob", "bob", "", "", nil))
+
+	m, _ = m.Update(components.NickListUpdatedMsg{Members: current, Revision: 2})
+	m, _ = m.Update(components.NickListUpdatedMsg{Members: stale, Revision: 1})
+	m = typeText(t, m, "al")
+	m, _ = m.Update(tabKey())
+
+	require.Equal(t, "alice: ", inputValue(t, m))
+}
+
 // inputBarKind is a minimal KindProvider for InputBar popover tests.
 type inputBarKind domain.ChannelKind
 

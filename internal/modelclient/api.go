@@ -18,6 +18,24 @@ import (
 
 const maxToolLoopTurns = 5
 
+type runTurnRequest struct {
+	apiClient    api.Client
+	session      Session
+	caller       protocol.Client
+	instance     *domain.Instance
+	target       protocol.MsgTarget
+	projection   providerTargetProjection
+	prompt       api.SystemPrompt
+	history      []protocol.IRCMessage
+	events       []protocol.IRCMessage
+	registry     *ToolRegistry
+	pacer        *Pacer
+	guard        protocol.WindowGuard
+	journal      *turnJournalWriter
+	startJournal func() *turnJournalWriter
+	retry        retryPolicy
+}
+
 // terminalTool is the tool that ended a turn. Most tools leave the
 // turn open — the model gets their results back and decides what to
 // do next — so the zero value is [terminalNone] and the two named
@@ -100,22 +118,10 @@ type turnOutcome struct {
 //
 // Upstream-side silence (refusal, content filter) short-circuits
 // the turn and surfaces a stable pass reason on the span.
-func runTurn(
-	ctx context.Context,
-	apiClient api.Client,
-	sess Session,
-	caller protocol.Client,
-	inst *domain.Instance,
-	target protocol.MsgTarget,
-	prompt api.SystemPrompt,
-	history []protocol.IRCMessage,
-	events []protocol.IRCMessage,
-	registry *ToolRegistry,
-	pacer *Pacer,
-) (turnOutcome, error) {
-	definitions := registry.Definitions()
-
-	result, err := apiClient.SendEvents(ctx, inst.ModelID, inst.ID(), prompt, history, events, definitions...)
+func runTurn(ctx context.Context, turn runTurnRequest) (turnOutcome, error) {
+	definitions := turn.registry.Definitions()
+	result, journal, err := sendTurnEvents(ctx, turn, definitions)
+	turn.journal = journal
 	if err != nil {
 		if outcome, ok := classifyUpstreamSilence(err); ok {
 			return outcome, nil
@@ -128,33 +134,28 @@ func runTurn(
 	executedAnyTool := false
 
 	for range maxToolLoopTurns {
-		if len(result.PendingToolCalls) == 0 {
+		if windowRevoked(ctx, turn.guard) {
+			return outcome, errDispatchWindowClosed
+		}
+
+		if len(result.PendingToolCalls) == 0 || turn.registry == nil {
 			outcome.passReason = observability.PassReasonModelPass
 			return outcome, nil
 		}
 
-		if registry == nil {
-			outcome.passReason = observability.PassReasonModelPass
-			return outcome, nil
-		}
-
-		batch, wErr := executeTools(ctx, sess, ToolContext{
-			Session: sess,
-			Actor:   inst,
-			Target:  target,
-			Client:  caller,
-		}, registry, result.PendingToolCalls, pacer)
-		executedAnyTool = executedAnyTool || batch.executed
-		if wErr != nil {
-			if executedAnyTool {
-				return outcome, &nonReplayableTurnError{Err: wErr}
-			}
-
-			return outcome, wErr
-		}
+		toolResults, terminal, executed, toolErr := executeToolBatch(
+			ctx, turn, result.PendingToolCalls,
+		)
 		outcome.toolTurnCount++
+		executedAnyTool = executedAnyTool || executed
+		if toolErr != nil {
+			return outcome, toolErr
+		}
+		if windowRevoked(ctx, turn.guard) {
+			return outcome, errDispatchWindowClosed
+		}
 
-		switch batch.terminal {
+		switch terminal {
 		case terminalPass:
 			outcome.passReason = observability.PassReasonModelPass
 			return outcome, nil
@@ -162,8 +163,12 @@ func runTurn(
 			return outcome, nil
 		case terminalNone:
 		}
+		if outcome.toolTurnCount == maxToolLoopTurns {
+			outcome.passReason = observability.PassReasonToolLoopExhausted
+			return outcome, nil
+		}
 
-		result, err = apiClient.ContinueWithToolResults(ctx, result.Conversation, batch.results, definitions...)
+		result, err = continueTurn(ctx, turn, result.Conversation, toolResults, definitions)
 		if err != nil {
 			if next, ok := classifyUpstreamSilence(err); ok {
 				next.toolTurnCount = outcome.toolTurnCount
@@ -178,11 +183,135 @@ func runTurn(
 		}
 	}
 
-	// The model kept emitting tool calls past maxToolLoopTurns. The
-	// final batch has already executed; the turn ends here without
-	// asking the model for a further response.
 	outcome.passReason = observability.PassReasonToolLoopExhausted
 	return outcome, nil
+}
+
+func sendTurnEvents(
+	ctx context.Context,
+	turn runTurnRequest,
+	definitions []api.ToolDefinition,
+) (api.CompletionResult, *turnJournalWriter, error) {
+	if windowRevoked(ctx, turn.guard) {
+		return api.CompletionResult{}, turn.journal, errDispatchWindowClosed
+	}
+
+	journal := turn.journal
+	if turn.startJournal != nil {
+		journal = turn.startJournal()
+	}
+
+	result, err := turn.apiClient.SendEvents(
+		ctx,
+		turn.instance.ModelID,
+		turn.instance.ID(),
+		turn.prompt,
+		turn.history,
+		turn.events,
+		definitions...,
+	)
+	appendAssistantEvidence(journal, result, err)
+	if err != nil && windowRevoked(ctx, turn.guard) {
+		return api.CompletionResult{}, journal, errDispatchWindowClosed
+	}
+
+	return result, journal, err
+}
+
+func continueTurn(
+	ctx context.Context,
+	turn runTurnRequest,
+	conversation *api.Conversation,
+	toolResults []api.ToolResult,
+	definitions []api.ToolDefinition,
+) (api.CompletionResult, error) {
+	result, err := continueTurnAttempt(
+		ctx, turn, conversation, toolResults, definitions,
+	)
+	if err == nil || !api.Retryable(err) {
+		return result, err
+	}
+	if waitErr := turn.retry.wait(ctx, err); waitErr != nil {
+		return result, fmt.Errorf("wait to retry continuation: %w", waitErr)
+	}
+
+	return continueTurnAttempt(ctx, turn, conversation, toolResults, definitions)
+}
+
+func continueTurnAttempt(
+	ctx context.Context,
+	turn runTurnRequest,
+	conversation *api.Conversation,
+	toolResults []api.ToolResult,
+	definitions []api.ToolDefinition,
+) (api.CompletionResult, error) {
+	if windowRevoked(ctx, turn.guard) {
+		return api.CompletionResult{}, errDispatchWindowClosed
+	}
+
+	if turn.journal != nil {
+		request, err := turn.apiClient.RenderToolResultRequest(
+			conversation, toolResults, definitions...,
+		)
+		if err != nil {
+			return api.CompletionResult{}, &nonReplayableTurnError{Err: err}
+		}
+		turn.journal.request(request)
+	}
+
+	result, err := turn.apiClient.ContinueWithToolResults(
+		ctx, conversation, toolResults, definitions...,
+	)
+	appendAssistantEvidence(turn.journal, result, err)
+	if err != nil && windowRevoked(ctx, turn.guard) {
+		return api.CompletionResult{}, errDispatchWindowClosed
+	}
+
+	return result, err
+}
+
+func executeToolBatch(
+	ctx context.Context,
+	turn runTurnRequest,
+	calls []api.PendingToolCall,
+) ([]api.ToolResult, terminalTool, bool, error) {
+	toolCtx := NewToolContext(turn.guard, turn.session, turn.caller, turn.target)
+	toolCtx.projection = turn.projection
+
+	batch, executionErr := executeTools(
+		ctx, turn.session, toolCtx, turn.registry, calls, turn.pacer,
+	)
+
+	if len(batch.results) > 0 {
+		appendToolEvidence(turn.journal, batch.results)
+	}
+	if executionErr != nil {
+		return batch.results, batch.terminal, batch.executed, &nonReplayableTurnError{
+			Err: executionErr,
+		}
+	}
+
+	return batch.results, batch.terminal, batch.executed, nil
+}
+
+func windowRevoked(ctx context.Context, guard protocol.WindowGuard) bool {
+	return guard != nil && !guard.Valid(ctx)
+}
+
+func appendAssistantEvidence(
+	journal *turnJournalWriter,
+	result api.CompletionResult,
+	responseErr error,
+) {
+	if responseErr != nil && !result.ResponseReceived {
+		return
+	}
+
+	journal.assistant(result)
+}
+
+func appendToolEvidence(journal *turnJournalWriter, results []api.ToolResult) {
+	journal.toolResults(results)
 }
 
 // classifyUpstreamSilence maps known upstream-side failure modes
@@ -249,6 +378,14 @@ func executeTools(
 		payload := ToolResultPayload{
 			OK:    false,
 			Error: fmt.Sprintf("unknown tool %q", toolName),
+		}
+
+		if err := toolCtx.authorise(callCtx); err != nil {
+			callSpan.RecordError(err)
+			callSpan.SetStatus(codes.Error, err.Error())
+			callSpan.End()
+
+			return outcome, err
 		}
 
 		if spec, ok := registry.Find(toolName); ok && toolAvailableInWindow(spec, toolCtx.Target) {

@@ -32,7 +32,7 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 	require.Equal(t, original.TopicSetBy, clone.TopicSetBy)
 	require.Equal(t, original.TopicSetAt, clone.TopicSetAt)
 	require.Equal(t, original.Modes, clone.Modes)
-	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(clone))
+	require.Equal(t, []Member{{InstanceID: "inst-alice", Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(clone))
 	require.True(t, clone.Invitations.Contains("inst-carol"))
 
 	clone.Topic = "rewritten"
@@ -44,7 +44,7 @@ func TestChannelWindow_Clone_is_independent(t *testing.T) {
 
 	require.Equal(t, "shipping", original.Topic)
 	require.Equal(t, ChannelModes{TopicLock: true, UserLimit: 4}, original.Modes)
-	require.Equal(t, []Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(original))
+	require.Equal(t, []Member{{InstanceID: "inst-alice", Nick: "alice", Modes: MemberModes{Operator: true}}}, membersOf(original))
 	require.True(t, original.Invitations.Contains("inst-carol"))
 	require.False(t, original.Invitations.Contains("inst-dave"))
 }
@@ -64,7 +64,7 @@ func TestMemberList_Clone_preserves_nick_snapshots(t *testing.T) {
 	alice.SetNick("renamed-behind-the-list")
 
 	require.Equal(t,
-		[]Member{{Instance: alice, Nick: "alice", Modes: MemberModes{Voice: true}}},
+		[]Member{{InstanceID: "inst-alice", Nick: "alice", Modes: MemberModes{Voice: true}}},
 		memberEntries(original.Clone()))
 }
 

@@ -7,8 +7,8 @@ import (
 	"github.com/laney/modeloff/internal/set"
 )
 
-// Member pairs an Instance with the privileges that instance holds
-// in one channel, for display in the nick list.
+// Member records the identity and privileges displayed for one
+// channel member.
 //
 // Nick is a snapshot of the instance's nick at the time of the last
 // Add/RenameTo; it stays consistent within a single render frame
@@ -18,9 +18,9 @@ import (
 // without emitting NickChangeEvent for every channel the instance
 // is in will leave this field stale.
 type Member struct {
-	Instance *Instance
-	Nick     Nick
-	Modes    MemberModes
+	InstanceID InstanceID
+	Nick       Nick
+	Modes      MemberModes
 }
 
 func (m Member) String() string {
@@ -42,23 +42,23 @@ func (m Member) Less(other Member) bool {
 		return m.Nick < other.Nick
 	}
 
-	return m.Instance.ID() < other.Instance.ID()
+	return m.InstanceID < other.InstanceID
 }
 
 // MemberList is a sorted set of channel members ordered by mode
 // then nick. The sort is maintained at insertion time so iteration
 // and positional access are always free of re-sorting. A parallel
-// map keyed by `*Instance` pointer backs O(1) identity lookups.
+// map keyed by stable instance ID backs O(1) identity lookups.
 type MemberList struct {
-	members    *set.Sorted[Member]
-	byInstance map[*Instance]Member
+	members *set.Sorted[Member]
+	byID    map[InstanceID]Member
 }
 
 // NewMemberList creates an empty member list.
 func NewMemberList() MemberList {
 	return MemberList{
-		members:    set.NewSorted[Member](),
-		byInstance: make(map[*Instance]Member),
+		members: set.NewSorted[Member](),
+		byID:    make(map[InstanceID]Member),
 	}
 }
 
@@ -69,8 +69,8 @@ func (ml *MemberList) ensureInit() {
 		ml.members = set.NewSorted[Member]()
 	}
 
-	if ml.byInstance == nil {
-		ml.byInstance = make(map[*Instance]Member)
+	if ml.byID == nil {
+		ml.byID = make(map[InstanceID]Member)
 	}
 }
 
@@ -80,21 +80,31 @@ func (ml *MemberList) ensureInit() {
 // `RenameTo`. Adding an instance that is already a member updates
 // its snapshot nick while preserving the privileges it holds.
 func (ml *MemberList) Add(inst *Instance) {
+	if inst == nil {
+		return
+	}
+
+	ml.AddIdentity(inst.ID(), inst.Nick())
+}
+
+// AddIdentity inserts an unprivileged member from protocol identity
+// values.
+func (ml *MemberList) AddIdentity(id InstanceID, nick Nick) {
 	ml.ensureInit()
 
-	m := Member{Instance: inst, Nick: inst.Nick()}
+	m := Member{InstanceID: id, Nick: nick}
 
-	if cur, ok := ml.byInstance[inst]; ok {
+	if cur, ok := ml.byID[id]; ok {
 		ml.members.Remove(cur)
 		m.Modes = cur.Modes
 	}
 
 	ml.members.Insert(m)
-	ml.byInstance[inst] = m
+	ml.byID[id] = m
 }
 
 // Remove deletes the given member. Identity is taken from
-// `m.Instance`; the Modes and Nick on the argument are ignored so
+// `m.InstanceID`; the Modes and Nick on the argument are ignored so
 // that callers holding a stale privilege set can still remove a
 // member cleanly.
 func (ml *MemberList) Remove(m Member) {
@@ -102,20 +112,23 @@ func (ml *MemberList) Remove(m Member) {
 		return
 	}
 
-	cur, ok := ml.byInstance[m.Instance]
+	id := m.InstanceID
+	cur, ok := ml.byID[id]
 	if !ok {
 		return
 	}
 
 	ml.members.Remove(cur)
-	delete(ml.byInstance, m.Instance)
+	delete(ml.byID, id)
 }
 
 // RemoveInstance is a convenience for callers that hold the handle
-// but not a full Member. It is equivalent to `Remove(Member{Instance:
-// inst})`.
+// but not a full Member. It removes the member whose stable ID matches
+// the instance.
 func (ml *MemberList) RemoveInstance(inst *Instance) {
-	ml.Remove(Member{Instance: inst})
+	if inst != nil {
+		ml.RemoveID(inst.ID())
+	}
 }
 
 // SetModes replaces the privileges a member holds. This removes and
@@ -127,16 +140,17 @@ func (ml *MemberList) SetModes(inst *Instance, modes MemberModes) {
 		return
 	}
 
-	cur, ok := ml.byInstance[inst]
+	id := inst.ID()
+	cur, ok := ml.byID[id]
 	if !ok {
 		return
 	}
 
 	ml.members.Remove(cur)
 
-	updated := Member{Instance: inst, Nick: cur.Nick, Modes: modes}
+	updated := Member{InstanceID: cur.InstanceID, Nick: cur.Nick, Modes: modes}
 	ml.members.Insert(updated)
-	ml.byInstance[inst] = updated
+	ml.byID[id] = updated
 }
 
 // ApplyMode grants or revokes a single privilege, leaving the
@@ -160,7 +174,7 @@ func (ml *MemberList) SetModesByNick(nick Nick, modes MemberModes) {
 		return
 	}
 
-	ml.SetModes(m.Instance, modes)
+	ml.SetModesID(m.InstanceID, modes)
 }
 
 // RenameTo updates the snapshot nick for the given instance handle,
@@ -178,25 +192,36 @@ func (ml *MemberList) RenameTo(inst *Instance, newNick Nick) {
 		return
 	}
 
-	cur, ok := ml.byInstance[inst]
+	id := inst.ID()
+	cur, ok := ml.byID[id]
 	if !ok {
 		return
 	}
 
 	ml.members.Remove(cur)
 
-	updated := Member{Instance: inst, Nick: newNick, Modes: cur.Modes}
+	updated := Member{InstanceID: cur.InstanceID, Nick: newNick, Modes: cur.Modes}
 	ml.members.Insert(updated)
-	ml.byInstance[inst] = updated
+	ml.byID[id] = updated
 }
 
-// GetByInstance returns the member for the given instance handle.
+// GetByInstance returns the member with the given instance's stable
+// identity.
 func (ml MemberList) GetByInstance(inst *Instance) (Member, bool) {
-	if ml.byInstance == nil {
+	if inst == nil {
 		return Member{}, false
 	}
 
-	m, ok := ml.byInstance[inst]
+	return ml.GetByID(inst.ID())
+}
+
+// GetByID returns the member with the given stable identity.
+func (ml MemberList) GetByID(id InstanceID) (Member, bool) {
+	if ml.byID == nil {
+		return Member{}, false
+	}
+
+	m, ok := ml.byID[id]
 
 	return m, ok
 }
@@ -207,6 +232,85 @@ func (ml MemberList) HasInstance(inst *Instance) bool {
 	_, ok := ml.GetByInstance(inst)
 
 	return ok
+}
+
+// HasID reports whether a member has the given stable identity.
+func (ml MemberList) HasID(id InstanceID) bool {
+	_, ok := ml.GetByID(id)
+	return ok
+}
+
+// RemoveID removes the member with the given stable identity.
+func (ml *MemberList) RemoveID(id InstanceID) {
+	member, ok := ml.GetByID(id)
+	if ok {
+		ml.Remove(member)
+	}
+}
+
+// RemoveNick removes the member whose current nick matches under the
+// server casemapping.
+func (ml *MemberList) RemoveNick(nick Nick) {
+	member, ok := ml.GetByNick(nick)
+	if ok {
+		ml.RemoveID(member.InstanceID)
+	}
+}
+
+// SetModesID replaces the privileges for the member with the given
+// stable identity.
+func (ml *MemberList) SetModesID(id InstanceID, modes MemberModes) {
+	if ml.members == nil {
+		return
+	}
+
+	cur, ok := ml.byID[id]
+	if !ok {
+		return
+	}
+
+	ml.members.Remove(cur)
+	cur.Modes = modes
+	ml.members.Insert(cur)
+	ml.byID[id] = cur
+}
+
+// ApplyModeID grants or revokes a privilege for the member with the
+// given stable identity.
+func (ml *MemberList) ApplyModeID(id InstanceID, flag Mode, add bool) {
+	member, ok := ml.GetByID(id)
+	if ok {
+		ml.SetModesID(id, member.Modes.With(flag, add))
+	}
+}
+
+// ApplyModeNick grants or revokes a privilege for the member whose
+// current nick matches under the server casemapping.
+func (ml *MemberList) ApplyModeNick(nick Nick, flag Mode, add bool) {
+	member, ok := ml.GetByNick(nick)
+	if ok {
+		ml.SetModesID(member.InstanceID, member.Modes.With(flag, add))
+	}
+}
+
+// RenameID updates the nick snapshot for the member with the given
+// stable identity.
+func (ml *MemberList) RenameID(id InstanceID, nick Nick) {
+	member, ok := ml.GetByID(id)
+	if ok {
+		ml.members.Remove(member)
+		member.Nick = nick
+		ml.members.Insert(member)
+		ml.byID[id] = member
+	}
+}
+
+// RenameNick updates a member selected by its current nick.
+func (ml *MemberList) RenameNick(oldNick, newNick Nick) {
+	member, ok := ml.GetByNick(oldNick)
+	if ok {
+		ml.RenameID(member.InstanceID, newNick)
+	}
 }
 
 // GetByNick finds a member by display nick, under the server's
@@ -257,10 +361,8 @@ func (ml MemberList) All() iter.Seq[Member] {
 }
 
 // Clone returns an independent member list holding the same
-// members. Each [Member] is copied verbatim — including its nick
-// snapshot — so the copy renders exactly as the original would;
-// the `*Instance` handles stay shared, as those are the canonical
-// identity pointers callers compare by.
+// members. Each [Member] is copied verbatim, including its nick
+// snapshot, so the copy renders exactly as the original would.
 func (ml MemberList) Clone() MemberList {
 	dst := NewMemberList()
 
@@ -270,7 +372,7 @@ func (ml MemberList) Clone() MemberList {
 
 	for m := range ml.All() {
 		dst.members.Insert(m)
-		dst.byInstance[m.Instance] = m
+		dst.byID[m.InstanceID] = m
 	}
 
 	return dst
@@ -348,23 +450,15 @@ func (ml MemberList) MarshalJSON() ([]byte, error) {
 	out := make([]memberJSON, 0, ml.Len())
 
 	for m := range ml.All() {
-		var id InstanceID
-		if m.Instance != nil {
-			id = m.Instance.ID()
-		}
-
 		modes := m.Modes
-		out = append(out, memberJSON{InstanceID: id, Nick: m.Nick, Modes: &modes})
+		out = append(out, memberJSON{InstanceID: m.InstanceID, Nick: m.Nick, Modes: &modes})
 	}
 
 	return json.Marshal(out)
 }
 
 // UnmarshalJSON decodes a JSON array of member records into the
-// list. Each record is stored as a stub `*Instance` carrying only
-// the serialised id; callers that need canonical handles (the
-// session on channel load) rewrite the stubs via
-// `MemberList.ResolveInstances`.
+// list.
 func (ml *MemberList) UnmarshalJSON(data []byte) error {
 	var records []memberJSON
 	if err := json.Unmarshal(data, &records); err != nil {
@@ -378,55 +472,11 @@ func (ml *MemberList) UnmarshalJSON(data []byte) error {
 	}
 
 	for _, r := range records {
-		stub := &Instance{instanceID: r.InstanceID}
-		m := Member{Instance: stub, Nick: r.Nick, Modes: memberModesFrom(r)}
+		m := Member{InstanceID: r.InstanceID, Nick: r.Nick, Modes: memberModesFrom(r)}
 
 		ml.members.Insert(m)
-		ml.byInstance[stub] = m
+		ml.byID[r.InstanceID] = m
 	}
 
 	return nil
-}
-
-// InstanceResolver turns a serialised InstanceID back into the
-// canonical `*Instance` handle produced by the store. Returning nil
-// for a not-found id indicates "drop this member" — currently used
-// only by the store layer when a member row references an instance
-// row that has been deleted.
-type InstanceResolver func(InstanceID) *Instance
-
-// ResolveInstances rewrites each member's stub `*Instance` (set by
-// UnmarshalJSON to carry only the serialised id) to the canonical
-// handle returned by resolve. A stub whose id resolves to nil is
-// dropped from the list.
-//
-// This is intended for the store's channel-deserialisation path
-// only: the store reads a channel's member-list records from disk,
-// then calls ResolveInstances to rewrite the stubs to the canonical
-// pointers it owns. Session and UI code never call this directly —
-// by the time a Channel surfaces to session the MemberList already
-// carries canonical handles.
-func (ml *MemberList) ResolveInstances(resolve InstanceResolver) {
-	if ml.members == nil {
-		return
-	}
-
-	rebuilt := set.NewSorted[Member]()
-	byInstance := make(map[*Instance]Member, ml.members.Len())
-
-	for m := range ml.All() {
-		id := m.Instance.ID()
-
-		canonical := resolve(id)
-		if canonical == nil {
-			continue
-		}
-
-		updated := Member{Instance: canonical, Nick: m.Nick, Modes: m.Modes}
-		rebuilt.Insert(updated)
-		byInstance[canonical] = updated
-	}
-
-	ml.members = rebuilt
-	ml.byInstance = byInstance
 }

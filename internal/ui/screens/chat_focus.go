@@ -23,6 +23,15 @@ func (s ChatScreen) routeWindows(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 		next, cmd := s.handleChannelFocus(msg)
 		return next, cmd, true
 
+	case chatcmd.ChannelJoinFocusMsg:
+		next, cmd := s.handleChannelJoinFocus(msg)
+		return next, cmd, true
+
+	case joinAutojoinDoneMsg:
+		s.autojoinPending = false
+
+		return s, tea.Sequence(s.bootstrapFromSession(s.dmRestoreDone)...), true
+
 	case components.ChannelSelectedMsg:
 		return s, s.switchChannel(msg.Channel), true
 
@@ -41,9 +50,25 @@ func (s ChatScreen) routeWindows(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 	case dmWindowsRestoredMsg:
 		next, cmd := s.handleDMWindowsRestored(msg)
 		return next, cmd, true
+
+	case dmLandingRestoredMsg:
+		next, cmd := s.handleDMLandingRestored(msg)
+		return next, cmd, true
 	}
 
 	return s, nil, false
+}
+
+func (s ChatScreen) handleChannelJoinFocus(msg chatcmd.ChannelJoinFocusMsg) (ChatScreen, tea.Cmd) {
+	if _, exists := s.windowByName(msg.Channel); exists && s.joinReplyDone[msg.Channel] {
+		return s.handleChannelFocus(chatcmd.ChannelFocusMsg(msg))
+	}
+
+	if previous, exists := s.pendingJoinFocus[msg.Channel]; !exists || msg.At.After(previous) {
+		s.pendingJoinFocus[msg.Channel] = msg.At
+	}
+
+	return s, nil
 }
 
 // focus moves the user to `ch` and returns the updated screen
@@ -72,6 +97,7 @@ func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
 	s.active = w
 	s.visible.window = w
 	w.Visits++
+	w.Revision++
 
 	cmds := []tea.Cmd{s.rebindCompleter(), s.markReadCmd(w)}
 	if leaving != nil && leaving != w {
@@ -127,10 +153,16 @@ func (s ChatScreen) markReadCmd(window *Window) tea.Cmd {
 // with that window's topic and kind. Every switch goes through here,
 // after [ChatScreen.focus] has moved the user.
 func (s ChatScreen) setChannelCmd() tea.Cmd {
+	displayName := ""
+	if s.active != nil {
+		displayName = s.active.DisplayName()
+	}
+
 	return msgCmd(components.SetChannelMsg{
-		Channel: s.activeName(),
-		Topic:   s.activeTopic(),
-		Kind:    s.activeKind(),
+		Channel:     s.activeName(),
+		DisplayName: displayName,
+		Topic:       s.activeTopic(),
+		Kind:        s.activeKind(),
 	})
 }
 
@@ -176,39 +208,76 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen,
 		return s, msgCmd(components.ChannelHasLifecycleMsg{Channel: msg.Channel})
 	}
 
-	s, rebind := s.focus(msg.Channel)
-	w.UserTime = msg.At
-
-	var members domain.MemberList
-	if cw, ok := w.Window.(*domain.ChannelWindow); ok {
-		members = cw.Members
+	// Record the leaving window's read position before focus changes
+	// the content closure to the destination window.
+	var currentRead tea.Cmd
+	if s.active != nil {
+		s, currentRead = s.forwardToLayout(components.ScrollbackUpdatedMsg{
+			Channel: s.active.Name(),
+		})
 	}
 
-	cmds := []tea.Cmd{rebind}
+	s, rebind := s.focus(msg.Channel)
+	w.UserTime = msg.At
+	if msg.At.After(s.focusAt) {
+		s.focusAt = msg.At
+	}
+
+	cmds := []tea.Cmd{currentRead, rebind}
 	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
 	cmds = append(cmds, s.setChannelCmd())
 
 	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
 	cmds = append(cmds, s.persistLastWindow(s.active))
 	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
-	cmds = append(cmds, msgCmd(components.NickListUpdatedMsg{Members: members}))
+	var nickListUpdated tea.Cmd
+	s, nickListUpdated = s.nickListUpdatedCmd()
+	cmds = append(cmds, nickListUpdated)
+	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}))
 
 	return s, tea.Batch(cmds...)
 }
 
+func (s ChatScreen) nickListMembers() domain.MemberList {
+	if s.active == nil {
+		return domain.MemberList{}
+	}
+
+	switch window := s.active.Window.(type) {
+	case *domain.ChannelWindow:
+		return window.Members
+	case *dmWindow:
+		members := domain.NewMemberList()
+		members.AddIdentity(window.peer, window.nick)
+
+		return members
+	default:
+		return domain.MemberList{}
+	}
+}
+
+func (s ChatScreen) nickListUpdatedCmd() (ChatScreen, tea.Cmd) {
+	s.nickListRevision++
+
+	return s, msgCmd(components.NickListUpdatedMsg{
+		Members:  s.nickListMembers(),
+		Revision: s.nickListRevision,
+	})
+}
+
 // focusWins decides whether an incoming focus event should take
 // over the visible area. The arbiter compares the event's
-// timestamp against the active window's `UserTime`: a strictly
+// timestamp against the latest accepted focus action: a strictly
 // newer event wins, anything stamped at or before the user's last
-// interaction with the current active is treated as background
-// activity and surfaces on the sidebar instead. With no active
-// window, the startup case accepts any event.
+// navigation is treated as background activity and surfaces on the
+// sidebar instead. A focus-clear action remains authoritative while
+// the welcome screen has no active window.
 func (s ChatScreen) focusWins(at time.Time) bool {
-	if s.active == nil {
+	if s.focusAt.IsZero() {
 		return true
 	}
 
-	return at.After(s.active.UserTime)
+	return at.After(s.focusAt)
 }
 
 // persistLastWindow writes the user's currently-active window to the
@@ -218,14 +287,14 @@ func (s ChatScreen) persistLastWindow(window *Window) tea.Cmd {
 	if s.uiState == nil {
 		return nil
 	}
+	var selected domain.Window
+	if window != nil {
+		selected = window.Window
+	}
+	write := s.user.RecordLastWindow(selected)
 
 	return func() tea.Msg {
-		var err error
-		if window == nil {
-			err = s.uiState.ClearLastWindow(s.baseContext())
-		} else {
-			err = s.uiState.SetLastWindow(s.baseContext(), window.Window)
-		}
+		err := write.Wait()
 		if err != nil {
 			slog.Default().ErrorContext(s.baseContext(), "persist last window", "window", windowName(window), "error", err)
 		}
@@ -241,14 +310,15 @@ func (s ChatScreen) persistLastWindow(window *Window) tea.Cmd {
 // empty-queue branch when they fire. When the closed window was the
 // visible one the user lands on the first remaining channel, or on
 // the welcome checklist when none is left. `at` is the moment of the
-// departure, which the new visible window takes as its `UserTime`:
-// the part is the user's freshest deliberate action, so [focusWins]
-// keeps them here against any focus event still in flight from before
-// it, such as a buffered `NamesReply` for the window just closed.
+// departure. The new visible window advances its `UserTime` to that
+// moment when it is newer. [ChatScreen.focusWins] then rejects focus
+// proposals that were already in flight when the departure occurred.
 func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen, tea.Cmd) {
 	wasVisible := s.active != nil && s.active.Name() == ch
 
 	s.channels.Remove(windowKey(ch))
+	delete(s.pendingJoinFocus, ch)
+	delete(s.joinReplyDone, ch)
 	delete(s.pacedQueue, ch)
 	s.checklist.channelCount = s.realChannelCount()
 
@@ -265,12 +335,20 @@ func (s ChatScreen) closeWindow(ch domain.ChannelName, at time.Time) (ChatScreen
 
 	if first, ok := s.firstRealChannel(); ok {
 		s, rebind = s.focus(first.Name())
-		first.UserTime = at
+		if at.After(first.UserTime) {
+			first.UserTime = at
+		}
+		if first.UserTime.After(s.focusAt) {
+			s.focusAt = first.UserTime
+		}
 	} else {
 		s, rebind = s.clearFocus()
 		cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{
 			Text: s.checklist.text(),
 		}))
+	}
+	if at.After(s.focusAt) {
+		s.focusAt = at
 	}
 
 	cmds = append(cmds,

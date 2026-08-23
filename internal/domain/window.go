@@ -4,12 +4,10 @@ import "time"
 
 // Window is the addressable-by-name behaviour shared by every kind
 // of chat target the user can switch into: the per-session status
-// window, real IRC channels, and DM streams. The set of
-// implementations is fixed (`*StatusWindow`, `*ChannelWindow`,
-// `*DMWindow`) and lives in this package; per-kind state lives on
-// the matching concrete type so invariants like "modes don't apply
-// to status" and "DMs don't have a member list" are compile-time
-// facts rather than runtime kind-checks.
+// window, real IRC channels, and client-owned DM streams. Per-kind
+// state lives on the matching concrete type so invariants such as
+// "modes do not apply to status" and "DMs do not have a member
+// list" remain compile-time facts.
 //
 // Code that addresses a window only by name (rendering, scrollback,
 // `last_read`, focus) operates against this interface. Code that
@@ -35,8 +33,8 @@ type Window interface {
 	Kind() ChannelKind
 
 	// DisplayName returns the window name formatted for display.
-	// Channels keep their `#` prefix; DMs prefix the nick with
-	// `@`; the status window renders as its reserved name.
+	// Channels keep their `#` prefix, DMs return the counterpart's
+	// current nick, and the status window returns its reserved name.
 	DisplayName() string
 
 	// Less defines the sidebar / sorted-set ordering: status
@@ -81,23 +79,20 @@ type ChannelDirectoryEntry struct {
 	Topic   string
 }
 
-// WindowKey builds a placeholder `Window` suitable only for
-// keyed lookup in a sorted set whose comparator reads
-// `Name()` and `Kind()`. The returned value carries no per-kind
-// state — it must not be used as a real window. The DM case
-// returns a `*DMWindow` whose `Counterpart` is nil; that is safe
-// for lookup because the comparator does not touch it, and a
-// caller that mistakes a key for a stored value will fail fast
-// when it tries to read the counterpart.
+// WindowKey builds a placeholder [Window] for keyed lookup and
+// persisted client UI state. It carries no channel or presentation
+// state and must not be used as a live window.
 func WindowKey(name ChannelName) Window {
-	switch InferChannelKind(name) {
-	case KindStatus:
-		return &StatusWindow{}
-	case KindChannel:
-		return &ChannelWindow{name: name}
-	case KindDM:
-		return &DMWindow{name: name}
-	}
-
-	return nil
+	return windowReference{name: name, kind: InferChannelKind(name)}
 }
+
+type windowReference struct {
+	name ChannelName
+	kind ChannelKind
+}
+
+func (w windowReference) Name() ChannelName      { return w.name }
+func (windowReference) Created() time.Time       { return time.Time{} }
+func (w windowReference) Kind() ChannelKind      { return w.kind }
+func (w windowReference) DisplayName() string    { return string(w.name) }
+func (w windowReference) Less(other Window) bool { return windowLess(w, other) }

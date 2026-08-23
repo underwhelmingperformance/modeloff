@@ -11,7 +11,8 @@ import (
 
 // NickListUpdatedMsg tells the nick list to refresh its members.
 type NickListUpdatedMsg struct {
-	Members domain.MemberList
+	Members  domain.MemberList
+	Revision uint64
 }
 
 // NickListThinkingMsg updates which nicks are currently responding.
@@ -28,7 +29,7 @@ func nickListView(thinking map[domain.Nick]bool) func(domain.Member, ViewState, 
 		// Hash the colour by stable identity, not by the live nick
 		// snapshot. A rename changes the rendered text but keeps the
 		// colour consistent across the session.
-		colourSeed := string(m.Instance.ID())
+		colourSeed := string(m.InstanceID)
 
 		var text string
 
@@ -48,8 +49,9 @@ func nickListView(thinking map[domain.Nick]bool) func(domain.Member, ViewState, 
 
 // NickList displays the sorted members of the current channel.
 type NickList struct {
-	panel    Sidebar[domain.Member, domain.Nick]
-	thinking map[domain.Nick]bool
+	panel           Sidebar[domain.Member, domain.Nick]
+	thinking        map[domain.Nick]bool
+	membersRevision uint64
 }
 
 // NewNickList creates a nick list backed by the given member list.
@@ -76,6 +78,11 @@ func (n NickList) Init() tea.Cmd {
 func (n NickList) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case NickListUpdatedMsg:
+		if msg.Revision < n.membersRevision {
+			return n, nil
+		}
+
+		n.membersRevision = msg.Revision
 		n.panel = n.panel.SetItems(msg.Members.SortedSet())
 
 		return n, nil

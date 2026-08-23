@@ -328,6 +328,35 @@ func (f *FakeAPI) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	return nil, nil
 }
 
+// RenderEventRequest returns the standard OpenRouter request shape
+// used by the test client.
+func (f *FakeAPI) RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt api.SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	return api.RenderEventRequest(
+		modelID, selfInstanceID, systemPrompt, history, events, tools...,
+	)
+}
+
+// RenderToolResultRequest returns the standard OpenRouter request
+// shape used by the test client.
+func (f *FakeAPI) RenderToolResultRequest(
+	conv *api.Conversation,
+	results []api.ToolResult,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	if conv == nil {
+		return api.RenderedEventRequest{}, nil
+	}
+
+	return api.RenderToolResultRequest(conv, results, tools...)
+}
+
 // SendEvents delegates to SendEventsFn or returns silence (no tool
 // calls, which the dispatch loop terminates on).
 func (f *FakeAPI) SendEvents(
@@ -469,6 +498,7 @@ func SeedMessage(t testing.TB, sess *session.Session, channel, body string) {
 // keeps the nick a test renders the same from one seeded line to the
 // next.
 var seedbots sync.Map
+var sessionStores sync.Map
 
 func seedbotFor(t testing.TB, sess *session.Session) *testclient.TestClient {
 	t.Helper()
@@ -480,7 +510,10 @@ func seedbotFor(t testing.TB, sess *session.Session) *testclient.TestClient {
 		return bot
 	}
 
-	bot := testclient.New("seedbot", sess, testclient.WithInstanceID("inst-seedbot"))
+	store, ok := sessionStores.Load(sess)
+	require.True(t, ok, "test session has a registered store")
+
+	bot := testclient.NewStored("seedbot", sess, store.(SessionStore), testclient.WithInstanceID("inst-seedbot"))
 	require.NoError(t, bot.Attach(t.Context()))
 
 	seedbots.Store(sess, bot)
@@ -526,10 +559,15 @@ func NewTestSession(
 		return apiClient, nil
 	})
 
-	sess := session.New(baseContext, store, mgr, nil)
+	userCredential := protocol.NewUserCredential()
+	sess := session.New(baseContext(), store, mgr, nil,
+		session.WithUserCredential(userCredential))
+	sessionStores.Store(sess, store)
+	t.Cleanup(func() { sessionStores.Delete(sess) })
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	user := userclient.New("testuser", sess, store, userclient.NewStoreReplyLog(store))
+	user := userclient.New("testuser", sess, store,
+		userclient.NewStoreReplyLog(store), userCredential)
 	require.NoError(t, user.Attach(baseContext()))
 
 	return sess, mgr, user

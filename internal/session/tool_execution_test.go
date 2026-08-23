@@ -32,6 +32,7 @@ type teardownFailureStore struct {
 	saveWindowErr      error
 	deleteInstanceErr  error
 	markInstanceErr    error
+	clearSessionErr    error
 	deleteMu           sync.Mutex
 	deleteInstanceErrs []error
 	markedMu           sync.Mutex
@@ -57,8 +58,9 @@ func (f *blockingAttachFactory) Attach(
 	ctx context.Context,
 	sess *Session,
 	inst *domain.Instance,
+	attachment *protocol.Attachment,
 ) (protocol.Client, error) {
-	client, err := f.ModelClientFactory.Attach(ctx, sess, inst)
+	client, err := f.ModelClientFactory.Attach(ctx, sess, inst, attachment)
 	if err != nil {
 		return nil, err
 	}
@@ -69,10 +71,10 @@ func (f *blockingAttachFactory) Attach(
 	return client, nil
 }
 
-func (f *blockingForgetFactory) DetachAndForget(id protocol.ClientID) {
+func (f *blockingForgetFactory) Detach(id protocol.ClientID) {
 	f.started <- id
 	<-f.release
-	f.ModelClientFactory.DetachAndForget(id)
+	f.ModelClientFactory.Detach(id)
 }
 
 func (s *teardownFailureStore) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
@@ -118,7 +120,56 @@ func (s *teardownFailureStore) SaveWindow(ctx context.Context, window domain.Win
 	return s.Store.SaveWindow(ctx, window)
 }
 
+func (s *teardownFailureStore) ClearSessionActive(ctx context.Context) error {
+	if s.armed.Load() && s.clearSessionErr != nil {
+		return s.clearSessionErr
+	}
+
+	return s.Store.ClearSessionActive(ctx)
+}
+
+func (s *teardownFailureStore) CommitChannelJoin(
+	ctx context.Context,
+	join storemod.ChannelJoin,
+) (storemod.CommittedChannelEvent, error) {
+	if s.armed.Load() && s.saveWindowErr != nil {
+		return storemod.CommittedChannelEvent{}, s.saveWindowErr
+	}
+
+	return s.Store.CommitChannelJoin(ctx, join)
+}
+
+func (s *teardownFailureStore) CommitChannelUpdate(
+	ctx context.Context,
+	update storemod.ChannelUpdate,
+) (storemod.CommittedChannelEvent, error) {
+	if s.armed.Load() && s.saveWindowErr != nil {
+		return storemod.CommittedChannelEvent{}, s.saveWindowErr
+	}
+
+	return s.Store.CommitChannelUpdate(ctx, update)
+}
+
 func (s *teardownFailureStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
+	if err := s.instanceDeletionError(id); err != nil {
+		return err
+	}
+
+	return s.Store.DeleteInstanceByID(ctx, id)
+}
+
+func (s *teardownFailureStore) CommitInstanceDeletion(
+	ctx context.Context,
+	deletion storemod.InstanceDeletion,
+) (storemod.CommittedInstanceDeletion, error) {
+	if err := s.instanceDeletionError(deletion.InstanceID); err != nil {
+		return storemod.CommittedInstanceDeletion{}, err
+	}
+
+	return s.Store.CommitInstanceDeletion(ctx, deletion)
+}
+
+func (s *teardownFailureStore) instanceDeletionError(id domain.InstanceID) error {
 	if s.armed.Load() && (s.instanceID == "" || id == s.instanceID) {
 		s.deleteMu.Lock()
 		if len(s.deleteInstanceErrs) > 0 {
@@ -137,7 +188,106 @@ func (s *teardownFailureStore) DeleteInstanceByID(ctx context.Context, id domain
 		}
 	}
 
-	return s.Store.DeleteInstanceByID(ctx, id)
+	return nil
+}
+
+func TestSession_failed_add_releases_the_client_when_instance_deletion_fails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var dispatches atomic.Int32
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				dispatches.Add(1)
+				return api.CompletionResult{}, nil
+			},
+		}
+		backing := storetest.NewMemoryStore(t)
+		failing := &teardownFailureStore{
+			Store:             backing,
+			saveWindowErr:     errors.New("admission failed"),
+			deleteInstanceErr: errors.New("delete failed"),
+		}
+		factory := newTestModelClientFactory(t, fake)
+		sess := New(t.Context(), failing, factory, nil)
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+		attachTestUserClient(t, sess, "testuser")
+
+		require.NoError(t, userJoin(t.Context(), t, sess, "#general"))
+		failing.armed.Store(true)
+
+		err := addModelViaWire(t.Context(), t, sess, "#general", "test/model", "quiet regular")
+		require.ErrorIs(t, err, failing.saveWindowErr)
+
+		window, err := sess.loadChannelWindow(t.Context(), "#general")
+		require.NoError(t, err)
+
+		failing.armed.Store(false)
+		_, err = userSendMessage(t.Context(), t, sess, "#general", "after failed add")
+		require.NoError(t, err)
+		synctest.Wait()
+		require.Equal(t, struct {
+			dispatches       int32
+			deletedInstances []protocol.ClientID
+			attached         []protocol.ClientID
+			active           []domain.InstanceID
+			members          []domain.Nick
+		}{
+			attached: []protocol.ClientID{},
+			active:   []domain.InstanceID{protocol.UserClientID},
+			members:  []domain.Nick{"testuser"},
+		}, struct {
+			dispatches       int32
+			deletedInstances []protocol.ClientID
+			attached         []protocol.ClientID
+			active           []domain.InstanceID
+			members          []domain.Nick
+		}{
+			dispatches:       dispatches.Load(),
+			deletedInstances: factory.deletedInstances(),
+			attached:         factory.attached(),
+			active:           instanceIDs(t, backing),
+			members:          memberNicks(window),
+		})
+	})
+}
+
+func TestSession_Shutdown_waits_for_an_accepted_add_model(t *testing.T) {
+	backing := storetest.NewMemoryStore(t)
+	factory := newTestModelClientFactory(t, &apitest.Fake{})
+	attached := make(chan struct{})
+	release := make(chan struct{})
+	factory.afterAttach = func() {
+		close(attached)
+		<-release
+	}
+
+	sess := New(t.Context(), backing, factory, nil)
+	attachTestUserClient(t, sess, "testuser")
+	require.NoError(t, userJoin(t.Context(), t, sess, "#general"))
+
+	addDone := make(chan error, 1)
+	go func() {
+		addDone <- addModelViaWire(t.Context(), t, sess, "#general", "test/model", "quiet regular")
+	}()
+	<-attached
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- sess.Shutdown(t.Context())
+	}()
+	<-sess.shuttingDown
+
+	select {
+	case err := <-shutdownDone:
+		require.Failf(t, "Shutdown returned before the accepted command", "error: %v", err)
+	default:
+	}
+
+	close(release)
+	require.ErrorIs(t, <-addDone, ErrSessionClosed)
+	require.NoError(t, <-shutdownDone)
+
+	_, err := backing.ResolveNick(t.Context(), "fakenick")
+	require.Error(t, err)
 }
 
 func TestSession_failed_terminal_tool_lets_the_model_retry(t *testing.T) {
@@ -164,19 +314,31 @@ func TestSession_failed_terminal_tool_lets_the_model_retry(t *testing.T) {
 				dispatchUserMessage(t.Context(), t, sess, "#general", "hello")
 
 				type rejectedResult struct {
-					ToolCallID string
-					OK         bool
+					ToolCallID   string
+					OK           bool
+					Summary      string
+					Data         any
+					ErrorPresent bool
 				}
 				gotRejected := make([]rejectedResult, len(rejected))
 				for index, result := range rejected {
 					var payload modelclient.ToolResultPayload
 					require.NoError(t, json.Unmarshal([]byte(result.Content), &payload))
-					gotRejected[index] = rejectedResult{ToolCallID: result.ToolCallID, OK: payload.OK}
+					gotRejected[index] = rejectedResult{
+						ToolCallID:   result.ToolCallID,
+						OK:           payload.OK,
+						Summary:      payload.Summary,
+						Data:         payload.Data,
+						ErrorPresent: payload.Error != "",
+					}
 				}
-				require.Equal(t, []rejectedResult{{ToolCallID: "terminal", OK: false}}, gotRejected)
+				require.Equal(t, []rejectedResult{{
+					ToolCallID:   "terminal",
+					ErrorPresent: true,
+				}}, gotRejected)
 				require.Equal(t, []domain.Message{
-					{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
-					{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "clean reply", At: fixedTime},
+					{Target: "#general", Source: domain.ClientSource(domain.InstanceID(""), domain.Nick("testuser")), Body: "hello", At: fixedTime},
+					{Target: "#general", Source: domain.ClientSource(testMemberID("botty"), domain.Nick("botty")), Body: "clean reply", At: fixedTime},
 				}, channelMessages(t, eventStore, "#general"))
 			})
 		})
@@ -204,7 +366,7 @@ func TestSession_committed_quit_stops_the_tool_batch_when_teardown_fails(t *test
 		backing := storetest.NewMemoryStore(t)
 		sentinel := errors.New("save failed")
 		failing := &teardownFailureStore{Store: backing, saveWindowErr: sentinel}
-		sess := New(t.Context, failing, newTestModelClientFactory(t, fake), nil)
+		sess := New(t.Context(), failing, newTestModelClientFactory(t, fake), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -234,7 +396,7 @@ func TestSession_committed_quit_stops_the_tool_batch_when_teardown_fails(t *test
 			connected:     false,
 			eventTypes:    []string{"message", "quit"},
 			messages: []domain.Message{
-				{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
+				{Target: "#general", Source: domain.ClientSource(domain.InstanceID(""), domain.Nick("testuser")), Body: "hello", At: fixedTime},
 			},
 		}, struct {
 			continuations int
@@ -243,7 +405,7 @@ func TestSession_committed_quit_stops_the_tool_batch_when_teardown_fails(t *test
 			messages      []domain.Message
 		}{
 			continuations: continuations,
-			connected:     sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+			connected:     sess.ClientConnected(protocol.ClientID(botty.ID())),
 			eventTypes:    channelEventTypes(t, backing, "#general"),
 			messages:      channelMessages(t, backing, "#general"),
 		})
@@ -270,7 +432,7 @@ func TestSession_failed_instance_deletion_does_not_commit_quit(t *testing.T) {
 
 		backing := storetest.NewMemoryStore(t)
 		failing := &teardownFailureStore{Store: backing, deleteInstanceErr: errors.New("delete failed")}
-		sess := New(t.Context, failing, newTestModelClientFactory(t, fake), nil)
+		sess := New(t.Context(), failing, newTestModelClientFactory(t, fake), nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -301,7 +463,7 @@ func TestSession_failed_instance_deletion_does_not_commit_quit(t *testing.T) {
 			members:       testMembers(t, sess, backing, "testuser", "botty"),
 			eventTypes:    []string{"message"},
 			messages: []domain.Message{
-				{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
+				{Target: "#general", Source: domain.ClientSource(domain.InstanceID(""), domain.Nick("testuser")), Body: "hello", At: fixedTime},
 			},
 		}, struct {
 			continuations int
@@ -311,7 +473,7 @@ func TestSession_failed_instance_deletion_does_not_commit_quit(t *testing.T) {
 			messages      []domain.Message
 		}{
 			continuations: continuations,
-			connected:     sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+			connected:     sess.ClientConnected(protocol.ClientID(botty.ID())),
 			members:       window.Members,
 			eventTypes:    channelEventTypes(t, backing, "#general"),
 			messages:      channelMessages(t, backing, "#general"),
@@ -325,7 +487,7 @@ func TestSession_failed_instance_deletion_still_commits_kill(t *testing.T) {
 		sentinel := errors.New("delete failed")
 		failing := &teardownFailureStore{Store: backing, deleteInstanceErr: sentinel}
 		factory := newTestModelClientFactory(t, &apitest.Fake{})
-		sess := New(t.Context, failing, factory, nil)
+		sess := New(t.Context(), failing, factory, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -343,6 +505,7 @@ func TestSession_failed_instance_deletion_still_commits_kill(t *testing.T) {
 
 		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{Nick: "botty", Reason: "spam"})
 		require.ErrorIs(t, err, sentinel)
+		synctest.Wait()
 		window, loadErr := sess.loadChannelWindow(t.Context(), "#general")
 		require.NoError(t, loadErr)
 		_, resolveErr := backing.ResolveNick(t.Context(), "botty")
@@ -366,11 +529,9 @@ func TestSession_failed_instance_deletion_still_commits_kill(t *testing.T) {
 			visibleIDs: []domain.InstanceID{protocol.UserClientID},
 			pending:    []domain.InstanceID{botty.ID()},
 			events: []domain.Event{domain.Quit{
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Message:    "Killed by testuser (spam)",
-				At:         fixedTime,
-				Instance:   botty,
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				Message: "Killed by testuser (spam)",
+				At:      fixedTime,
 			}},
 		}, struct {
 			response   protocol.Response
@@ -383,7 +544,7 @@ func TestSession_failed_instance_deletion_still_commits_kill(t *testing.T) {
 			events     []domain.Event
 		}{
 			response:   resp,
-			connected:  sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+			connected:  sess.clientOwner(protocol.ClientID(botty.ID())) != nil,
 			attached:   factory.attached(),
 			forgotten:  factory.forgottenIDs(),
 			members:    memberNicks(window),
@@ -406,7 +567,7 @@ func TestSession_forced_kill_discards_a_recovered_tombstone_error(t *testing.T) 
 			deleteInstanceErrs: []error{deleteErr, nil},
 		}
 		factory := newTestModelClientFactory(t, &apitest.Fake{})
-		sess := New(t.Context, failing, factory, nil)
+		sess := New(t.Context(), failing, factory, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -422,6 +583,7 @@ func TestSession_forced_kill_discards_a_recovered_tombstone_error(t *testing.T) 
 
 		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{Nick: "botty", Reason: "spam"})
 		require.NoError(t, err)
+		synctest.Wait()
 		pending, pendingErr := backing.ListPendingInstanceDeletions(t.Context())
 		require.NoError(t, pendingErr)
 
@@ -450,7 +612,7 @@ func TestSession_forced_kill_discards_a_recovered_tombstone_error(t *testing.T) 
 			marked    []domain.InstanceID
 		}{
 			response:  resp,
-			connected: sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+			connected: sess.clientOwner(protocol.ClientID(botty.ID())) != nil,
 			attached:  factory.attached(),
 			forgotten: factory.forgottenIDs(),
 			active:    instanceIDs(t, backing),
@@ -471,7 +633,7 @@ func TestSession_forced_kill_retries_tombstone_after_delete_failure(t *testing.T
 			markInstanceErrs:  []error{markErr, nil},
 		}
 		factory := newTestModelClientFactory(t, &apitest.Fake{})
-		sess := New(t.Context, failing, factory, nil)
+		sess := New(t.Context(), failing, factory, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -487,6 +649,7 @@ func TestSession_forced_kill_retries_tombstone_after_delete_failure(t *testing.T
 
 		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{Nick: "botty", Reason: "spam"})
 		require.ErrorIs(t, err, deleteErr)
+		synctest.Wait()
 		pending, pendingErr := backing.ListPendingInstanceDeletions(t.Context())
 		require.NoError(t, pendingErr)
 
@@ -515,7 +678,7 @@ func TestSession_forced_kill_retries_tombstone_after_delete_failure(t *testing.T
 			marked    []domain.InstanceID
 		}{
 			response:  resp,
-			connected: sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+			connected: sess.clientOwner(protocol.ClientID(botty.ID())) != nil,
 			attached:  factory.attached(),
 			forgotten: factory.forgottenIDs(),
 			active:    instanceIDs(t, backing),
@@ -552,7 +715,7 @@ func TestSession_Shutdown_waits_for_teardown_cleanup(t *testing.T) {
 			start: func(ctx context.Context, sess *Session, id domain.InstanceID) <-chan teardownResult {
 				done := make(chan teardownResult, 1)
 				go func() {
-					response, err := sess.LookupClient(protocol.ClientID(id)).Send(ctx, protocol.Quit{Reason: "bye"})
+					response, err := sess.clientOwner(protocol.ClientID(id)).Send(ctx, protocol.Quit{Reason: "bye"})
 					done <- teardownResult{response: response, err: err}
 				}()
 
@@ -581,7 +744,7 @@ func TestSession_Shutdown_waits_for_teardown_cleanup(t *testing.T) {
 					started:            make(chan protocol.ClientID, 1),
 					release:            make(chan struct{}),
 				}
-				sess := New(t.Context, backing, factory, nil)
+				sess := New(t.Context(), backing, factory, nil)
 				attachTestUserClient(t, sess, "testuser")
 				sess.now = func() time.Time { return fixedTime }
 
@@ -642,9 +805,13 @@ func TestSession_forced_disconnect_reaps_client_when_instance_deletion_fails(t *
 			},
 		}
 		backing := storetest.NewMemoryStore(t)
-		failing := &teardownFailureStore{Store: backing, deleteInstanceErr: errors.New("delete failed")}
+		failing := &teardownFailureStore{
+			Store:             backing,
+			saveWindowErr:     errors.New("save window failed"),
+			deleteInstanceErr: errors.New("delete instance failed"),
+		}
 		factory := newTestModelClientFactory(t, fake)
-		sess := New(t.Context, failing, factory, nil)
+		sess := New(t.Context(), failing, factory, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -666,8 +833,6 @@ func TestSession_forced_disconnect_reaps_client_when_instance_deletion_fails(t *
 
 		window, err := sess.loadChannelWindow(t.Context(), "#general")
 		require.NoError(t, err)
-		_, resolveErr := backing.ResolveNick(t.Context(), "botty")
-		require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)
 		pending, err := backing.ListPendingInstanceDeletions(t.Context())
 		require.NoError(t, err)
 
@@ -696,7 +861,7 @@ func TestSession_forced_disconnect_reaps_client_when_instance_deletion_fails(t *
 			pending    []domain.InstanceID
 			eventTypes []string
 		}{
-			connected:  sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+			connected:  sess.clientOwner(protocol.ClientID(botty.ID())) != nil,
 			attached:   factory.attached(),
 			forgotten:  factory.forgottenIDs(),
 			members:    memberNicks(window),
@@ -718,7 +883,7 @@ func TestSession_failed_add_reaps_client_when_instance_deletion_fails(t *testing
 			deleteInstanceErr: errors.New("delete instance failed"),
 		}
 		factory := newTestModelClientFactory(t, &apitest.Fake{})
-		sess := New(t.Context, failing, factory, nil)
+		sess := New(t.Context(), failing, factory, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -781,7 +946,7 @@ func TestSession_discardModel_retries_a_failed_tombstone(t *testing.T) {
 		markInstanceErrs:  []error{markErr, nil},
 	}
 	factory := newTestModelClientFactory(t, &apitest.Fake{})
-	sess := New(t.Context, failing, factory, nil)
+	sess := New(t.Context(), failing, factory, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 	attachTestUserClient(t, sess, "testuser")
 
@@ -817,7 +982,7 @@ func TestSession_discardModel_retries_a_failed_tombstone(t *testing.T) {
 		pending   []domain.InstanceID
 		marked    []domain.InstanceID
 	}{
-		connected: sess.LookupClient(protocol.ClientID(botty.ID())) != nil,
+		connected: sess.clientOwner(protocol.ClientID(botty.ID())) != nil,
 		attached:  factory.attached(),
 		forgotten: factory.forgottenIDs(),
 		active:    instanceIDs(t, backing),
@@ -830,7 +995,7 @@ func TestSession_discardModel_records_a_tombstone_after_session_cancellation(t *
 	backing := storetest.NewMemoryStore(t)
 	factory := newTestModelClientFactory(t, &apitest.Fake{})
 	baseCtx, cancelBase := context.WithCancel(t.Context())
-	sess := New(func() context.Context { return baseCtx }, backing, factory, nil)
+	sess := New(baseCtx, backing, factory, nil)
 
 	inst := seedInstance(t, sess, backing, instanceSpec{
 		Nick:    "botty",
@@ -862,7 +1027,7 @@ func TestSession_discardModel_records_a_tombstone_after_session_cancellation(t *
 		active    []domain.InstanceID
 		pending   []domain.InstanceID
 	}{
-		connected: sess.LookupClient(protocol.ClientID(inst.ID())) != nil,
+		connected: sess.clientOwner(protocol.ClientID(inst.ID())) != nil,
 		attached:  factory.attached(),
 		forgotten: factory.forgottenIDs(),
 		active:    instanceIDs(t, backing),
@@ -880,7 +1045,7 @@ func TestSession_Shutdown_waits_for_add_model_rollback(t *testing.T) {
 			attached:           make(chan domain.InstanceID, 1),
 			release:            make(chan struct{}),
 		}
-		sess := New(func() context.Context { return baseCtx }, backing, factory, nil)
+		sess := New(baseCtx, backing, factory, nil)
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
 		require.NoError(t, sess.Connect(t.Context()))
@@ -957,7 +1122,7 @@ func TestSession_add_model_refuses_a_client_killed_before_admission(t *testing.T
 			attached:           make(chan domain.InstanceID, 1),
 			release:            make(chan struct{}),
 		}
-		sess := New(t.Context, backing, factory, nil)
+		sess := New(t.Context(), backing, factory, nil)
 		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
@@ -984,38 +1149,37 @@ func TestSession_add_model_refuses_a_client_killed_before_admission(t *testing.T
 		close(factory.release)
 
 		result := <-addDone
-		var disconnected *ClientDisconnectedError
-		require.ErrorAs(t, result.err, &disconnected)
+		require.ErrorIs(t, result.err, protocol.ErrSubscriptionClosed)
 		window, err := sess.loadChannelWindow(t.Context(), "#general")
 		require.NoError(t, err)
 		pending, err := backing.ListPendingInstanceDeletions(t.Context())
 		require.NoError(t, err)
 		require.Equal(t, struct {
-			response     protocol.Response
-			disconnected *ClientDisconnectedError
-			connected    bool
-			members      []domain.Nick
-			active       []domain.InstanceID
-			pending      []domain.InstanceID
+			response           protocol.Response
+			subscriptionClosed bool
+			connected          bool
+			members            []domain.Nick
+			active             []domain.InstanceID
+			pending            []domain.InstanceID
 		}{
-			response:     protocol.Response{},
-			disconnected: &ClientDisconnectedError{ID: protocol.ClientID(id)},
-			members:      []domain.Nick{"testuser"},
-			active:       []domain.InstanceID{protocol.UserClientID},
+			response:           protocol.Response{},
+			subscriptionClosed: true,
+			members:            []domain.Nick{"testuser"},
+			active:             []domain.InstanceID{protocol.UserClientID},
 		}, struct {
-			response     protocol.Response
-			disconnected *ClientDisconnectedError
-			connected    bool
-			members      []domain.Nick
-			active       []domain.InstanceID
-			pending      []domain.InstanceID
+			response           protocol.Response
+			subscriptionClosed bool
+			connected          bool
+			members            []domain.Nick
+			active             []domain.InstanceID
+			pending            []domain.InstanceID
 		}{
-			response:     result.response,
-			disconnected: disconnected,
-			connected:    sess.LookupClient(protocol.ClientID(id)) != nil,
-			members:      memberNicks(window),
-			active:       instanceIDs(t, backing),
-			pending:      pending,
+			response:           result.response,
+			subscriptionClosed: errors.Is(result.err, protocol.ErrSubscriptionClosed),
+			connected:          sess.clientOwner(protocol.ClientID(id)) != nil,
+			members:            memberNicks(window),
+			active:             instanceIDs(t, backing),
+			pending:            pending,
 		})
 	})
 }
@@ -1038,7 +1202,7 @@ func TestSession_failed_self_kill_keeps_recovery_marker_until_restart_reconciles
 		deleteInstanceErr: deleteErr,
 	}
 	factory := newTestModelClientFactory(t, &apitest.Fake{})
-	sess := New(t.Context, failing, factory, nil)
+	sess := New(t.Context(), failing, factory, nil)
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
 	require.NoError(t, sess.Connect(ctx))
@@ -1085,7 +1249,7 @@ func TestSession_failed_self_kill_keeps_recovery_marker_until_restart_reconciles
 	t.Cleanup(func() { _ = reopened.Close() })
 
 	nextFactory := newTestModelClientFactory(t, &apitest.Fake{})
-	next := New(t.Context, reopened, nextFactory, nil)
+	next := New(t.Context(), reopened, nextFactory, nil)
 	t.Cleanup(func() { _ = next.Shutdown(context.Background()) })
 	attachTestUserClient(t, next, "testuser")
 	next.now = func() time.Time { return fixedTime }
@@ -1120,7 +1284,7 @@ func TestSession_user_reactivation_restores_identity_before_reconciling_membersh
 	reloadErr := errors.New("reload window failed")
 	failing := &teardownFailureStore{Store: backing, getWindowErr: reloadErr}
 	factory := newTestModelClientFactory(t, &apitest.Fake{})
-	sess := New(t.Context, failing, factory, nil)
+	sess := New(t.Context(), failing, factory, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 	attachTestUserClient(t, sess, "testuser")
 	sess.now = func() time.Time { return fixedTime }
@@ -1161,7 +1325,7 @@ func TestSession_user_reactivation_restores_identity_before_reconciling_membersh
 	}{
 		members:  memberNicks(window),
 		storedID: stored.ID(),
-		active:   sess.LookupClient(protocol.UserClientID),
+		active:   sess.clientOwner(protocol.UserClientID),
 	})
 }
 
@@ -1196,8 +1360,8 @@ func TestSession_mixed_pass_is_rejected_and_continues_the_tool_loop(t *testing.T
 		}
 		require.Equal(t, []bool{false, false}, outcomes)
 		require.Equal(t, []domain.Message{
-			{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
-			{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "clean reply", At: fixedTime},
+			{Target: "#general", Source: domain.ClientSource(domain.InstanceID(""), domain.Nick("testuser")), Body: "hello", At: fixedTime},
+			{Target: "#general", Source: domain.ClientSource(testMemberID("botty"), domain.Nick("botty")), Body: "clean reply", At: fixedTime},
 		}, channelMessages(t, eventStore, "#general"))
 	})
 }

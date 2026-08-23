@@ -33,6 +33,10 @@ type Fake struct {
 		conv *api.Conversation,
 		results []api.ToolResult,
 	) (api.CompletionResult, error)
+	RenderToolResultRequestFn func(
+		conv *api.Conversation,
+		results []api.ToolResult,
+	) (api.RenderedEventRequest, error)
 	GenerateNickFn     func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
 	GeneratePersonasFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
 }
@@ -47,6 +51,35 @@ func (f *Fake) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 	}
 
 	return nil, nil
+}
+
+// RenderEventRequest returns the standard OpenRouter request shape
+// used by the test client.
+func (f *Fake) RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt api.SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	return api.RenderEventRequest(
+		modelID, selfInstanceID, systemPrompt, history, events, tools...,
+	)
+}
+
+// RenderToolResultRequest answers through
+// [Fake.RenderToolResultRequestFn], or returns empty request evidence.
+func (f *Fake) RenderToolResultRequest(
+	conv *api.Conversation,
+	results []api.ToolResult,
+	_ ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	if f.RenderToolResultRequestFn != nil {
+		return f.RenderToolResultRequestFn(conv, results)
+	}
+
+	return api.RenderedEventRequest{}, nil
 }
 
 // SendEvents answers through [Fake.SendEventsFn], or an empty

@@ -118,9 +118,13 @@ func TestSession_operator_gate_honours_oper_elevation(t *testing.T) {
 			// capability: the operator signal lives only on its
 			// serverClient, written by OPER.
 			inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+			require.NoError(t, store.SaveInstance(ctx, inst))
 			fc := newPlainClient(protocol.ClientID(inst.ID()))
-			_, err := sess.Subscribe(fc, protocol.SubscribeOptions{Instance: inst})
+			_, err := subscribeTestClient(t.Context(), t, sess, fc, protocol.SubscribeOptions{})
 			require.NoError(t, err)
+			joinResp, err := sess.Handle(ctx, fc, protocol.Join{Channels: []domain.ChannelName{"#dev"}})
+			require.NoError(t, err)
+			require.NoError(t, joinResp.Err)
 
 			operResp, err := sess.Handle(ctx, fc, protocol.Oper{})
 			require.NoError(t, err)
@@ -155,8 +159,9 @@ func TestSession_operator_gate_rejects_subscribed_non_operator(t *testing.T) {
 			seedInstance(t, sess, store, instanceSpec{Nick: "victim", ModelID: "test/model"})
 
 			inst := domain.NewModelInstance("inst-plain", "plain", "test/model", "", nil)
+			require.NoError(t, store.SaveInstance(ctx, inst))
 			fc := newPlainClient(protocol.ClientID(inst.ID()))
-			_, err := sess.Subscribe(fc, protocol.SubscribeOptions{Instance: inst})
+			_, err := subscribeTestClient(t.Context(), t, sess, fc, protocol.SubscribeOptions{})
 			require.NoError(t, err)
 
 			got, err := sess.Handle(ctx, fc, c.cmd)
@@ -219,7 +224,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 	type tc struct {
 		name   string
 		setup  func(t *testing.T, sess *Session, s *storemod.SQLiteStore)
-		client func() protocol.Client
+		client func(t *testing.T, sess *Session, s *storemod.SQLiteStore) protocol.Client
 		cmd    protocol.Command
 		want   protocol.Response
 		// wantFn lets a case compute its expected response from the
@@ -232,12 +237,24 @@ func TestSession_Handle_delegates(t *testing.T) {
 		verify  func(t *testing.T, sess *Session, s *storemod.SQLiteStore)
 	}
 
-	userClient := func() protocol.Client { return newPlainClient(protocol.UserClientID) }
+	registeredUser := func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) protocol.Client {
+		return userClient(t, sess)
+	}
+	plainClient := func(t *testing.T, sess *Session, s *storemod.SQLiteStore) protocol.Client {
+		inst := domain.NewModelInstance("inst-1", "plain", "test/model", "", nil)
+		require.NoError(t, s.SaveInstance(t.Context(), inst))
+
+		client := newPlainClient(protocol.ClientID(inst.ID()))
+		_, err := subscribeTestClient(t.Context(), t, sess, client, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+
+		return client
+	}
 
 	cases := []tc{
 		{
 			name:   "join creates and joins channel",
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Join{Channels: []domain.ChannelName{"#general"}},
 			want:   protocol.Response{Events: []protocol.Event{domain.JoinedChannel{Channel: "#general"}}},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
@@ -250,7 +267,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Part{Channel: "#general", Reason: "bye"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
@@ -263,14 +280,11 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.PrivMsg{Target: protocol.ChannelTarget("#general"), Body: "hello"},
-			want: protocol.Response{Events: []protocol.Event{domain.Message{
-				Target: "#general",
-				From:   "testuser",
-				Body:   "hello",
-				At:     fixedTime,
-			}}},
+			want: protocol.Response{Events: []protocol.Event{domain.Message{Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+
+				Target: "#general", Body: "hello", At: fixedTime}}},
 			verify: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) {
 				require.Equal(t, []string{"join", "message"}, channelEventTypes(t, s, "#general"))
 			},
@@ -280,15 +294,11 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Action{Target: protocol.ChannelTarget("#general"), Body: "waves"},
-			want: protocol.Response{Events: []protocol.Event{domain.Message{
-				Target: "#general",
-				From:   "testuser",
-				Body:   "waves",
-				Action: true,
-				At:     fixedTime,
-			}}},
+			want: protocol.Response{Events: []protocol.Event{domain.Message{Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+
+				Target: "#general", Body: "waves", Action: true, At: fixedTime}}},
 			verify: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) {
 				require.Equal(t, []string{"join", "message"}, channelEventTypes(t, s, "#general"))
 			},
@@ -298,7 +308,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Topic{Channel: "#general", Body: "discuss"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
@@ -313,20 +323,14 @@ func TestSession_Handle_delegates(t *testing.T) {
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Invite{Nick: "botty", Channel: "#general"},
-			wantFn: func(t *testing.T, _ *Session, s *storemod.SQLiteStore) protocol.Response {
-				botty, err := s.ResolveNick(t.Context(), "botty")
-				require.NoError(t, err)
+			wantFn: func(_ *testing.T, _ *Session, _ *storemod.SQLiteStore) protocol.Response {
 				return protocol.Response{
-					Events: []domain.ProtocolEvent{domain.Invited{
-						Target:       "#general",
-						Nick:         "botty",
-						InstanceID:   botty.ID(),
-						By:           "testuser",
-						ByInstanceID: "",
-						At:           fixedTime,
-						Instance:     botty,
+					Events: []domain.ProtocolEvent{domain.Inviting{
+						Target:  "#general",
+						Invitee: "botty",
+						At:      fixedTime,
 					}},
 				}
 			},
@@ -354,7 +358,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 				})
 				require.NoError(t, joinAs(t.Context(), sess, inst, "#general", ""))
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Kick{Nick: "botty", Channel: "#general"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
@@ -366,7 +370,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		},
 		{
 			name:   "nick changes user display name",
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Nick{New: "renamed"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
@@ -378,7 +382,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Whois{Nick: "botty"},
 			want: protocol.Response{Events: []domain.ProtocolEvent{
 				domain.Whois{
@@ -390,7 +394,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 		},
 		{
 			name:   "list returns a closing ListEnd when no channels exist",
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.List{},
 			want: protocol.Response{Events: []domain.ProtocolEvent{
 				domain.ListEnd{At: fixedTime},
@@ -401,7 +405,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
 				require.NoError(t, userJoin(t.Context(), t, sess, "#dev"))
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.AddModel{Channel: "#dev", Model: "anthropic/claude", Persona: "p"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
@@ -412,13 +416,13 @@ func TestSession_Handle_delegates(t *testing.T) {
 		},
 		{
 			name:   "addmodel rejects non-operator with NotOperatorError",
-			client: func() protocol.Client { return newPlainClient("inst-1") },
+			client: plainClient,
 			cmd:    protocol.AddModel{Channel: "#dev", Model: "anthropic/claude", Persona: "p"},
 			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "ADDMODEL", At: fixedTime}},
 		},
 		{
 			name:   "quit delegates to quitAs for the user-client",
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Quit{Reason: "gone"},
 			want:   protocol.Response{},
 		},
@@ -427,17 +431,17 @@ func TestSession_Handle_delegates(t *testing.T) {
 			setup: func(t *testing.T, sess *Session, s *storemod.SQLiteStore) {
 				seedInstance(t, sess, s, instanceSpec{Nick: "botty", ModelID: "test/model"})
 			},
-			client: userClient,
+			client: registeredUser,
 			cmd:    protocol.Kill{Nick: "botty", Reason: "spam"},
 			want:   protocol.Response{},
 			verify: func(t *testing.T, sess *Session, _ *storemod.SQLiteStore) {
-				_, err := sess.ResolveNick(t.Context(), "botty")
+				_, _, err := sess.ResolveNick(t.Context(), "botty")
 				require.Error(t, err)
 			},
 		},
 		{
 			name:   "kill rejects non-operator with NotOperatorError",
-			client: func() protocol.Client { return newPlainClient("inst-1") },
+			client: plainClient,
 			cmd:    protocol.Kill{Nick: "botty", Reason: "spam"},
 			want:   protocol.Response{Err: protocol.NotOperatorError{Command: "KILL", At: fixedTime}},
 		},
@@ -450,7 +454,7 @@ func TestSession_Handle_delegates(t *testing.T) {
 				c.setup(t, sess, store)
 			}
 
-			got, err := sess.Handle(t.Context(), c.client(), c.cmd)
+			got, err := sess.Handle(t.Context(), c.client(t, sess, store), c.cmd)
 
 			if c.wantErr != nil {
 				require.ErrorIs(t, err, c.wantErr)
@@ -534,7 +538,7 @@ func TestSession_Handle_rejects_invalid_message_bodies_before_sending(t *testing
 				sess, eventStore := newTestSession(t)
 				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
 
-				resp, err := sess.Handle(t.Context(), newPlainClient(protocol.UserClientID), command.build(body.body))
+				resp, err := sess.Handle(t.Context(), userClient(t, sess), command.build(body.body))
 				require.NoError(t, err)
 				require.Equal(t, protocol.Response{Err: body.wantErr(command.name)}, resp)
 				require.Equal(t, []string{"join"}, channelEventTypes(t, eventStore, "#general"))

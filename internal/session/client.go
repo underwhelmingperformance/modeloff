@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -11,8 +12,9 @@ import (
 )
 
 // serverClient is the session-side concrete implementation of
-// [protocol.Client]. One instance per subscription: the user-client
-// is created at session bootstrap. The struct keeps a back-reference
+// [protocol.Client]. One instance exists per subscription. The
+// user-client's subscription survives QUIT, while its connection
+// generation does not. The struct keeps a back-reference
 // to its owning session so `Send` can route through [Session.Handle].
 //
 // The mode set is guarded by `modesMu`: `HasMode` and `Has` take
@@ -40,6 +42,10 @@ type serverClient struct {
 	instance *domain.Instance
 	events   chan protocol.Delivery
 
+	connectionMu         sync.RWMutex
+	connectionActive     bool
+	connectionGeneration uint64
+
 	// done closes exactly once when the subscription is reaped,
 	// from any source: client-initiated via [serverClient.Unsubscribe],
 	// session-initiated via QUIT / KILL through [Session.reapClient],
@@ -59,17 +65,40 @@ type serverClient struct {
 	// `outWake` carries a single coalesced wake-up: producers offer
 	// one after appending and the pump drains the queue dry on each
 	// wake, so a burst of appends costs at most one signal.
-	outMu     sync.Mutex
-	outbox    []protocol.Delivery
-	outWake   chan struct{}
-	outClosed bool
+	outMu       sync.Mutex
+	outbox      []queuedDelivery
+	outWake     chan struct{}
+	outClosed   bool
+	outSealed   bool
+	terminating bool
+	outDraining bool
+	outDrained  chan struct{}
+	drainOnce   sync.Once
 
-	// overflowed latches when the queue first passes its allowance,
-	// so the one delivery that trips it starts exactly one
-	// disconnect — including the QUIT that disconnect broadcasts,
-	// which comes straight back to this same queue.
-	overflowed atomic.Bool
-	retired    atomic.Bool
+	// replayMu orders projected row writes and attach-time snapshots.
+	// It stays separate from outMu so PART and KICK can advance a
+	// membership epoch while a database read is in progress.
+	replayMu sync.Mutex
+
+	// turnGeneration revokes guards that could otherwise admit a new
+	// journal after instance deletion. replayMu guards it and orders
+	// journal admission against that deletion.
+	turnGeneration uint64
+
+	// replayBlocked keeps attach-time traffic in outbox until the
+	// client has loaded its channel scrollback. replayRanges records
+	// the projected rows included for each window, so Activate can
+	// remove only queued deliveries that the snapshot covered.
+	replayBlocked bool
+	replayCapable bool
+	replayRanges  map[domain.ChannelName]replayRange
+	dmLiveFrom    map[domain.ChannelName]int64
+	windowEpochs  map[domain.ChannelName]uint64
+
+	// disconnecting latches the first terminal delivery failure so
+	// send-Q overflow and projected-history failure can start only one
+	// server-side disconnect between them.
+	disconnecting atomic.Bool
 
 	// pumpDone closes when this subscription's pump goroutine
 	// exits, so [Session.reapClient] and [Session.Shutdown] can join
@@ -99,22 +128,370 @@ type serverClient struct {
 // `stop` ends the pump for a subscription that is never reaped: the
 // user-client lives for the session, so its pump exits on the
 // session's shutdown gate.
-func newServerClient(sess *Session, owner protocol.Client, inst *domain.Instance, stop <-chan struct{}) *serverClient {
+type queuedDelivery struct {
+	delivery      protocol.Delivery
+	scrollbackIDs map[domain.ChannelName]int64
+	eventID       int64
+	terminal      bool
+}
+
+type replayRange struct {
+	first int64
+	last  int64
+}
+
+type windowGuard struct {
+	client           *serverClient
+	clientGeneration uint64
+	turnGeneration   uint64
+	target           protocol.WindowTarget
+	window           domain.ChannelName
+	epoch            uint64
+	dmPeer           *serverClient
+	dmPeerGeneration uint64
+	dmTurnGeneration uint64
+}
+
+type invitationGuard struct {
+	client           *serverClient
+	clientGeneration uint64
+	turnGeneration   uint64
+	channel          domain.ChannelName
+	generation       invitationGeneration
+	windowEpoch      uint64
+}
+
+// guardedCommandContextKey carries a window guard from
+// [windowGuard.Send] to [Session.Handle]. [protocol.Client.Send]
+// takes a command and nothing else, so the context is what crosses
+// that boundary. [Session.commandWindowGuard] is the only read:
+// from there the guard is an argument to the dispatch it authorises,
+// so no work the dispatch goes on to start inherits it.
+type guardedCommandContextKey struct{}
+
+// commandWindowGuard returns the window authority attached to one
+// command, or nil for a command sent outside a model turn.
+func commandWindowGuard(ctx context.Context) protocol.WindowGuard {
+	guard, _ := ctx.Value(guardedCommandContextKey{}).(protocol.WindowGuard)
+
+	return guard
+}
+
+func (g invitationGuard) Valid(ctx context.Context) bool {
+	unlock := lockTurnClients(g.client)
+	defer unlock()
+
+	return g.validLocked(ctx)
+}
+
+func (g invitationGuard) RunWithAuthority(ctx context.Context, operation func() error) error {
+	unlock := lockTurnClients(g.client)
+	defer unlock()
+
+	if !g.validLocked(ctx) {
+		return protocol.ErrWindowAuthorityChanged
+	}
+
+	return operation()
+}
+
+func (g invitationGuard) Send(
+	ctx context.Context,
+	client protocol.Client,
+	cmd protocol.Command,
+) (protocol.Response, error) {
+	return sendGuardedCommand(ctx, g.client, g, client, cmd)
+}
+
+func (g invitationGuard) validLocked(ctx context.Context) bool {
+	if !g.client.connectionValid(g.clientGeneration) ||
+		g.client.turnGeneration != g.turnGeneration {
+		return false
+	}
+
+	windowEpoch := g.client.windowEpoch(g.channel)
+	_, authority, _ := g.client.sess.invitationGuardState(
+		ctx, g, windowEpoch,
+	)
+
+	return authority != invitationAuthorityNone
+}
+
+func (g invitationGuard) Context(ctx context.Context) (protocol.WindowContext, error) {
+	unlock := lockTurnClients(g.client)
+	defer unlock()
+
+	if !g.client.connectionValid(g.clientGeneration) ||
+		g.client.turnGeneration != g.turnGeneration {
+		return nil, fmt.Errorf("guard invitation for %q: %w", g.channel, protocol.ErrSubscriptionClosed)
+	}
+
+	windowEpoch := g.client.windowEpoch(g.channel)
+	window, authority, _ := g.client.sess.invitationGuardState(
+		ctx, g, windowEpoch,
+	)
+	if !g.client.connectionValid(g.clientGeneration) {
+		return nil, fmt.Errorf("guard invitation for %q: %w", g.channel, protocol.ErrSubscriptionClosed)
+	}
+	if authority == invitationAuthorityNone {
+		return nil, domain.NotOnChannelError{
+			Channel: g.channel,
+			Command: "INVITE",
+			At:      g.client.sess.now(),
+		}
+	}
+	if authority == invitationAuthorityMember {
+		return projectedChannelWindowContext(window), nil
+	}
+
+	return channelWindowContext{name: window.Name()}, nil
+}
+
+func (g windowGuard) Valid(ctx context.Context) bool {
+	unlock := lockTurnClients(g.client, g.dmPeer)
+	defer unlock()
+
+	return g.validLocked(ctx)
+}
+
+func (g windowGuard) RunWithAuthority(ctx context.Context, operation func() error) error {
+	unlock := lockTurnClients(g.client, g.dmPeer)
+	defer unlock()
+
+	if !g.validLocked(ctx) {
+		return protocol.ErrWindowAuthorityChanged
+	}
+
+	return operation()
+}
+
+func (g windowGuard) Send(
+	ctx context.Context,
+	client protocol.Client,
+	cmd protocol.Command,
+) (protocol.Response, error) {
+	return sendGuardedCommand(ctx, g.client, g, client, cmd)
+}
+
+// sendGuardedCommand dispatches one command under `guard`, which
+// [Session.Handle] rechecks on the command loop immediately before
+// the handler runs. The command goes out through the client so its
+// own reply handling still runs; the guard rides the context because
+// [protocol.Client.Send] carries a command and nothing else.
+func sendGuardedCommand(
+	ctx context.Context,
+	owner *serverClient,
+	guard protocol.WindowGuard,
+	client protocol.Client,
+	cmd protocol.Command,
+) (protocol.Response, error) {
+	if client == nil || client.Identity() != owner.Identity() {
+		return protocol.Response{}, protocol.ErrWindowAuthorityChanged
+	}
+
+	ctx = context.WithValue(ctx, guardedCommandContextKey{}, guard)
+
+	return client.Send(ctx, cmd)
+}
+
+func (g windowGuard) validLocked(ctx context.Context) bool {
+	if !g.client.connectionValid(g.clientGeneration) ||
+		g.client.turnGeneration != g.turnGeneration {
+		return false
+	}
+	if _, direct := protocol.DirectWindowPeer(g.target); direct {
+		return g.dmPeer == g.client ||
+			(g.dmPeer.connectionValid(g.dmPeerGeneration) &&
+				g.dmPeer.turnGeneration == g.dmTurnGeneration)
+	}
+
+	_, valid := g.channelWindowLocked(ctx)
+
+	return valid
+}
+
+func (g windowGuard) channelWindow(ctx context.Context) (*domain.ChannelWindow, bool) {
+	unlock := lockTurnClients(g.client)
+	defer unlock()
+
+	return g.channelWindowLocked(ctx)
+}
+
+func (g windowGuard) channelWindowLocked(ctx context.Context) (*domain.ChannelWindow, bool) {
+	if !g.client.connectionValid(g.clientGeneration) ||
+		g.client.turnGeneration != g.turnGeneration ||
+		g.client.windowEpoch(g.window) != g.epoch {
+		return nil, false
+	}
+
+	channel, err := g.client.sess.loadChannelWindow(ctx, g.window)
+	if err != nil || !channel.Members.HasInstance(g.client.instance) ||
+		!g.client.instance.InChannel(channel.Name()) ||
+		g.client.windowEpoch(channel.Name()) != g.epoch {
+		return nil, false
+	}
+
+	return channel, true
+}
+
+func (g windowGuard) Context(ctx context.Context) (protocol.WindowContext, error) {
+	if !g.client.connectionValid(g.clientGeneration) {
+		return nil, fmt.Errorf("guard window %q: %w", g.window, protocol.ErrSubscriptionClosed)
+	}
+
+	if _, direct := protocol.DirectWindowPeer(g.target); direct {
+		if !g.Valid(ctx) {
+			if !g.client.connectionValid(g.clientGeneration) {
+				return nil, fmt.Errorf("guard window %q: %w", g.window, protocol.ErrSubscriptionClosed)
+			}
+			return nil, domain.NotOnChannelError{
+				Channel: g.window,
+				Command: "WINDOW",
+				At:      g.client.sess.now(),
+			}
+		}
+
+		return directWindowContext{peer: g.dmPeer.instance.ID()}, nil
+	}
+
+	window, valid := g.channelWindow(ctx)
+	if !valid {
+		if !g.client.connectionValid(g.clientGeneration) {
+			return nil, fmt.Errorf("guard window %q: %w", g.window, protocol.ErrSubscriptionClosed)
+		}
+		return nil, domain.NotOnChannelError{
+			Channel: g.window,
+			Command: "WINDOW",
+			At:      g.client.sess.now(),
+		}
+	}
+
+	if !g.client.connectionValid(g.clientGeneration) {
+		return nil, fmt.Errorf("guard window %q: %w", g.window, protocol.ErrSubscriptionClosed)
+	}
+
+	return projectedChannelWindowContext(window), nil
+}
+
+func projectedChannelWindowContext(window *domain.ChannelWindow) channelWindowContext {
+	context := channelWindowContext{name: window.Name()}
+	if window.Topic != "" {
+		setter := window.TopicSetBy
+		if window.Modes.Anonymous && setter != "" {
+			setter = domain.AnonymousNick
+		}
+
+		context.topic = &domain.TopicInfo{
+			Target:     window.Name(),
+			Topic:      window.Topic,
+			TopicSetBy: setter,
+			TopicSetAt: window.TopicSetAt,
+			At:         window.TopicSetAt,
+		}
+	}
+
+	return context
+}
+
+type channelWindowContext struct {
+	name  domain.ChannelName
+	topic *domain.TopicInfo
+}
+
+func (c channelWindowContext) Target() protocol.WindowTarget {
+	return protocol.ChannelWindowTarget(c.name)
+}
+func (c channelWindowContext) Topic() (domain.TopicInfo, bool) {
+	if c.topic == nil {
+		return domain.TopicInfo{}, false
+	}
+
+	return *c.topic, true
+}
+
+type directWindowContext struct {
+	peer domain.InstanceID
+}
+
+func (c directWindowContext) Target() protocol.WindowTarget {
+	return protocol.DirectWindowTarget(c.peer)
+}
+func (directWindowContext) Topic() (domain.TopicInfo, bool) {
+	return domain.TopicInfo{}, false
+}
+
+func newServerClient(
+	sess *Session,
+	owner protocol.Client,
+	inst *domain.Instance,
+	opts protocol.SubscribeOptions,
+	stop <-chan struct{},
+) *serverClient {
 	c := &serverClient{
-		sess:     sess,
-		id:       owner.Identity(),
-		owner:    owner,
-		instance: inst,
-		events:   make(chan protocol.Delivery, eventBufSize),
-		done:     make(chan struct{}),
-		outWake:  make(chan struct{}, 1),
-		pumpDone: make(chan struct{}),
-		modes:    make(map[domain.Mode]struct{}),
+		sess:                 sess,
+		id:                   owner.Identity(),
+		owner:                owner,
+		instance:             inst,
+		events:               make(chan protocol.Delivery, eventBufSize),
+		connectionActive:     true,
+		connectionGeneration: 1,
+		done:                 make(chan struct{}),
+		outWake:              make(chan struct{}, 1),
+		outDrained:           make(chan struct{}),
+		pumpDone:             make(chan struct{}),
+		modes:                make(map[domain.Mode]struct{}),
+		echo:                 opts.EchoMessage,
+		replayBlocked:        opts.ReplayHistory,
+		replayCapable:        opts.ReplayHistory,
+		replayRanges:         make(map[domain.ChannelName]replayRange),
+		dmLiveFrom:           make(map[domain.ChannelName]int64),
+		windowEpochs:         make(map[domain.ChannelName]uint64),
 	}
 
 	go c.pump(stop)
 
 	return c
+}
+
+func (c *serverClient) connection() (uint64, bool) {
+	c.connectionMu.RLock()
+	defer c.connectionMu.RUnlock()
+
+	return c.connectionGeneration, c.connectionActive
+}
+
+func (c *serverClient) connectionValid(generation uint64) bool {
+	if c.sess.lookupClientHandle(c.id) != c {
+		return false
+	}
+
+	current, active := c.connection()
+
+	return active && current == generation
+}
+
+func (c *serverClient) deactivateConnection() {
+	c.connectionMu.Lock()
+	defer c.connectionMu.Unlock()
+
+	if !c.connectionActive {
+		return
+	}
+
+	c.connectionActive = false
+	c.connectionGeneration++
+}
+
+func (c *serverClient) activateConnection() {
+	c.connectionMu.Lock()
+	defer c.connectionMu.Unlock()
+
+	if c.connectionActive {
+		return
+	}
+
+	c.connectionActive = true
+	c.connectionGeneration++
 }
 
 // sendQAllowance is how many deliveries the server will hold for one
@@ -157,22 +534,34 @@ func (c *serverClient) hasSessionLifetime() bool {
 // property of the subscription, so it reaches every client the
 // server can close, whatever kind of actor is behind it.
 //
-// A reaped subscription accepts nothing and drops what it holds:
-// the client it addressed has gone, so there is nobody left to read
-// either. The same goes for whatever is still queued when the
-// session shuts down.
-func (c *serverClient) enqueue(delivery protocol.Delivery) {
-	if c.queue(delivery) {
+// A terminal drain rejects later deliveries but preserves the accepted
+// prefix until the pump has sent it. An immediate unsubscribe drops
+// what remains because the client has already gone.
+func (c *serverClient) enqueue(ctx context.Context, delivery protocol.Delivery) {
+	c.enqueueProjected(ctx, delivery, nil, 0)
+}
+
+func (c *serverClient) enqueueProjected(
+	ctx context.Context,
+	delivery protocol.Delivery,
+	scrollbackIDs map[domain.ChannelName]int64,
+	eventID int64,
+) {
+	if c.queue(queuedDelivery{
+		delivery:      delivery,
+		scrollbackIDs: scrollbackIDs,
+		eventID:       eventID,
+	}) {
 		return
 	}
 
-	c.sess.disconnectOverflowed(c)
+	c.sess.disconnectOverflowed(ctx, c)
 }
 
 // queue appends `delivery` to the send queue, reporting false when
 // the queue is already at its allowance and the subscription must be
-// disconnected. A reaped subscription reports true: there is nobody
-// left to deliver to, and nobody left to disconnect either.
+// disconnected. A draining or reaped subscription reports true: later
+// traffic is outside its accepted prefix and needs no second close.
 //
 // A subscription with the session's lifetime is exempt, and the
 // consequence is deliberate: its queue grows without bound, keeping
@@ -182,27 +571,41 @@ func (c *serverClient) enqueue(delivery protocol.Delivery) {
 // for it instead would put a hole in the one transcript a person is
 // reading, and tearing it down would run the session's shutdown
 // under a process that is still running.
-func (c *serverClient) queue(delivery protocol.Delivery) bool {
+func (c *serverClient) queue(queued queuedDelivery) bool {
 	c.outMu.Lock()
 	defer c.outMu.Unlock()
 
-	if c.outClosed {
+	return c.queueLocked(queued)
+}
+
+func (c *serverClient) queueLocked(queued queuedDelivery) bool {
+	if c.outClosed || c.outDraining {
+		return true
+	}
+	if c.outSealed && !queued.terminal {
 		return true
 	}
 
-	if len(c.outbox) == 0 {
+	c.noteLiveDM(queued)
+
+	if !c.terminating && !c.replayBlocked && len(c.outbox) == 0 {
 		select {
-		case c.events <- delivery:
+		case c.events <- queued.delivery:
 			return true
 		default:
 		}
 	}
 
-	if len(c.outbox) >= sendQAllowance && !c.hasSessionLifetime() {
+	// A closing client's terminal events extend the prefix that was
+	// accepted when teardown began. Ordinary traffic remains bounded
+	// while the durable teardown is in progress.
+	if len(c.outbox) >= sendQAllowance && !c.hasSessionLifetime() && !queued.terminal {
+		c.outSealed = true
+
 		return false
 	}
 
-	c.outbox = append(c.outbox, delivery)
+	c.outbox = append(c.outbox, queued)
 
 	select {
 	case c.outWake <- struct{}{}:
@@ -212,11 +615,29 @@ func (c *serverClient) queue(delivery protocol.Delivery) bool {
 	return true
 }
 
-// markOverflowed latches the overflow flag, reporting true for the
-// caller that set it. Every later caller gets false, so one
-// disconnect runs however many deliveries pile up behind it.
-func (c *serverClient) markOverflowed() bool {
-	return c.overflowed.CompareAndSwap(false, true)
+func (c *serverClient) noteLiveDM(queued queuedDelivery) {
+	if !c.replayCapable || queued.eventID == 0 {
+		return
+	}
+
+	message, ok := queued.delivery.Event.(domain.Message)
+	if !ok || domain.InferChannelKind(message.Target) != domain.KindDM {
+		return
+	}
+
+	window, ok := message.RoutingKey(c.instance.ID())
+	if !ok {
+		return
+	}
+
+	from, exists := c.dmLiveFrom[window]
+	if !exists || queued.eventID < from {
+		c.dmLiveFrom[window] = queued.eventID
+	}
+}
+
+func (c *serverClient) claimServerDisconnect() bool {
+	return c.disconnecting.CompareAndSwap(false, true)
 }
 
 // pump is the subscription's outbound goroutine. It moves queued
@@ -229,6 +650,7 @@ func (c *serverClient) markOverflowed() bool {
 // consumer sees the server's order.
 func (c *serverClient) pump(stop <-chan struct{}) {
 	defer close(c.pumpDone)
+	defer c.closeOutbound()
 
 	for {
 		delivery, ok := c.peek()
@@ -260,11 +682,11 @@ func (c *serverClient) peek() (protocol.Delivery, bool) {
 	c.outMu.Lock()
 	defer c.outMu.Unlock()
 
-	if len(c.outbox) == 0 {
+	if c.replayBlocked || len(c.outbox) == 0 {
 		return protocol.Delivery{}, false
 	}
 
-	return c.outbox[0], true
+	return c.outbox[0].delivery, true
 }
 
 // advance drops the delivered head. Emptying the queue releases the
@@ -286,6 +708,64 @@ func (c *serverClient) advance() {
 	c.outbox = c.outbox[1:]
 	if len(c.outbox) == 0 {
 		c.outbox = nil
+		c.markOutboundDrainedLocked()
+	}
+}
+
+func (c *serverClient) beginTermination() {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+
+	if c.outClosed || c.outDraining {
+		return
+	}
+
+	c.terminating = true
+}
+
+func (c *serverClient) abortTermination() {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+
+	if c.outClosed || c.outDraining {
+		return
+	}
+
+	c.terminating = false
+	select {
+	case c.outWake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *serverClient) sealOutbound() {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+
+	c.outSealed = true
+}
+
+func (c *serverClient) drainOutbound() <-chan struct{} {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+
+	c.terminating = false
+	c.outDraining = true
+	c.replayBlocked = false
+	c.replayRanges = nil
+	c.markOutboundDrainedLocked()
+
+	select {
+	case c.outWake <- struct{}{}:
+	default:
+	}
+
+	return c.outDrained
+}
+
+func (c *serverClient) markOutboundDrainedLocked() {
+	if c.outDraining && len(c.outbox) == 0 {
+		c.drainOnce.Do(func() { close(c.outDrained) })
 	}
 }
 
@@ -298,9 +778,14 @@ func (c *serverClient) closeOutbound() {
 
 	c.outClosed = true
 	c.outbox = nil
+	c.drainOnce.Do(func() { close(c.outDrained) })
 }
 
 func (c *serverClient) Identity() protocol.ClientID { return c.id }
+
+// Nick reports the actor's current nick, which a NICK rename
+// rewrites while the subscription stands.
+func (c *serverClient) Nick() domain.Nick { return c.instance.Nick() }
 
 func (c *serverClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
 	return c.sess.Handle(ctx, c, cmd)
@@ -312,6 +797,466 @@ func (c *serverClient) Events() <-chan protocol.Delivery { return c.events }
 // The user-client's `done` channel is allocated but never closed —
 // the user-client lives for the session's lifetime.
 func (c *serverClient) Done() <-chan struct{} { return c.done }
+
+// Activate releases traffic queued during attach-time replay. A
+// queued delivery already present in every window snapshot is
+// removed. For an actor-scoped event whose targets straddled two
+// snapshots, only the targets already replayed are removed.
+func (c *serverClient) Activate() {
+	c.outMu.Lock()
+	if !c.replayBlocked {
+		c.outMu.Unlock()
+		return
+	}
+
+	kept := c.outbox[:0]
+	for _, queued := range c.outbox {
+		queued, keep := c.afterReplay(queued)
+		if keep {
+			kept = append(kept, queued)
+		}
+	}
+
+	c.outbox = kept
+	if len(c.outbox) == 0 {
+		c.outbox = nil
+	}
+	c.replayBlocked = false
+	c.replayRanges = nil
+	c.outMu.Unlock()
+
+	select {
+	case c.outWake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *serverClient) afterReplay(queued queuedDelivery) (queuedDelivery, bool) {
+	switch event := queued.delivery.Event.(type) {
+	case domain.Part:
+		if sourceBelongsTo(event.Source, c.instance.ID()) {
+			return queued, true
+		}
+	case domain.Kicked:
+		if event.SubjectIsSelf {
+			return queued, true
+		}
+	}
+
+	if len(queued.scrollbackIDs) == 0 {
+		return queued, true
+	}
+
+	switch queued.delivery.Event.(type) {
+	case domain.Quit, domain.NickChange:
+		remaining := make([]domain.ChannelName, 0, len(queued.delivery.Targets))
+		for _, window := range queued.delivery.Targets {
+			id, projected := queued.scrollbackIDs[window]
+			replayed, loaded := c.replayRanges[window]
+			if projected && loaded && replayed.contains(id) {
+				continue
+			}
+			remaining = append(remaining, window)
+		}
+
+		if len(remaining) == 0 {
+			return queuedDelivery{}, false
+		}
+		queued.delivery.Targets = remaining
+		return queued, true
+	default:
+		for window, id := range queued.scrollbackIDs {
+			replayed, loaded := c.replayRanges[window]
+			if !loaded || !replayed.contains(id) {
+				return queued, true
+			}
+		}
+
+		return queuedDelivery{}, false
+	}
+}
+
+func (r replayRange) contains(id int64) bool {
+	return r.first <= id && id <= r.last
+}
+
+func (c *serverClient) bumpWindowEpoch(window domain.ChannelName) {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+
+	c.windowEpochs[window]++
+}
+
+func (c *serverClient) Scrollback(
+	ctx context.Context,
+	target protocol.WindowTarget,
+	limit int,
+) ([]protocol.ScrollbackEntry, error) {
+	clientGeneration, active := c.connection()
+	if !active || !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read scrollback: %w", protocol.ErrSubscriptionClosed)
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	limit = min(limit, protocol.MaxScrollbackEntries)
+
+	if channel, ok := protocol.ChannelWindowName(target); ok {
+		return c.channelScrollback(ctx, channel, limit)
+	}
+	if peer, ok := protocol.DirectWindowPeer(target); ok {
+		return c.dmScrollback(ctx, domain.ChannelName(peer), limit)
+	}
+
+	return nil, fmt.Errorf("read scrollback: invalid window target %T", target)
+}
+
+func (c *serverClient) GuardWindow(
+	ctx context.Context,
+	target protocol.WindowTarget,
+) (protocol.WindowGuard, error) {
+	if target == nil {
+		return nil, fmt.Errorf("guard window: %w: %T", protocol.ErrInvalidWindowTarget, target)
+	}
+
+	window := protocol.WindowKey(target)
+	clientGeneration, active := c.connection()
+	if !active || c.sess.lookupClientHandle(c.id) != c {
+		return nil, fmt.Errorf("guard window %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+
+	if direct, ok := protocol.DirectWindowPeer(target); ok {
+		peer := protocol.ClientID(direct)
+		peerClient := c.sess.activeClientHandle(peer)
+		if peerClient == nil {
+			return nil, domain.UnknownNickError{Nick: domain.Nick(window), At: c.sess.now()}
+		}
+		peerGeneration, _ := peerClient.connection()
+		c.replayMu.Lock()
+		turnGeneration := c.turnGeneration
+		c.replayMu.Unlock()
+		peerClient.replayMu.Lock()
+		dmTurnGeneration := peerClient.turnGeneration
+		peerClient.replayMu.Unlock()
+		if !peerClient.connectionValid(peerGeneration) {
+			return nil, domain.UnknownNickError{Nick: domain.Nick(window), At: c.sess.now()}
+		}
+
+		return windowGuard{
+			client: c, clientGeneration: clientGeneration, turnGeneration: turnGeneration,
+			target: target, window: window, dmPeer: peerClient,
+			dmPeerGeneration: peerGeneration, dmTurnGeneration: dmTurnGeneration,
+		}, nil
+	}
+
+	channelTarget, ok := protocol.ChannelWindowName(target)
+	if !ok {
+		return nil, fmt.Errorf("guard window: %w: %T", protocol.ErrInvalidWindowTarget, target)
+	}
+	window = channelTarget
+
+	channel, err := c.sess.loadChannelWindow(ctx, window)
+	if !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("guard window %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+	if err != nil {
+		return nil, err
+	}
+	window = channel.Name()
+	if !channel.Members.HasInstance(c.instance) || !c.instance.InChannel(window) {
+		return nil, domain.NotOnChannelError{Channel: window, Command: "DISPATCH", At: c.sess.now()}
+	}
+
+	c.outMu.Lock()
+	epoch := c.windowEpochs[window]
+	c.outMu.Unlock()
+	c.replayMu.Lock()
+	turnGeneration := c.turnGeneration
+	c.replayMu.Unlock()
+
+	channel, err = c.sess.loadChannelWindow(ctx, window)
+	if !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("guard window %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+	if err != nil || !channel.Members.HasInstance(c.instance) || !c.instance.InChannel(window) {
+		return nil, domain.NotOnChannelError{Channel: window, Command: "DISPATCH", At: c.sess.now()}
+	}
+
+	c.outMu.Lock()
+	currentEpoch := c.windowEpochs[window]
+	c.outMu.Unlock()
+	if currentEpoch != epoch {
+		return nil, domain.NotOnChannelError{Channel: window, Command: "DISPATCH", At: c.sess.now()}
+	}
+
+	return windowGuard{
+		client: c, clientGeneration: clientGeneration, turnGeneration: turnGeneration,
+		target: target, window: window, epoch: epoch,
+	}, nil
+}
+
+func (c *serverClient) GuardInvitation(
+	ctx context.Context,
+	channel domain.ChannelName,
+) (protocol.WindowGuard, error) {
+	clientGeneration, active := c.connection()
+	if !active || !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("guard invitation for %q: %w", channel, protocol.ErrSubscriptionClosed)
+	}
+
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+
+	window, generation, invited := c.sess.invitationState(ctx, channel, c.instance.ID())
+	if !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("guard invitation for %q: %w", channel, protocol.ErrSubscriptionClosed)
+	}
+	if !invited {
+		return nil, domain.NotOnChannelError{
+			Channel: channel,
+			Command: "INVITE",
+			At:      c.sess.now(),
+		}
+	}
+	turnGeneration := c.turnGeneration
+	windowEpoch := c.windowEpoch(window.Name())
+
+	return invitationGuard{
+		client: c, clientGeneration: clientGeneration, turnGeneration: turnGeneration,
+		channel: window.Name(), generation: generation, windowEpoch: windowEpoch,
+	}, nil
+}
+
+func (c *serverClient) Replies(
+	ctx context.Context,
+	window protocol.WindowTarget,
+	limit int,
+) ([]protocol.ReplyEntry, error) {
+	clientGeneration, active := c.connection()
+	if !active || !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read private replies: %w", protocol.ErrSubscriptionClosed)
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	limit = min(limit, protocol.MaxScrollbackEntries)
+
+	var guard protocol.WindowGuard
+	var err error
+	if window != nil {
+		guard, err = c.GuardWindow(ctx, window)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	stored, err := c.sess.store.InstanceRepliesForWindowBefore(
+		ctx, c.instance.ID(), window, nil, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read private replies: %w", err)
+	}
+
+	if !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read private replies: %w", protocol.ErrSubscriptionClosed)
+	}
+	if guard != nil && !guard.Valid(ctx) {
+		return nil, fmt.Errorf("read private replies: %w", protocol.ErrWindowAuthorityChanged)
+	}
+
+	replies := make([]protocol.ReplyEntry, 0, len(stored))
+	for _, reply := range stored {
+		replies = append(replies, protocol.ReplyEntry{Window: reply.Window, Event: reply.Event})
+	}
+
+	return replies, nil
+}
+
+func (c *serverClient) DirectoryChannels(
+	ctx context.Context,
+) ([]domain.ChannelDirectoryEntry, error) {
+	clientGeneration, active := c.connection()
+	if !active || !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read channel directory: %w", protocol.ErrSubscriptionClosed)
+	}
+
+	for {
+		generation := c.sess.directoryGeneration.Load()
+		entries, err := c.sess.directoryChannels(ctx, c.instance)
+		if err != nil {
+			return nil, err
+		}
+		if !c.connectionValid(clientGeneration) {
+			return nil, fmt.Errorf("read channel directory: %w", protocol.ErrSubscriptionClosed)
+		}
+		if c.sess.directoryGeneration.Load() == generation {
+			return entries, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (c *serverClient) channelScrollback(
+	ctx context.Context,
+	window domain.ChannelName,
+	limit int,
+) ([]protocol.ScrollbackEntry, error) {
+	clientGeneration, active := c.connection()
+	if !active || !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+
+	channel, err := c.sess.loadChannelWindow(ctx, window)
+	if err != nil {
+		return nil, err
+	}
+
+	window = channel.Name()
+	if !channel.Members.HasInstance(c.instance) || !c.instance.InChannel(window) {
+		return nil, domain.NotOnChannelError{
+			Channel: window,
+			Command: "SCROLLBACK",
+			At:      c.sess.now(),
+		}
+	}
+
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+
+	c.outMu.Lock()
+	epoch := c.windowEpochs[window]
+	var before *int64
+	if c.replayBlocked {
+		before = c.firstQueuedScrollbackID(window)
+	}
+	c.outMu.Unlock()
+
+	stored, err := c.sess.store.ChannelScrollbackBefore(
+		ctx, c.instance.ID(), window, before, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read scrollback for %s: %w", window, err)
+	}
+
+	// Membership may have changed while the database read was in
+	// progress. Discard the result unless the actor can still read
+	// the channel now.
+	channel, err = c.sess.loadChannelWindow(ctx, window)
+	if !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+	if err != nil || !channel.Members.HasInstance(c.instance) ||
+		!c.instance.InChannel(window) {
+		return nil, domain.NotOnChannelError{
+			Channel: window,
+			Command: "SCROLLBACK",
+			At:      c.sess.now(),
+		}
+	}
+
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+	if c.windowEpochs[window] != epoch {
+		return nil, domain.NotOnChannelError{
+			Channel: window,
+			Command: "SCROLLBACK",
+			At:      c.sess.now(),
+		}
+	}
+	if c.replayBlocked && len(stored) > 0 {
+		c.replayRanges[window] = replayRange{
+			first: stored[0].ID,
+			last:  stored[len(stored)-1].ID,
+		}
+	}
+
+	return scrollbackEntries(stored), nil
+}
+
+// firstQueuedScrollbackID returns the first projected row for
+// `window` that is already waiting in the live queue. The caller
+// holds outMu, so no producer can insert an earlier boundary before
+// the corresponding snapshot completes.
+func (c *serverClient) firstQueuedScrollbackID(window domain.ChannelName) *int64 {
+	for _, queued := range c.outbox {
+		if id := queued.scrollbackIDs[window]; id != 0 {
+			return &id
+		}
+	}
+
+	return nil
+}
+
+func (c *serverClient) dmScrollback(
+	ctx context.Context,
+	window domain.ChannelName,
+	limit int,
+) ([]protocol.ScrollbackEntry, error) {
+	c.sess.dmHistoryMu.Lock()
+	defer c.sess.dmHistoryMu.Unlock()
+
+	peer := protocol.ClientID(window)
+	clientGeneration, active := c.connection()
+	if !active || !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+
+	peerClient := c.sess.activeClientHandle(peer)
+	if peerClient == nil {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, protocol.ErrWindowAuthorityChanged)
+	}
+	peerGeneration, _ := peerClient.connection()
+
+	c.outMu.Lock()
+	before, hasLive := c.dmLiveFrom[window]
+	c.outMu.Unlock()
+
+	var cutoff *int64
+	if hasLive {
+		cutoff = &before
+	}
+
+	stored, err := c.sess.store.DMEventsBefore(
+		ctx,
+		c.instance.ID(),
+		domain.InstanceID(peer),
+		cutoff,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, err)
+	}
+
+	if !c.connectionValid(clientGeneration) {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, protocol.ErrSubscriptionClosed)
+	}
+	if !peerClient.connectionValid(peerGeneration) {
+		return nil, fmt.Errorf("read scrollback for %q: %w", window, protocol.ErrWindowAuthorityChanged)
+	}
+
+	c.outMu.Lock()
+	if current, ok := c.dmLiveFrom[window]; hasLive && ok && current == before {
+		delete(c.dmLiveFrom, window)
+	}
+	c.outMu.Unlock()
+
+	return scrollbackEntries(stored), nil
+}
+
+func scrollbackEntries(stored []domain.StoredEvent) []protocol.ScrollbackEntry {
+	entries := make([]protocol.ScrollbackEntry, 0, len(stored))
+	for _, event := range stored {
+		if event.Event == nil {
+			continue
+		}
+
+		entries = append(entries, protocol.ScrollbackEntry{Event: event.Event})
+	}
+
+	return entries
+}
 
 // Unsubscribe removes the client from the session's subscriber
 // registry and closes [Done]. The user-client never reaps — its
@@ -380,12 +1325,17 @@ func (c *serverClient) Has(capability command.Capability) bool {
 // chat-screen renders exactly those windows; server handshake
 // numerics and command replies reach it point-to-point (via
 // [Session.deliverToClient] or the issuing command's
-// `Response.Events`), not through this filter. `actorTargets` is the
+// `Response.Events`), not through this filter. `targets` is the
 // per-recipient intersection that [Session.fanOutProtocol] computed
 // for this fan-out; it is non-empty exactly when the actor and `c`
 // share at least one channel, so the test for actor-scoped delivery
 // is just a length check.
 func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain.ChannelName) bool {
+	_, active := c.connection()
+	if !active {
+		return false
+	}
+
 	switch e := ev.(type) {
 	case domain.Message:
 		return modelTargetsThis(c, e.Target)

@@ -27,7 +27,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 	cw.Members.Add(user)
 	cw.Members.Add(botty)
 
-	prompt := buildSystemPrompt(cw, botty).Text()
+	prompt := buildSystemPrompt(testChannelContext(cw), botty.Nick(), botty.Persona()).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt.golden.txt"), prompt)
 }
@@ -36,33 +36,31 @@ func TestBuildSystemPrompt_without_persona(t *testing.T) {
 	cw := domain.NewChannelWindow("#dev", time.Time{})
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	prompt := buildSystemPrompt(cw, inst).Text()
+	prompt := buildSystemPrompt(testChannelContext(cw), inst.Nick(), inst.Persona()).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt_without_persona.golden.txt"), prompt)
 }
 
 // TestBuildSystemPrompt_dm_window pins the addressing line for a DM
-// turn. The window's counterpart in that conversation is the user,
-// whose [domain.InstanceID] is empty by convention, so `window.Name()`
-// there is the empty string and would render "You are botty on .";
-// the prompt uses `DisplayName()`, which resolves to the user's nick.
+// turn. The conversation context carries only the counterpart's stable
+// identity, so the prompt describes the kind of conversation without
+// caching a nick that a later rename could make stale.
 func TestBuildSystemPrompt_dm_window(t *testing.T) {
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	dm := domain.NewDMWindow(domain.NewUserInstance("testuser"), time.Time{})
 
-	prompt := buildSystemPrompt(dm, inst).Text()
+	prompt := buildSystemPrompt(testDirectContext(protocol.UserClientID), inst.Nick(), inst.Persona()).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt_dm.golden.txt"), prompt)
 }
 
 func TestBuildSystemPrompt_keeps_the_fixed_prefix_stable(t *testing.T) {
 	first := buildSystemPrompt(
-		domain.NewChannelWindow("#dev", time.Time{}),
-		domain.NewModelInstance("inst-a", "alice", "test/model", "careful reader", nil),
+		testChannelContext(domain.NewChannelWindow("#dev", time.Time{})),
+		"alice", "careful reader",
 	)
 	second := buildSystemPrompt(
-		domain.NewDMWindow(domain.NewUserInstance("laney"), time.Time{}),
-		domain.NewModelInstance("inst-b", "botty", "test/model", "dry wit", nil),
+		testDirectContext(protocol.UserClientID),
+		"botty", "dry wit",
 	)
 
 	require.Equal(t, first.Fixed, second.Fixed)
@@ -80,7 +78,7 @@ func TestBuildSystemPrompt_keeps_actor_written_text_out(t *testing.T) {
 	cw.Topic = hostileTopic
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	prompt := buildSystemPrompt(cw, inst).Text()
+	prompt := buildSystemPrompt(testChannelContext(cw), inst.Nick(), inst.Persona()).Text()
 
 	require.Equal(t, loadGolden(t, "system_prompt_without_persona.golden.txt"), prompt,
 		"the system prompt is a function of nick, window name and persona alone")
@@ -101,28 +99,35 @@ func TestContextReplies(t *testing.T) {
 
 		return cw
 	}
+	anonymousChannel := func(topic string, setBy domain.Nick) *domain.ChannelWindow {
+		cw := channel(topic, setBy)
+		cw.Modes.Anonymous = true
+
+		return cw
+	}
 
 	memories := []memory.Entry{
-		{Key: "mood", Content: "curious"},
 		{Key: "goal", Content: "learn go"},
+		{Key: "mood", Content: "curious"},
 	}
 
 	tests := []struct {
 		name     string
-		window   domain.Window
+		window   protocol.WindowContext
 		memories []memory.Entry
 		want     []protocol.IRCMessage
 	}{
 		{
 			name:   "a channel with no topic and no memories carries nothing",
-			window: channel("", ""),
+			window: testChannelContext(channel("", "")),
 		},
 		{
 			name:   "a topic is a server reply naming the member who set it",
-			window: channel("go stuff", "alice"),
+			window: testChannelContext(channel("go stuff", "alice")),
 			want: []protocol.IRCMessage{
 				{
 					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
 					Body:   "topic for #dev, set by alice: go stuff",
 					At:     setAt,
@@ -131,10 +136,11 @@ func TestContextReplies(t *testing.T) {
 		},
 		{
 			name:   "a topic with no known setter names the channel alone",
-			window: channel("go stuff", ""),
+			window: testChannelContext(channel("go stuff", "")),
 			want: []protocol.IRCMessage{
 				{
 					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
 					Body:   "topic for #dev: go stuff",
 					At:     setAt,
@@ -142,44 +148,61 @@ func TestContextReplies(t *testing.T) {
 			},
 		},
 		{
+			name:   "an anonymous topic masks its stored setter",
+			window: testChannelContext(anonymousChannel("go stuff", "alice")),
+			want: []protocol.IRCMessage{
+				{
+					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource("modeloff"),
+					Target: "#dev",
+					Body:   "topic for #dev, set by anonymous: go stuff",
+					At:     setAt,
+				},
+			},
+		},
+		{
 			name:     "memories are a server reply with no time of their own",
-			window:   channel("", ""),
+			window:   testChannelContext(channel("", "")),
 			memories: memories,
 			want: []protocol.IRCMessage{
 				{
 					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
-					Body:   "your stored memories: [mood=curious] [goal=learn go]",
+					Body:   "your stored memories: [goal=learn go] [mood=curious]",
 				},
 			},
 		},
 		{
 			name:     "a hostile topic rides as data alongside the memories",
-			window:   channel(hostileTopic, "alice"),
+			window:   testChannelContext(channel(hostileTopic, "alice")),
 			memories: memories,
 			want: []protocol.IRCMessage{
 				{
 					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
 					Body:   "topic for #dev, set by alice: " + hostileTopic,
 					At:     setAt,
 				},
 				{
 					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
-					Body:   "your stored memories: [mood=curious] [goal=learn go]",
+					Body:   "your stored memories: [goal=learn go] [mood=curious]",
 				},
 			},
 		},
 		{
 			name:     "a DM window carries the memory line alone",
-			window:   domain.NewDMWindow(domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil), time.Time{}),
+			window:   testDirectContext("inst-peer"),
 			memories: memories,
 			want: []protocol.IRCMessage{
 				{
 					Kind:   protocol.KindServerReply,
-					Target: "peer",
-					Body:   "your stored memories: [mood=curious] [goal=learn go]",
+					Source: domain.ServerSource("modeloff"),
+					Target: "inst-peer",
+					Body:   "your stored memories: [goal=learn go] [mood=curious]",
 				},
 			},
 		},
@@ -201,7 +224,7 @@ func TestContextReplies_truncated_memories(t *testing.T) {
 
 	many := make([]memory.Entry, maxMemoryEntries+1)
 	for i := range many {
-		many[i] = memory.Entry{Key: fmt.Sprintf("k%d", i), Content: "v"}
+		many[i] = memory.Entry{Key: fmt.Sprintf("k%02d", i), Content: "v"}
 	}
 
 	var body strings.Builder
@@ -215,10 +238,43 @@ func TestContextReplies_truncated_memories(t *testing.T) {
 	require.Equal(t, []protocol.IRCMessage{
 		{
 			Kind:   protocol.KindServerReply,
+			Source: domain.ServerSource("modeloff"),
 			Target: "#dev",
 			Body:   body.String(),
 		},
-	}, contextReplies(cw, many))
+	}, contextReplies(testChannelContext(cw), many))
+}
+
+func TestCapMemoriesForPrompt_keeps_the_most_recent_entries(t *testing.T) {
+	base := time.Date(2026, time.August, 25, 10, 0, 0, 0, time.UTC)
+	entries := make([]memory.Entry, maxMemoryEntries+2)
+	for i := range entries {
+		entries[i] = memory.Entry{
+			Key:     fmt.Sprintf("memory-%02d", i),
+			Content: fmt.Sprintf("value-%02d", i),
+			At:      base.Add(time.Duration(i) * time.Minute),
+		}
+	}
+
+	capped, truncated := capMemoriesForPrompt(entries)
+	want := make([]memory.Entry, maxMemoryEntries)
+	for i := range want {
+		want[i] = entries[len(entries)-1-i]
+	}
+
+	require.Equal(t, struct {
+		Entries   []memory.Entry
+		Truncated bool
+	}{
+		Entries:   want,
+		Truncated: true,
+	}, struct {
+		Entries   []memory.Entry
+		Truncated bool
+	}{
+		Entries:   capped,
+		Truncated: truncated,
+	})
 }
 
 // TestCapMemoriesForPrompt covers the bound on the block of memories

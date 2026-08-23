@@ -3,10 +3,10 @@ package protocol
 import "github.com/laney/modeloff/internal/domain"
 
 // Command is the closed sum of operations a [Client] can issue. The
-// sum is sealed by the unexported `isCommand` method so the
-// dispatcher's exhaustive switch is checked at compile time: adding a
-// new command makes every dispatcher fail to build until it is
-// handled.
+// sum is sealed by the unexported `isCommand` method, so only this
+// package can add a command type. The protocol tests derive the
+// sealed members from these methods and compare them with the
+// session dispatcher's type-switch cases.
 //
 // Commands are dispatched synchronously through [Client.Send]. The
 // originator receives a [Response] carrying confirmation events or a
@@ -76,6 +76,12 @@ type Topic struct {
 	Body    string
 }
 
+// TopicQuery asks for the current topic metadata of a channel the
+// issuing client has joined.
+type TopicQuery struct {
+	Channel domain.ChannelName
+}
+
 // Invite asks the server to add a model instance to the named
 // channel. Both the user-client and a model (via the `invite` tool)
 // issue it over this wire command; on a `+i` channel it is
@@ -83,6 +89,7 @@ type Topic struct {
 type Invite struct {
 	Nick    domain.Nick
 	Channel domain.ChannelName
+	Window  WindowTarget
 }
 
 // Kick asks the server to remove a model instance from the named
@@ -100,19 +107,43 @@ type Nick struct {
 }
 
 // Whois asks the server to emit a [domain.Whois] reply describing
-// the named instance. `Channel` carries the window the command was
-// issued in; the dispatcher stamps it onto the reply's
-// [domain.Whois.Target] so the issuer renders the response in the
-// window it asked from.
+// the named instance. Window records where the command was issued.
+// It is client context, and the IRC command carries no such
+// parameter.
 type Whois struct {
-	Nick    domain.Nick
-	Channel domain.ChannelName
+	Nick   domain.Nick
+	Window WindowTarget
 }
 
 // List asks the server to emit a stream of [domain.ListReply] events
 // terminated by [domain.ListEnd], shaped after IRC's RPL_LIST and
 // end-of-list (323) numerics.
-type List struct{}
+type List struct {
+	Window WindowTarget
+}
+
+// CommandWindow returns the client window in which a command was
+// issued when that command can produce a durable issuer reply.
+func CommandWindow(cmd Command) WindowTarget {
+	switch cmd := cmd.(type) {
+	case TopicQuery:
+		return ChannelWindowTarget(cmd.Channel)
+	case Invite:
+		if cmd.Window != nil {
+			return cmd.Window
+		}
+
+		return ChannelWindowTarget(cmd.Channel)
+	case Whois:
+		return cmd.Window
+	case List:
+		return cmd.Window
+	case AddModel:
+		return ChannelWindowTarget(cmd.Channel)
+	default:
+		return nil
+	}
+}
 
 // AddModel creates a new model instance, persists it, registers a
 // model-client subscription for it, and attaches it to the named
@@ -126,9 +157,8 @@ type AddModel struct {
 
 // Quit disconnects the issuing client. Broadcast semantics follow
 // RFC 1459 §4.1.6: peers in shared channels receive a QUIT line and
-// the issuing client's [Client.Events] channel is closed by the
-// server. The instance row stays in the store; QUIT is "disconnect
-// this client", not "delete this model".
+// the issuing client receives the same terminal event. The server
+// removes the instance row and ends its connection authority.
 type Quit struct {
 	Reason string
 }
@@ -189,6 +219,7 @@ func (Part) isCommand()        {}
 func (PrivMsg) isCommand()     {}
 func (Action) isCommand()      {}
 func (Topic) isCommand()       {}
+func (TopicQuery) isCommand()  {}
 func (Invite) isCommand()      {}
 func (Kick) isCommand()        {}
 func (Nick) isCommand()        {}
@@ -214,6 +245,9 @@ func (Action) Name() string { return "ACTION" }
 
 // Name returns the wire verb "TOPIC".
 func (Topic) Name() string { return "TOPIC" }
+
+// Name returns the wire verb "TOPIC".
+func (TopicQuery) Name() string { return "TOPIC" }
 
 // Name returns the wire verb "INVITE".
 func (Invite) Name() string { return "INVITE" }

@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,33 +10,47 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
-// tokenSizedEvents builds n domain.Message-backed StoredEvents, each
-// with a rendered From+Target+Body length of exactly
-// tokensEach*bytesPerEstimatedToken bytes (so [estimateEventTokens]
-// costs each one at exactly tokensEach), at one-second intervals
-// starting at `at` — oldest first, matching the order a ring holds
-// its contents in.
+// tokenSizedEvents builds n domain.Message-backed StoredEvents that
+// [estimateEventTokens] costs at exactly tokensEach. Events start at
+// `at` and advance by one second, oldest first, which matches the
+// order in a history ring.
 func tokenSizedEvents(n, tokensEach int, at time.Time) []domain.StoredEvent {
 	const from, target = domain.Nick("a"), domain.ChannelName("#room")
 
-	bodyLen := tokensEach*bytesPerEstimatedToken - len(from) - len(target)
-
 	out := make([]domain.StoredEvent, n)
 	for i := range out {
-		out[i] = domain.StoredEvent{Event: domain.Message{
-			Target: target,
-			From:   from,
-			Body:   strings.Repeat("x", bodyLen),
-			At:     at.Add(time.Duration(i) * time.Second),
+		event := domain.StoredEvent{Event: domain.Message{
+			Source: domain.LegacyClientSource(from), Target: target,
+			At: at.Add(time.Duration(i) * time.Second),
 		}}
+		for estimateEventTokens(event) < tokensEach {
+			message := event.Event.(domain.Message)
+			message.Body += "x"
+			event.Event = message
+		}
+		if estimateEventTokens(event) != tokensEach {
+			panic("requested token cost is smaller than the rendered event")
+		}
+
+		out[i] = event
 	}
 
 	return out
+}
+
+func unscopedReplies(events []domain.StoredEvent) []storedReply {
+	replies := make([]storedReply, len(events))
+	for i, event := range events {
+		replies[i] = storedReply{event: event}
+	}
+
+	return replies
 }
 
 // tokenSizedMessages is [tokenSizedEvents] for a dispatch turn's
@@ -43,48 +58,53 @@ func tokenSizedEvents(n, tokensEach int, at time.Time) []domain.StoredEvent {
 func tokenSizedMessages(n, tokensEach int, at time.Time) []protocol.IRCMessage {
 	const from, target = "a", "#room"
 
-	bodyLen := tokensEach*bytesPerEstimatedToken - len(from) - len(target)
-
 	out := make([]protocol.IRCMessage, n)
 	for i := range out {
-		out[i] = protocol.IRCMessage{
-			Kind:   protocol.KindPrivMsg,
-			From:   from,
-			Target: target,
-			Body:   strings.Repeat("x", bodyLen),
-			At:     at.Add(time.Duration(i) * time.Second),
+		message := protocol.IRCMessage{
+			Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource(from),
+			Target: target, At: at.Add(time.Duration(i) * time.Second),
 		}
+		for estimateMessageTokens(message) < tokensEach {
+			message.Body += "x"
+		}
+		if estimateMessageTokens(message) != tokensEach {
+			panic("requested token cost is smaller than the rendered message")
+		}
+
+		out[i] = message
 	}
 
 	return out
 }
 
-// TestHistory_append_dedupes_seed_then_live_emit covers the seed-
-// then-live-emit race: a registering goroutine seeds the buffer
-// from the store while the producer that wrote the seeded row is
-// mid-fan-out. The fan-out copy of the same event reaches the new
-// client and would otherwise duplicate the most-recent entry. The
-// wire layer drops the row ID, so the dedupe must match on
-// (concrete type, timestamp).
-func TestHistory_append_dedupes_seed_then_live_emit(t *testing.T) {
+// TestHistory_append_preserves_an_identical_later_DM ensures value
+// equality does not collapse two messages. The session orders the
+// scrollback snapshot before its live queue; the local history can
+// therefore append every delivery without guessing its provenance.
+func TestHistory_append_preserves_an_identical_later_DM(t *testing.T) {
 	t.Parallel()
 
-	const target = domain.ChannelName("#room")
+	const target = domain.ChannelName("inst-alice")
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	msg := domain.Message{
-		Target: target,
-		From:   domain.Nick("alice"),
-		Body:   "hello",
-		At:     at,
+		Source: domain.ClientSource("inst-alice", "alice"), Target: "inst-botty",
+		Body: "hello", At: at,
 	}
-
 	h := newHistory()
-	h.seedChannel(target, []domain.StoredEvent{{ID: 42, Event: msg}})
+	h.bind(newFakeSubscription(func(
+		context.Context,
+		protocol.WindowTarget,
+		int,
+	) ([]protocol.ScrollbackEntry, error) {
+		return []protocol.ScrollbackEntry{{Event: msg}}, nil
+	}))
 
-	h.append(context.Background(), nil, "self", domain.StoredEvent{Event: msg}, target)
+	require.NoError(t, h.append(context.Background(), domain.StoredEvent{Event: msg}, target))
+	snapshot, err := h.snapshot(context.Background(), target)
+	require.NoError(t, err)
 
-	require.Equal(t, []domain.StoredEvent{{ID: 42, Event: msg}}, h.snapshot(context.Background(), nil, "self", target))
+	require.Equal(t, []domain.StoredEvent{{Event: msg}, {Event: msg}}, snapshot)
 }
 
 // TestHistory_append_distinct_events_both_appended guards against
@@ -98,24 +118,22 @@ func TestHistory_append_distinct_events_both_appended(t *testing.T) {
 	const target = domain.ChannelName("#room")
 
 	first := domain.Message{
-		Target: target,
-		From:   domain.Nick("alice"),
-		Body:   "first",
-		At:     time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC),
+		Source: domain.LegacyClientSource("alice"), Target: target,
+		Body: "first", At: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC),
 	}
 	second := domain.Message{
-		Target: target,
-		From:   domain.Nick("alice"),
-		Body:   "second",
-		At:     time.Date(2025, 1, 1, 12, 0, 1, 0, time.UTC),
+		Source: domain.LegacyClientSource("alice"), Target: target,
+		Body: "second", At: time.Date(2025, 1, 1, 12, 0, 1, 0, time.UTC),
 	}
 
 	h := newHistory()
 	h.seedChannel(target, []domain.StoredEvent{{Event: first}})
 
-	h.append(context.Background(), nil, "self", domain.StoredEvent{Event: second}, target)
+	require.NoError(t, h.append(context.Background(), domain.StoredEvent{Event: second}, target))
+	snapshot, err := h.snapshot(context.Background(), target)
+	require.NoError(t, err)
 
-	require.Equal(t, []domain.StoredEvent{{Event: first}, {Event: second}}, h.snapshot(context.Background(), nil, "self", target))
+	require.Equal(t, []domain.StoredEvent{{Event: first}, {Event: second}}, snapshot)
 }
 
 // TestHistory_replies_load_append_read covers the private-replies
@@ -137,13 +155,58 @@ func TestHistory_replies_load_append_read(t *testing.T) {
 	}
 
 	h := newHistory()
-	h.seedReplies([]domain.StoredEvent{{ID: 7, Event: seeded}})
-	h.appendReply(domain.StoredEvent{Event: live})
+	h.seedReplies(protocol.ChannelWindowTarget("#dev"), []protocol.ReplyEntry{{Event: seeded}})
+	h.appendReply(nil, domain.StoredEvent{Event: live})
 
-	require.Equal(t, []domain.StoredEvent{
-		{ID: 7, Event: seeded},
-		{Event: live},
-	}, h.snapshotReplies())
+	require.Equal(t, []storedReply{
+		{window: protocol.ChannelWindowTarget("#dev"), event: domain.StoredEvent{Event: seeded}},
+		{event: domain.StoredEvent{Event: live}},
+	}, h.snapshotRepliesFor("#dev"))
+}
+
+func TestHistory_replies_follow_the_issuing_window(t *testing.T) {
+	t.Parallel()
+
+	devReply := domain.ListReply{Channel: "#other"}
+	otherReply := domain.ListReply{Channel: "#dev"}
+	globalReply := domain.PersonasList{}
+
+	h := newHistory()
+	h.seedReplies(protocol.ChannelWindowTarget("#dev"), []protocol.ReplyEntry{{Event: devReply}})
+	h.seedReplies(protocol.ChannelWindowTarget("#other"), []protocol.ReplyEntry{{Event: otherReply}})
+	h.seedReplies(nil, []protocol.ReplyEntry{{Event: globalReply}})
+
+	require.Equal(t, []storedReply{
+		{window: protocol.ChannelWindowTarget("#dev"), event: domain.StoredEvent{Event: devReply}},
+		{event: domain.StoredEvent{Event: globalReply}},
+	}, h.snapshotRepliesFor("#dev"))
+
+	h.forget("#dev")
+	require.Equal(t, []storedReply{
+		{window: protocol.ChannelWindowTarget("#other"), event: domain.StoredEvent{Event: otherReply}},
+		{event: domain.StoredEvent{Event: globalReply}},
+	}, h.snapshotRepliesFor("#other"))
+}
+
+func TestHistory_replies_remain_chronological_across_scopes(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	globalReply := domain.SystemNotice{Text: "older global state", At: base}
+	windowReply := domain.SystemNotice{Target: "#dev", Text: "newer window state", At: base.Add(time.Minute)}
+
+	h := newHistory()
+	h.seedReplies(protocol.ChannelWindowTarget("#dev"), []protocol.ReplyEntry{{Event: windowReply}})
+	h.seedReplies(nil, []protocol.ReplyEntry{{Event: globalReply}})
+
+	replies := h.snapshotRepliesFor("#dev")
+	require.Equal(t, []storedReply{
+		{event: domain.StoredEvent{Event: globalReply}},
+		{window: protocol.ChannelWindowTarget("#dev"), event: domain.StoredEvent{Event: windowReply}},
+	}, replies)
+	require.Equal(t, []storedReply{
+		{window: protocol.ChannelWindowTarget("#dev"), event: domain.StoredEvent{Event: windowReply}},
+	}, trimRepliesToTokenBudget(replies, 0))
 }
 
 // TestHistory_replies_trim_from_older_end pins that the replies ring
@@ -157,16 +220,35 @@ func TestHistory_replies_trim_from_older_end(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	total := modelHistorySize + 3
 	for i := range total {
-		h.appendReply(domain.StoredEvent{Event: domain.SystemNotice{At: base.Add(time.Duration(i) * time.Second)}})
+		h.appendReply(nil, domain.StoredEvent{Event: domain.SystemNotice{At: base.Add(time.Duration(i) * time.Second)}})
 	}
 
-	want := make([]domain.StoredEvent, modelHistorySize)
+	want := make([]storedReply, modelHistorySize)
 	for i := range want {
 		at := base.Add(time.Duration(i+3) * time.Second)
-		want[i] = domain.StoredEvent{Event: domain.SystemNotice{At: at}}
+		want[i] = storedReply{event: domain.StoredEvent{Event: domain.SystemNotice{At: at}}}
 	}
 
-	require.Equal(t, want, h.snapshotReplies())
+	require.Equal(t, want, h.snapshotRepliesFor("#dev"))
+}
+
+func TestHistory_reply_limit_is_independent_for_each_window(t *testing.T) {
+	t.Parallel()
+
+	h := newHistory()
+	devReply := domain.SystemNotice{Target: "#dev", Text: "keep me"}
+	h.appendReply(protocol.ChannelWindowTarget("#dev"), domain.StoredEvent{Event: devReply})
+
+	for range modelHistorySize + 1 {
+		h.appendReply(protocol.ChannelWindowTarget("#other"), domain.StoredEvent{
+			Event: domain.SystemNotice{Target: "#other", Text: "other"},
+		})
+	}
+
+	require.Equal(t, []storedReply{{
+		window: protocol.ChannelWindowTarget("#dev"),
+		event:  domain.StoredEvent{Event: devReply},
+	}}, h.snapshotRepliesFor("#dev"))
 }
 
 // TestTokenBudgetForContextLen covers deriving a per-turn transcript
@@ -207,16 +289,24 @@ func TestHistory_snapshot_is_never_token_trimmed(t *testing.T) {
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	older := domain.Message{Target: target, From: "alice", Body: "an older message", At: at}
-	newer := domain.Message{Target: target, From: "alice", Body: "a newer message", At: at.Add(time.Second)}
+	older := domain.Message{Source: domain.LegacyClientSource("alice"), Target: target, Body: "an older message", At: at}
+	newer := domain.Message{Source: domain.LegacyClientSource("alice"), Target: target, Body: "a newer message", At: at.Add(time.Second)}
+	olderReply := domain.SystemNotice{Target: target, Text: "an older reply", At: at}
+	newerReply := domain.SystemNotice{Target: target, Text: "a newer reply", At: at.Add(time.Second)}
 
 	h := newHistory()
 	h.seedChannel(target, []domain.StoredEvent{{Event: older}, {Event: newer}})
-	h.seedReplies([]domain.StoredEvent{{Event: older}, {Event: newer}})
+	h.seedReplies(nil, []protocol.ReplyEntry{{Event: olderReply}, {Event: newerReply}})
 	h.setTokenBudget(3) // tight enough that a per-buffer trim would drop `older`
 
-	require.Equal(t, []domain.StoredEvent{{Event: older}, {Event: newer}}, h.snapshot(context.Background(), nil, "self", target))
-	require.Equal(t, []domain.StoredEvent{{Event: older}, {Event: newer}}, h.snapshotReplies())
+	snapshot, err := h.snapshot(context.Background(), target)
+	require.NoError(t, err)
+
+	require.Equal(t, []domain.StoredEvent{{Event: older}, {Event: newer}}, snapshot)
+	require.Equal(t, []storedReply{
+		{event: domain.StoredEvent{Event: olderReply}},
+		{event: domain.StoredEvent{Event: newerReply}},
+	}, h.snapshotRepliesFor(target))
 }
 
 // TestHistory_TokenBudget covers the getter [composeTranscriptBudget]
@@ -246,8 +336,8 @@ func TestHistory_TokenBudget(t *testing.T) {
 func TestTrimToTokenBudget(t *testing.T) {
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	tiny := domain.StoredEvent{Event: domain.Message{Target: "#room", From: "a", Body: "hi", At: at}}
-	big := domain.StoredEvent{Event: domain.Message{Target: "#room", From: "a", Body: "a much longer message body", At: at.Add(time.Second)}}
+	tiny := domain.StoredEvent{Event: domain.Message{Source: domain.LegacyClientSource("a"), Target: "#room", Body: "hi", At: at}}
+	big := domain.StoredEvent{Event: domain.Message{Source: domain.LegacyClientSource("a"), Target: "#room", Body: "a much longer message body", At: at.Add(time.Second)}}
 
 	tests := []struct {
 		name   string
@@ -279,14 +369,48 @@ func TestComposeTranscriptBudget_disabled_without_a_known_context_len(t *testing
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	history := tokenSizedEvents(3, 100, at)
-	replies := tokenSizedEvents(3, 100, at)
+	replies := unscopedReplies(tokenSizedEvents(3, 100, at))
 	triggers := tokenSizedMessages(3, 100, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, 0)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(
+		nil, history, replies, triggers, len(triggers)-1, 0,
+	)
 
 	require.Equal(t, history, gotHistory)
 	require.Equal(t, replies, gotReplies)
 	require.Equal(t, triggers, gotTriggers)
+}
+
+func TestComposeTranscriptBudget_keeps_state_after_the_mandatory_trigger(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	trigger := tokenSizedMessages(1, 40, at)[0]
+	part := protocol.IRCMessage{
+		Kind: protocol.KindPart, Source: domain.LegacyClientSource("alice"),
+		Target: "#room", At: at.Add(time.Second),
+	}
+	events := []protocol.IRCMessage{trigger, part}
+
+	history, replies, current := composeTranscriptBudget(
+		nil, nil, nil, events, 0, estimateMessageTokens(trigger),
+	)
+
+	require.Equal(t, struct {
+		History []domain.StoredEvent
+		Replies []storedReply
+		Current []protocol.IRCMessage
+	}{
+		Current: events,
+	}, struct {
+		History []domain.StoredEvent
+		Replies []storedReply
+		Current []protocol.IRCMessage
+	}{
+		History: history,
+		Replies: replies,
+		Current: current,
+	})
 }
 
 // TestComposeTranscriptBudget_backstop_then_split pins the
@@ -302,15 +426,17 @@ func TestComposeTranscriptBudget_backstop_then_split(t *testing.T) {
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	// Three messages at 4 tokens each per piece; a budget of 10
-	// leaves triggers only enough room for the newest two (8 tokens),
-	// and what little is left (2, then negative) still guarantees
+	// Three messages at 40 tokens each per piece; a budget of 100
+	// leaves triggers only enough room for the newest two (80 tokens),
+	// and what little is left (20, then negative) still guarantees
 	// replies and history their one mandatory newest entry each.
-	history := tokenSizedEvents(3, 4, at)
-	replies := tokenSizedEvents(3, 4, at)
-	triggers := tokenSizedMessages(3, 4, at)
+	history := tokenSizedEvents(3, 40, at)
+	replies := unscopedReplies(tokenSizedEvents(3, 40, at))
+	triggers := tokenSizedMessages(3, 40, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, 10)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(
+		nil, history, replies, triggers, len(triggers)-1, 100,
+	)
 
 	require.Equal(t, triggers[1:], gotTriggers, "triggers: newest two of three, trimmed against the full budget")
 	require.Equal(t, replies[2:], gotReplies, "replies: only the mandatory newest, once triggers spent nearly everything")
@@ -330,18 +456,95 @@ func TestComposeTranscriptBudget_invariant_at_floor_context(t *testing.T) {
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	history := tokenSizedEvents(20, 15, at)
-	replies := tokenSizedEvents(20, 15, at)
-	triggers := tokenSizedMessages(50, 15, at) // 750 tokens: fits the floor budget outright
+	history := tokenSizedEvents(20, 40, at)
+	replies := unscopedReplies(tokenSizedEvents(20, 40, at))
+	triggers := tokenSizedMessages(20, 45, at) // 900 tokens: fits the floor budget outright
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, budget)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(
+		nil, history, replies, triggers, len(triggers)-1, budget,
+	)
 
-	total := sumEventTokens(gotHistory) + sumEventTokens(gotReplies) + sumMessageTokens(gotTriggers)
+	total := sumEventTokens(gotHistory) + sumReplyTokens(gotReplies) + sumMessageTokens(gotTriggers)
 	require.LessOrEqual(t, total, budget)
 
 	require.Equal(t, triggers, gotTriggers, "the whole trigger block fits the budget on its own")
-	require.Equal(t, replies[len(replies)-8:], gotReplies, "the newest 8 of 20 fit what triggers left")
-	require.Equal(t, history[len(history)-8:], gotHistory, "the newest 8 of 20 fit what replies left")
+	require.Equal(t, replies[len(replies)-1:], gotReplies, "the newest reply fits its share")
+	require.Equal(t, history[len(history)-1:], gotHistory, "the newest history event fits what replies left")
+}
+
+func TestComposeTranscriptBudget_covers_the_rendered_provider_body(t *testing.T) {
+	t.Parallel()
+
+	const contextLength = 8192
+	const historySize = 250
+
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	history := tokenSizedEvents(historySize, 40, at)
+	current := tokenSizedMessages(1, 40, at.Add(historySize*time.Second))
+
+	history, _, current = composeTranscriptBudget(
+		nil,
+		history,
+		nil,
+		current,
+		0,
+		tokenBudgetForContextLen(contextLength),
+	)
+
+	window := domain.NewChannelWindow("#room", at)
+	instance := domain.NewModelInstance(
+		"inst-botty",
+		"botty",
+		"test/model",
+		"",
+		nil,
+	)
+	prompt := buildSystemPrompt(testChannelContext(window), instance.Nick(), instance.Persona())
+	renderedHistory := renderTurnHistory(
+		history,
+		nil,
+		nil,
+		providerTargetProjection{},
+	)
+	request, err := api.RenderEventRequest(
+		instance.ModelID,
+		instance.ID(),
+		prompt,
+		renderedHistory,
+		current,
+	)
+	require.NoError(t, err)
+
+	var body struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(request.Body, &body))
+
+	contentBytes := 0
+	for _, message := range body.Messages {
+		var text string
+		if json.Unmarshal(message.Content, &text) == nil {
+			contentBytes += len(text)
+			continue
+		}
+
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		require.NoError(t, json.Unmarshal(message.Content, &parts))
+
+		for _, part := range parts {
+			contentBytes += len(part.Text)
+		}
+	}
+
+	require.LessOrEqual(
+		t,
+		contentBytes,
+		contextLength*bytesPerEstimatedToken,
+	)
 }
 
 // TestComposeTranscriptBudget_full_rings_large_burst_at_8192 is the
@@ -361,19 +564,86 @@ func TestComposeTranscriptBudget_full_rings_large_burst_at_8192(t *testing.T) {
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	history := tokenSizedEvents(modelHistorySize, 2, at)
-	replies := tokenSizedEvents(modelHistorySize, 2, at)
-	triggers := tokenSizedMessages(257, 29, at)
+	history := tokenSizedEvents(modelHistorySize, 40, at)
+	replies := unscopedReplies(tokenSizedEvents(modelHistorySize, 40, at))
+	triggers := tokenSizedMessages(257, 100, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(nil, history, replies, triggers, budget)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(
+		nil, history, replies, triggers, len(triggers)-1, budget,
+	)
 
-	total := sumEventTokens(gotHistory) + sumEventTokens(gotReplies) + sumMessageTokens(gotTriggers)
+	total := sumEventTokens(gotHistory) + sumReplyTokens(gotReplies) + sumMessageTokens(gotTriggers)
 	require.LessOrEqual(t, total, budget)
-	require.Equal(t, budget, total, "the chosen sizes fill the budget exactly, with nothing to spare")
+	require.Equal(t, 4_180, total)
 
-	require.Equal(t, triggers[257-144:], gotTriggers, "144 of 257 triggers fit the full budget")
-	require.Equal(t, replies[modelHistorySize-4:], gotReplies, "4 of 500 replies fit what triggers left")
-	require.Equal(t, history[modelHistorySize-4:], gotHistory, "4 of 500 history events fit what replies left")
+	require.Equal(t, triggers[257-41:], gotTriggers, "41 of 257 triggers fit the full budget")
+	require.Equal(t, replies[modelHistorySize-1:], gotReplies, "the newest reply fits what triggers left")
+	require.Equal(t, history[modelHistorySize-1:], gotHistory, "the newest history event fits what replies left")
+}
+
+func TestComposeTranscriptBudget_accounts_for_projected_dm_nicks(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	userNick := domain.Nick(strings.Repeat("u", domain.NickMaxLen))
+	history := make([]domain.StoredEvent, modelHistorySize-1)
+	for i := range history {
+		history[i] = domain.StoredEvent{ID: int64(i + 1), Event: domain.Message{
+			Source: domain.ClientSource("inst-botty", "botty"),
+			Target: domain.ChannelName(protocol.UserClientID), Body: strings.Repeat("m", 27),
+			At: at.Add(time.Duration(i) * time.Second),
+		}}
+	}
+	events := []protocol.IRCMessage{{
+		Kind: protocol.KindPrivMsg, Source: domain.ClientSource(protocol.UserClientID, userNick),
+		Target: "inst-botty", Body: strings.Repeat("m", 27),
+		At: at.Add(modelHistorySize * time.Second),
+	}}
+	projection := providerTargetProjection{
+		direct: true,
+		selfID: "inst-botty", selfNick: "botty",
+		peerID: protocol.UserClientID, peerNick: userNick,
+	}
+	budget := tokenBudgetForContextLen(8_192)
+
+	gotHistory, gotReplies, gotEvents := composeProjectedTranscriptBudget(
+		projection, nil, history, nil, events, 0, budget,
+	)
+	projectedHistory := make([]protocol.IRCMessage, len(gotHistory))
+	for i, event := range gotHistory {
+		message, ok := protocol.FromChannelEvent(event.Event)
+		require.True(t, ok)
+		projectedHistory[i] = projection.message(message)
+	}
+	projectedEvents := projection.messages(gotEvents)
+	projectedTokens := sumMessageTokens(projectedHistory) + sumMessageTokens(projectedEvents)
+
+	require.Equal(t, struct {
+		History         []domain.StoredEvent
+		Replies         []storedReply
+		Events          []protocol.IRCMessage
+		ProjectedTokens int
+		Budget          int
+		Fits            bool
+	}{
+		History:         history[len(history)-101:],
+		Events:          events,
+		ProjectedTokens: 4_182,
+		Budget:          4_192,
+		Fits:            true,
+	}, struct {
+		History         []domain.StoredEvent
+		Replies         []storedReply
+		Events          []protocol.IRCMessage
+		ProjectedTokens int
+		Budget          int
+		Fits            bool
+	}{
+		History: gotHistory, Replies: gotReplies, Events: gotEvents,
+		ProjectedTokens: projectedTokens,
+		Budget:          budget,
+		Fits:            projectedTokens <= budget,
+	})
 }
 
 // fullContextReplies renders the largest context block
@@ -398,7 +668,7 @@ func fullContextReplies(t *testing.T) []protocol.IRCMessage {
 		}
 	}
 
-	return contextReplies(cw, memories)
+	return contextReplies(testChannelContext(cw), memories)
 }
 
 // TestComposeTranscriptBudget_charges_the_context_lines_first covers
@@ -418,28 +688,30 @@ func TestComposeTranscriptBudget_charges_the_context_lines_first(t *testing.T) {
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	contextLines := fullContextReplies(t)
-	require.Equal(t, 1139, sumMessageTokens(contextLines), "a 300-character topic plus the full memory allowance")
+	require.Equal(t, 1184, sumMessageTokens(contextLines), "a 300-character topic plus the full memory allowance")
 
 	// Both rings hold more than the budget can take, so what each
 	// one keeps is decided by the share left to it.
-	history := tokenSizedEvents(modelHistorySize, 15, at)
-	replies := tokenSizedEvents(modelHistorySize, 15, at)
-	triggers := tokenSizedMessages(50, 15, at) // 750 tokens: fits what the context lines left
+	history := tokenSizedEvents(modelHistorySize, 40, at)
+	replies := unscopedReplies(tokenSizedEvents(modelHistorySize, 40, at))
+	triggers := tokenSizedMessages(20, 50, at) // 1000 tokens: fits what the context lines left
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(contextLines, history, replies, triggers, budget)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(
+		contextLines, history, replies, triggers, len(triggers)-1, budget,
+	)
 
 	total := sumMessageTokens(contextLines) +
 		sumEventTokens(gotHistory) +
-		sumEventTokens(gotReplies) +
+		sumReplyTokens(gotReplies) +
 		sumMessageTokens(gotTriggers)
 	require.LessOrEqual(t, total, budget, "everything the turn carries fits the budget, context lines included")
 
-	// 4192 - 1139 context - 750 triggers leaves 2303; replies take
-	// half of that (76 events at 15 tokens = 1140), and history takes
-	// the 1163 remaining (77 events = 1155).
+	// 4192 - 1184 context - 1000 triggers leaves 2008; replies take
+	// half of that (25 events at 40 tokens = 1000), and history takes
+	// the 1008 remaining (25 events = 1000).
 	require.Equal(t, triggers, gotTriggers, "the whole trigger block fits what the context lines left")
-	require.Equal(t, replies[modelHistorySize-76:], gotReplies, "the newest 76 fit half of what triggers left")
-	require.Equal(t, history[modelHistorySize-77:], gotHistory, "the newest 77 fit what replies left")
+	require.Equal(t, replies[modelHistorySize-25:], gotReplies, "the newest 25 fit half of what triggers left")
+	require.Equal(t, history[modelHistorySize-25:], gotHistory, "the newest 25 fit what replies left")
 }
 
 // TestComposeTranscriptBudget_context_lines_crowd_out_the_floor is
@@ -463,29 +735,31 @@ func TestComposeTranscriptBudget_context_lines_crowd_out_the_floor(t *testing.T)
 	contextLines := fullContextReplies(t)
 	require.Greater(t, sumMessageTokens(contextLines), budget, "the context lines outrun the floor budget on their own")
 
-	history := tokenSizedEvents(20, 15, at)
-	replies := tokenSizedEvents(20, 15, at)
-	triggers := tokenSizedMessages(20, 15, at)
+	history := tokenSizedEvents(20, 40, at)
+	replies := unscopedReplies(tokenSizedEvents(20, 40, at))
+	triggers := tokenSizedMessages(20, 40, at)
 
-	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(contextLines, history, replies, triggers, budget)
+	gotHistory, gotReplies, gotTriggers := composeTranscriptBudget(
+		contextLines, history, replies, triggers, len(triggers)-1, budget,
+	)
 
 	require.Equal(t, triggers[19:], gotTriggers, "triggers: the mandatory newest and nothing more")
 	require.Equal(t, replies[19:], gotReplies, "replies: the mandatory newest and nothing more")
 	require.Equal(t, history[19:], gotHistory, "history: the mandatory newest and nothing more")
 }
 
-// TestHistory_snapshotReplies_is_defensive_copy proves the dispatch
+// TestHistory_snapshotRepliesFor_is_defensive_copy proves the dispatch
 // turn's snapshot does not alias the live backing array, so a
 // concurrent append cannot mutate a snapshot already handed out.
-func TestHistory_snapshotReplies_is_defensive_copy(t *testing.T) {
+func TestHistory_snapshotRepliesFor_is_defensive_copy(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 	h := newHistory()
-	h.appendReply(domain.StoredEvent{Event: domain.SystemNotice{At: at}})
+	h.appendReply(nil, domain.StoredEvent{Event: domain.SystemNotice{At: at}})
 
-	snap := h.snapshotReplies()
-	h.appendReply(domain.StoredEvent{Event: domain.SystemNotice{At: at.Add(time.Second)}})
+	snap := h.snapshotRepliesFor("#dev")
+	h.appendReply(nil, domain.StoredEvent{Event: domain.SystemNotice{At: at.Add(time.Second)}})
 
-	require.Equal(t, []domain.StoredEvent{{Event: domain.SystemNotice{At: at}}}, snap)
+	require.Equal(t, []storedReply{{event: domain.StoredEvent{Event: domain.SystemNotice{At: at}}}}, snap)
 }

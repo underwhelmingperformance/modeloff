@@ -219,9 +219,9 @@ func TestSession_noteChatActivity_marks_channels_only(t *testing.T) {
 
 	// A channel message marks the channel; a DM message (bare-id
 	// target) and a non-message event do not.
-	sess.noteChatActivity(domain.Message{Target: "#general", From: "testuser", Body: "hi", At: fixedTime})
-	sess.noteChatActivity(domain.Message{Target: "botty", From: "testuser", Body: "psst", At: fixedTime})
-	sess.noteChatActivity(domain.Join{Target: "#general", Nick: "botty", At: fixedTime})
+	sess.noteChatActivity(domain.Message{Source: domain.ClientSource("", "testuser"), Target: "#general", Body: "hi", At: fixedTime})
+	sess.noteChatActivity(domain.Message{Source: domain.ClientSource("", "testuser"), Target: "botty", Body: "psst", At: fixedTime})
+	sess.noteChatActivity(domain.Join{Source: domain.ClientSource(testMemberID("botty"), "botty"), Target: "#general", At: fixedTime})
 
 	require.Equal(t, map[domain.ChannelName]struct{}{
 		"#general": {},

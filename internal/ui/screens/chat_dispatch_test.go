@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store/storetest"
@@ -44,14 +45,23 @@ func collectMsgs(cmd tea.Cmd) []tea.Msg {
 
 func containsMsg[T any](msgs []tea.Msg) (T, bool) {
 	for _, msg := range msgs {
-		if v, ok := msg.(T); ok {
-			return v, true
+		if value, ok := msg.(T); ok {
+			return value, true
 		}
 	}
 
 	var zero T
 
 	return zero, false
+}
+
+func msgsTypes(msgs []tea.Msg) []string {
+	types := make([]string, len(msgs))
+	for i, msg := range msgs {
+		types[i] = fmt.Sprintf("%T", msg)
+	}
+
+	return types
 }
 
 func TestChatScreen_ModelDispatchStarted_marks_nick_thinking(t *testing.T) {
@@ -64,15 +74,112 @@ func TestChatScreen_ModelDispatchStarted_marks_nick_thinking(t *testing.T) {
 	screen.channels.Insert(newWindow(cw))
 	screen, _ = screen.focus("#general")
 
-	_, cmd := screen.handleModelDispatchStarted(domain.ModelDispatchStarted{Instance: botty})
+	_, cmd := screen.handleModelDispatchStarted(
+		domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), botty.Nick())},
+		protocol.ChannelWindowTarget("#general"),
+	)
 
 	require.NotNil(t, cmd)
 
-	msgs := collectMsgs(cmd)
+	require.Equal(t, []tea.Msg{
+		components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{"botty": true}},
+	}, collectMsgs(cmd))
+}
 
-	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
-	require.True(t, ok, "expected NickListThinkingMsg in batch")
-	require.Equal(t, map[domain.Nick]bool{"botty": true}, thinking.Nicks)
+func TestChatScreen_ModelDispatchStarted_is_scoped_to_the_turn_window(t *testing.T) {
+	screen := newScreenFixture(t)
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+
+	for _, name := range []domain.ChannelName{"#a", "#b"} {
+		channel := domain.NewChannelWindow(name, time.Time{})
+		channel.Members.Add(botty)
+		screen.channels.Insert(newWindow(channel))
+	}
+	screen, _ = screen.focus("#b")
+
+	updated, cmd := screen.handleModelDispatchStarted(
+		domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), botty.Nick())},
+		protocol.ChannelWindowTarget("#a"),
+	)
+
+	key := dispatchWindowKey{actor: botty.ID(), kind: domain.KindChannel, window: "#a"}
+	require.Equal(t, map[dispatchWindowKey]domain.Nick{key: "botty"}, updated.dispatching)
+	require.Equal(t, []tea.Msg{
+		components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{}},
+	}, collectMsgs(cmd))
+}
+
+func TestChatScreen_channel_focus_refreshes_window_dispatch_activity(t *testing.T) {
+	tests := map[string]struct {
+		dispatchWindow domain.ChannelName
+		wantThinking   map[domain.Nick]bool
+	}{
+		"leaving the dispatch window clears the indicator": {
+			dispatchWindow: "#a",
+			wantThinking:   map[domain.Nick]bool{},
+		},
+		"entering the dispatch window shows the indicator": {
+			dispatchWindow: "#b",
+			wantThinking:   map[domain.Nick]bool{"botty": true},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			screen := newScreenFixture(t)
+			botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+
+			for _, channelName := range []domain.ChannelName{"#a", "#b"} {
+				channel := domain.NewChannelWindow(channelName, time.Time{})
+				channel.Members.Add(botty)
+				screen.channels.Insert(newWindow(channel))
+			}
+			screen, _ = screen.focus("#a")
+			screen.dispatching[dispatchWindowKey{
+				actor: botty.ID(), kind: domain.KindChannel, window: tt.dispatchWindow,
+			}] = botty.Nick()
+
+			screen, cmd := screen.handleChannelFocus(chatcmd.ChannelFocusMsg{
+				Channel: "#b",
+				At:      time.Unix(1, 0),
+			})
+			messages := collectMsgs(cmd)
+			thinking := make([]components.NickListThinkingMsg, 0, 1)
+			for _, message := range messages {
+				if update, ok := message.(components.NickListThinkingMsg); ok {
+					thinking = append(thinking, update)
+				}
+			}
+
+			require.Equal(t, struct {
+				Active   domain.ChannelName
+				Types    []string
+				Thinking []components.NickListThinkingMsg
+			}{
+				Active: "#b",
+				Types: []string{
+					"components.CompleterMsg",
+					"<nil>",
+					"<nil>",
+					"components.SetPlaceholderMsg",
+					"components.SetChannelMsg",
+					"components.ChannelActiveMsg",
+					"components.ChannelUnreadMsg",
+					"components.NickListUpdatedMsg",
+					"components.NickListThinkingMsg",
+				},
+				Thinking: []components.NickListThinkingMsg{{Nicks: tt.wantThinking}},
+			}, struct {
+				Active   domain.ChannelName
+				Types    []string
+				Thinking []components.NickListThinkingMsg
+			}{
+				Active:   screen.activeName(),
+				Types:    msgsTypes(messages),
+				Thinking: thinking,
+			})
+		})
+	}
 }
 
 func TestChatScreen_ModelDispatchDone_clears_nick_thinking(t *testing.T) {
@@ -80,19 +187,147 @@ func TestChatScreen_ModelDispatchDone_clears_nick_thinking(t *testing.T) {
 	screen, _ = screen.focus("#general")
 
 	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	screen.dispatching[botty] = true
+	key := dispatchWindowKey{actor: botty.ID(), kind: domain.KindChannel, window: "#general"}
+	screen.dispatching[key] = botty.Nick()
 
-	_, cmd := screen.handleModelDispatchDone(domain.ModelDispatchDone{Instance: botty})
+	_, cmd := screen.handleModelDispatchDone(
+		domain.ModelDispatchDone{Source: domain.ClientSource(botty.ID(), botty.Nick())},
+		protocol.ChannelWindowTarget("#general"),
+	)
 
 	require.NotNil(t, cmd)
 
-	msgs := collectMsgs(cmd)
+	require.Equal(t, []tea.Msg{
+		components.NickListThinkingMsg{},
+	}, collectMsgs(cmd))
+	require.Equal(t, map[dispatchWindowKey]domain.Nick{}, screen.dispatching)
+}
 
-	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
-	require.True(t, ok, "expected NickListThinkingMsg in batch")
-	require.Empty(t, thinking.Nicks)
+func TestChatScreen_NickChange_updates_dispatching_nick(t *testing.T) {
+	screen := newScreenFixture(t)
+	botty := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	cw := domain.NewChannelWindow("#general", time.Time{})
+	cw.Members.Add(botty)
+	screen.channels.Insert(newWindow(cw))
+	screen, _ = screen.focus("#general")
+	key := dispatchWindowKey{actor: botty.ID(), kind: domain.KindChannel, window: "#general"}
+	screen.dispatching[key] = botty.Nick()
 
-	require.Empty(t, screen.dispatching, "Done must remove the instance from the dispatching set")
+	screen, cmd := screen.handleNickChangeEvent(domain.NickChange{
+		Source: domain.ClientSource(botty.ID(), botty.Nick()), NewNick: "reader",
+	}, []domain.ChannelName{"#general"})
+
+	require.Equal(t, map[dispatchWindowKey]domain.Nick{key: "reader"}, screen.dispatching)
+	require.Equal(t, map[domain.Nick]bool{"reader": true}, screen.thinkingNicks())
+
+	require.Equal(t, []tea.Msg{
+		components.NickListUpdatedMsg{Members: cw.Members, Revision: 1},
+		components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{"reader": true}},
+		components.HighlightWordsMsg{Words: []string{"$nick"}, UserNick: "testuser"},
+	}, collectMsgs(cmd))
+}
+
+func TestChatScreen_DM_message_updates_counterpart_nick(t *testing.T) {
+	screen := newScreenFixture(t)
+	dm := newDMWindow("inst-botty", "botty", time.Time{})
+	screen.channels.Insert(newWindow(dm))
+	screen, _ = screen.focus(dm.Name())
+
+	screen, cmd := screen.appendMessage(dm.Name(), domain.Message{
+		Source: domain.ClientSource("inst-botty", "reader"), Body: "new name",
+	})
+	members := domain.NewMemberList()
+	members.AddIdentity("inst-botty", "reader")
+
+	require.Equal(t, domain.Nick("reader"), dm.nick)
+	require.Equal(t, []tea.Msg{
+		components.ChannelAddedMsg{Channel: dm},
+		components.SetChannelMsg{
+			Channel: dm.Name(), DisplayName: "reader", Kind: domain.KindDM,
+		},
+		components.NickListUpdatedMsg{Members: members, Revision: 1},
+	}, collectMsgs(cmd))
+}
+
+func TestChatScreen_DM_dispatch_activity_uses_the_counterpart_row(t *testing.T) {
+	screen := newScreenFixture(t)
+	dm := newDMWindow("inst-botty", "botty", time.Time{})
+	screen.channels.Insert(newWindow(dm))
+
+	screen, focused := screen.handleChannelFocus(chatcmd.ChannelFocusMsg{
+		Channel: dm.Name(),
+		At:      time.Unix(1, 0),
+	})
+	screen, started := screen.handleModelDispatchStarted(
+		domain.ModelDispatchStarted{Source: domain.ClientSource("inst-botty", "botty")},
+		protocol.DirectWindowTarget("inst-botty"),
+	)
+	_, done := screen.handleModelDispatchDone(
+		domain.ModelDispatchDone{Source: domain.ClientSource("inst-botty", "botty")},
+		protocol.DirectWindowTarget("inst-botty"),
+	)
+	members := domain.NewMemberList()
+	members.AddIdentity("inst-botty", "botty")
+	var focusedMembers []domain.MemberList
+	for _, msg := range collectMsgs(focused) {
+		if update, ok := msg.(components.NickListUpdatedMsg); ok {
+			focusedMembers = append(focusedMembers, update.Members)
+		}
+	}
+
+	require.Equal(t, struct {
+		FocusedMembers []domain.MemberList
+		Started        []tea.Msg
+		Done           []tea.Msg
+	}{
+		FocusedMembers: []domain.MemberList{members},
+		Started:        []tea.Msg{components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{"botty": true}}},
+		Done:           []tea.Msg{components.NickListThinkingMsg{}},
+	}, struct {
+		FocusedMembers []domain.MemberList
+		Started        []tea.Msg
+		Done           []tea.Msg
+	}{
+		FocusedMembers: focusedMembers,
+		Started:        collectMsgs(started),
+		Done:           collectMsgs(done),
+	})
+}
+
+func TestChatScreen_first_DM_uses_the_observed_source(t *testing.T) {
+	screen := newScreenFixture(t)
+	message := domain.Message{
+		Source: domain.ClientSource("inst-botty", "botty"), Body: "one last thing",
+	}
+
+	screen, cmd := screen.appendMessage("inst-botty", message)
+
+	window, open := screen.windowByName("inst-botty")
+	require.True(t, open)
+	dm, direct := window.Window.(*dmWindow)
+	require.True(t, direct)
+	type firstDMState struct {
+		Open       bool
+		Window     dmWindow
+		Scrollback []domain.Event
+		Pending    map[domain.ChannelName][]domain.Event
+	}
+	require.Equal(t, firstDMState{
+		Open:       true,
+		Window:     dmWindow{peer: "inst-botty", nick: "botty"},
+		Scrollback: []domain.Event{message},
+		Pending:    map[domain.ChannelName][]domain.Event{},
+	}, firstDMState{
+		Open:       open,
+		Window:     *dm,
+		Scrollback: window.Scrollback.Events(),
+		Pending:    screen.pendingDM,
+	})
+
+	require.Equal(t, []tea.Msg{
+		components.ChannelAddedMsg{Channel: window.Window},
+		nil,
+	}, collectMsgs(cmd))
 }
 
 // TestChatScreen_ModelDispatchDone_keeps_thinking_with_concurrent_dispatch
@@ -111,19 +346,22 @@ func TestChatScreen_ModelDispatchDone_keeps_thinking_with_concurrent_dispatch(t 
 	screen.channels.Insert(newWindow(cw))
 	screen, _ = screen.focus("#general")
 
-	screen.dispatching[botty] = true
-	screen.dispatching[other] = true
+	bottyKey := dispatchWindowKey{actor: botty.ID(), kind: domain.KindChannel, window: "#general"}
+	otherKey := dispatchWindowKey{actor: other.ID(), kind: domain.KindChannel, window: "#general"}
+	screen.dispatching[bottyKey] = botty.Nick()
+	screen.dispatching[otherKey] = other.Nick()
 
-	_, cmd := screen.handleModelDispatchDone(domain.ModelDispatchDone{Instance: botty})
+	_, cmd := screen.handleModelDispatchDone(
+		domain.ModelDispatchDone{Source: domain.ClientSource(botty.ID(), botty.Nick())},
+		protocol.ChannelWindowTarget("#general"),
+	)
 
 	require.NotNil(t, cmd)
 
-	msgs := collectMsgs(cmd)
-
-	thinking, ok := containsMsg[components.NickListThinkingMsg](msgs)
-	require.True(t, ok, "expected NickListThinkingMsg in batch")
-	require.Equal(t, map[domain.Nick]bool{"other": true}, thinking.Nicks,
-		"Done for one instance must keep the other listed as thinking")
+	require.Equal(t, []tea.Msg{
+		components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{"other": true}},
+	}, collectMsgs(cmd))
+	require.Equal(t, map[dispatchWindowKey]domain.Nick{otherKey: "other"}, screen.dispatching)
 }
 
 func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
@@ -137,10 +375,9 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 
 	// First reply is delivered immediately (via deliverNextPacedMsg).
 	first := domain.Message{
-		Target:     "#general",
-		From:       "botty",
-		InstanceID: "inst-botty",
-		Body:       "line one",
+		Target: "#general",
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Body:   "line one",
 	}
 	updated, cmd := screen.handleMessageEvent(first)
 	screen = updated
@@ -157,10 +394,9 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 
 	// Second reply is only enqueued; no new delivery trigger.
 	second := domain.Message{
-		Target:     "#general",
-		From:       "botty",
-		InstanceID: "inst-botty",
-		Body:       "line two",
+		Target: "#general",
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Body:   "line two",
 	}
 	updated, cmd = screen.handleMessageEvent(second)
 	screen = updated
@@ -186,6 +422,31 @@ func TestChatScreen_ModelReply_queues_and_paces(t *testing.T) {
 	require.Equal(t, map[domain.ChannelName][]domain.Message{}, screen.pacedQueue)
 }
 
+func TestChatScreen_anonymous_peer_message_is_paced_and_highlighted(t *testing.T) {
+	sess, mgr, user := newTestSession(t)
+	require.NoError(t, user.Join(t.Context(), "#general"))
+
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
+	screen, _ = screen.focus("#general")
+
+	message := domain.Message{
+		Target: "#general",
+		Source: domain.AnonymousSource(),
+		Body:   "hello testuser",
+	}
+
+	updated, cmd := screen.handleMessageEvent(message)
+
+	require.Equal(t, map[domain.ChannelName][]domain.Message{
+		"#general": {message},
+	}, updated.pacedQueue)
+	require.True(t, updated.isHighlight(message))
+	_, ok := containsMsg[deliverNextPacedMsg](collectMsgs(cmd))
+	require.True(t, ok)
+}
+
 // TestChatScreen_ModelReply_paces_per_channel_independently pins the
 // invariant: a burst of paced messages in one channel must not delay
 // a message in another channel. Each channel drains at its own
@@ -204,16 +465,14 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	// Two replies queued for #channel-a: first delivers immediately,
 	// second is paced behind it.
 	aFirst := domain.Message{
-		Target:     "#channel-a",
-		From:       "botty",
-		InstanceID: "inst-botty",
-		Body:       "a1",
+		Target: "#channel-a",
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Body:   "a1",
 	}
 	aSecond := domain.Message{
-		Target:     "#channel-a",
-		From:       "botty",
-		InstanceID: "inst-botty",
-		Body:       "a2",
+		Target: "#channel-a",
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Body:   "a2",
 	}
 
 	updated, _ := screen.handleMessageEvent(aFirst)
@@ -226,10 +485,9 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 	// A reply arriving for #channel-b should ALSO trigger immediate
 	// delivery — #channel-a's queue does not hold it up.
 	bFirst := domain.Message{
-		Target:     "#channel-b",
-		From:       "botty",
-		InstanceID: "inst-botty",
-		Body:       "b1",
+		Target: "#channel-b",
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Body:   "b1",
 	}
 	updated, cmd := screen.handleMessageEvent(bFirst)
 	screen = updated
@@ -269,9 +527,9 @@ func TestChatScreen_ModelReply_paces_per_channel_independently(t *testing.T) {
 // invariant: when the user parts a channel with pending paced
 // messages, the queue entry is dropped and any stale tick that
 // fires afterwards no-ops cleanly through deliverNextPaced's
-// empty-queue branch. Dropped messages remain in the session
-// store, so re-joining the channel restores history — this purge
-// only affects the in-flight pacing queue.
+// empty-queue branch. The session retains the event log, but a later
+// join starts a new visibility interval and does not restore this
+// window's old scrollback.
 func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	sess, mgr, user := newTestSession(t)
 	require.NoError(t, user.Join(t.Context(), domain.ChannelName("#x")))
@@ -281,16 +539,16 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	screen, _ = screen.focus("#x")
 
 	queued := []domain.Message{
-		{Target: "#x", From: "botty", InstanceID: "inst-botty", Body: "one"},
-		{Target: "#x", From: "botty", InstanceID: "inst-botty", Body: "two"},
+		{Target: "#x", Source: domain.ClientSource("inst-botty", "botty"), Body: "one"},
+		{Target: "#x", Source: domain.ClientSource("inst-botty", "botty"), Body: "two"},
 	}
 	screen.pacedQueue["#x"] = queued
 
 	// User parts #x — the handler drops both the channel and its
 	// pending-paced queue entry.
 	updated, _ := screen.handlePartEvent(domain.Part{
-		Target:   "#x",
-		Instance: user.Instance(),
+		Target: "#x",
+		Source: domain.ClientSource(protocol.UserClientID, user.Nick()),
 	})
 	screen = updated
 
@@ -310,35 +568,94 @@ func TestChatScreen_parting_channel_purges_paced_queue(t *testing.T) {
 	require.False(t, hasUnread, "stale tick must not mark the parted channel as unread")
 }
 
+func TestChatScreen_being_kicked_closes_the_channel_window(t *testing.T) {
+	stored := storetest.NewMemoryStore(t)
+	sess, mgr, user := uitest.NewTestSession(
+		t, stored, stubAPI{}, nil, nil, "", "", t.Context,
+	)
+	require.NoError(t, user.Join(t.Context(), "#x"))
+
+	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
+	require.NoError(t, err)
+	screen, _ = screen.focus("#x")
+	screen.pacedQueue["#x"] = []domain.Message{{Target: "#x", Body: "queued"}}
+
+	updated, cmd := screen.handleKickedEvent(domain.Kicked{
+		Target:        "#x",
+		Source:        domain.LegacyClientSource("operator"),
+		Subject:       "nick-before-kick",
+		SubjectIsSelf: true,
+	})
+	collectMsgs(cmd)
+
+	_, open := updated.windowByName("#x")
+	require.False(t, open)
+	require.Empty(t, updated.scrollbackOf("#x"))
+	require.NotContains(t, updated.pacedQueue, domain.ChannelName("#x"))
+
+	autojoin, err := stored.ListAutojoinChannels(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, autojoin)
+}
+
+func TestChatScreen_user_mode_change_does_not_depend_on_a_later_nick(t *testing.T) {
+	screen := newScreenFixture(t)
+
+	_, cmd := screen.handleUserModeChangeEvent(domain.UserModeChange{
+		Subject: "nick-before-mode-delivery",
+		Flag:    domain.ModeOperator,
+		Add:     true,
+	})
+
+	require.Equal(t, []tea.Msg{components.CommandsMsg[chatcmd.CompletionContext]{
+		Commands: command.VisibleCommands(screen.parser.Set(), screen.client.Caps()),
+	}}, collectMsgs(cmd))
+}
+
+func TestChatScreen_masked_join_keeps_the_anonymous_member_projection(t *testing.T) {
+	screen := newScreenFixture(t)
+	window := domain.NewChannelWindow("#anon", time.Time{})
+	window.Modes.Anonymous = true
+	window.Members = domain.AnonymousMembers()
+	screen.channels.Insert(newWindow(window))
+
+	updated, _ := screen.handleJoinEvent(domain.Join{
+		Target: "#anon",
+		Source: domain.AnonymousSource(),
+	})
+
+	got, ok := updated.channelWindowByName("#anon")
+	require.True(t, ok)
+	require.Equal(t, []domain.Nick{domain.AnonymousNick}, slices.Collect(got.Members.Nicks()))
+}
+
 func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 	tests := []struct {
-		name     string
-		event    protocol.Event
-		wantType any
+		name   string
+		event  protocol.Event
+		window protocol.WindowTarget
+		want   []tea.Msg
 	}{
 		{
-			name: "ModelDispatchStarted routes to nick-list thinking",
-			event: domain.ModelDispatchStarted{
-				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
-			},
-			wantType: components.NickListThinkingMsg{},
+			name:   "ModelDispatchStarted routes to nick-list thinking",
+			event:  domain.ModelDispatchStarted{Source: domain.ClientSource("inst-botty", "botty")},
+			window: protocol.ChannelWindowTarget("#general"),
+			want:   []tea.Msg{components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{}}},
 		},
 		{
-			name: "ModelDispatchDone routes to nick-list thinking clear",
-			event: domain.ModelDispatchDone{
-				Instance: domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
-			},
-			wantType: components.NickListThinkingMsg{},
+			name:   "ModelDispatchDone routes to nick-list thinking clear",
+			event:  domain.ModelDispatchDone{Source: domain.ClientSource("inst-botty", "botty")},
+			window: protocol.ChannelWindowTarget("#general"),
+			want:   []tea.Msg{components.NickListThinkingMsg{}},
 		},
 		{
 			name: "Message from model routes to paced delivery",
 			event: domain.Message{
-				Target:     "#general",
-				From:       "botty",
-				InstanceID: "inst-botty",
-				Body:       "hi",
+				Target: "#general",
+				Source: domain.ClientSource("inst-botty", "botty"),
+				Body:   "hi",
 			},
-			wantType: deliverNextPacedMsg{},
+			want: []tea.Msg{deliverNextPacedMsg{Channel: "#general"}},
 		},
 	}
 
@@ -348,30 +665,8 @@ func TestChatScreen_handleProtocolEvent_routing(t *testing.T) {
 			screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 			screen, _ = screen.focus("#general")
 
-			// The handler returns tea.Batch(innerCmd, re-arm-listener).
-			// Inspect only the inner command to avoid blocking on the
-			// re-arm pump.
-			_, cmd := screen.handleProtocolEvent(protocolEventMsg{event: tt.event})
-			require.NotNil(t, cmd)
-
-			batchMsg := cmd()
-			batch, ok := batchMsg.(tea.BatchMsg)
-			require.True(t, ok, "expected BatchMsg")
-			require.GreaterOrEqual(t, len(batch), 2, "expected at least inner cmd + re-arm cmd")
-
-			// The first cmd in the batch is the inner handler's result.
-			innerMsgs := collectMsgs(batch[0])
-
-			found := false
-			for _, msg := range innerMsgs {
-				if sameType(msg, tt.wantType) {
-					found = true
-
-					break
-				}
-			}
-
-			require.True(t, found, "expected %T in batch, got %v", tt.wantType, msgsTypes(innerMsgs))
+			_, cmd := screen.applyProtocolEvent(protocolEventMsg{event: tt.event, window: tt.window})
+			require.Equal(t, tt.want, collectMsgs(cmd))
 		})
 	}
 }
@@ -391,16 +686,91 @@ func TestChatScreen_ModelUnavailableError_renders_in_dispatch_channel(t *testing
 	screen, _ = screen.focus("#other")
 
 	failure := domain.ModelUnavailableError{
-		Channel: "#general",
-		Nick:    "botty",
-		At:      time.Now(),
+		Source: domain.LegacyClientSource("botty"),
+		At:     time.Now(),
 	}
 
-	screen.bufferEvent(failure)
+	screen, _ = screen.handleProtocolEvent(protocolEventMsg{
+		event: failure, window: protocol.ChannelWindowTarget("#general"),
+	})
 
 	require.Equal(t, []string{failure.Error()}, scrollbackSystemNotices(screen.scrollbackOf("#general")))
 	require.Empty(t, scrollbackSystemNotices(screen.scrollbackOf("#other")),
 		"the failure must not land in the window the user switched to")
+}
+
+func TestChatScreen_ModelUnavailableError_renders_in_the_recipient_DM(t *testing.T) {
+	screen := newScreenFixture(t)
+	dm := newDMWindow("inst-botty", "botty", time.Time{})
+	screen.channels.Insert(newWindow(dm))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+	screen, _ = screen.focus("#other")
+
+	at := time.Unix(1, 0)
+	failure := domain.ModelUnavailableError{
+		Source: domain.ClientSource("inst-botty", "botty"), At: at,
+	}
+	updated, _ := screen.handleProtocolEvent(protocolEventMsg{
+		event: failure, window: protocol.DirectWindowTarget("inst-botty"),
+	})
+	notice := domain.SystemNotice{
+		Target: dm.Name(), Text: failure.Error(), At: at,
+	}
+
+	require.Equal(t, struct {
+		Active         domain.ChannelName
+		DirectMessages []domain.Event
+		OtherChannel   []domain.Event
+	}{
+		Active:         "#other",
+		DirectMessages: []domain.Event{notice},
+	}, struct {
+		Active         domain.ChannelName
+		DirectMessages []domain.Event
+		OtherChannel   []domain.Event
+	}{
+		Active:         updated.activeName(),
+		DirectMessages: updated.scrollbackOf(dm.Name()),
+		OtherChannel:   updated.scrollbackOf("#other"),
+	})
+}
+
+func TestChatScreen_ModelUnavailableError_from_another_DM_renders_in_status(t *testing.T) {
+	screen := newScreenFixture(t)
+	peer := newDMWindow("inst-alice", "alice", time.Time{})
+	screen.channels.Insert(newWindow(peer))
+	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+	screen, _ = screen.focus("#other")
+
+	at := time.Unix(1, 0)
+	failure := domain.ModelUnavailableError{
+		Source: domain.ClientSource("inst-botty", "botty"), At: at,
+	}
+	updated, _ := screen.handleProtocolEvent(protocolEventMsg{event: failure})
+
+	require.Equal(t, struct {
+		Active       domain.ChannelName
+		Status       []domain.Event
+		DirectPeer   []domain.Event
+		OtherChannel []domain.Event
+	}{
+		Active: "#other",
+		Status: []domain.Event{domain.SystemNotice{
+			Target: domain.StatusChannelName,
+			Text:   `model "botty" unavailable for dispatch`,
+			At:     at,
+		}},
+	}, struct {
+		Active       domain.ChannelName
+		Status       []domain.Event
+		DirectPeer   []domain.Event
+		OtherChannel []domain.Event
+	}{
+		Active:       updated.activeName(),
+		Status:       updated.scrollbackOf(domain.StatusChannelName),
+		DirectPeer:   updated.scrollbackOf(peer.Name()),
+		OtherChannel: updated.scrollbackOf("#other"),
+	})
 }
 
 // TestChatScreen_ModelUnavailableError_falls_back_to_active_when_channel_closed
@@ -417,12 +787,13 @@ func TestChatScreen_ModelUnavailableError_falls_back_to_active_when_channel_clos
 	screen, _ = screen.focus("#other")
 
 	failure := domain.ModelUnavailableError{
-		Channel: "#gone",
-		Nick:    "botty",
-		At:      time.Now(),
+		Source: domain.LegacyClientSource("botty"),
+		At:     time.Now(),
 	}
 
-	screen.bufferEvent(failure)
+	screen, _ = screen.handleProtocolEvent(protocolEventMsg{
+		event: failure, window: protocol.ChannelWindowTarget("#gone"),
+	})
 
 	_, opened := screen.windowByName("#gone")
 	require.False(t, opened, "a dispatch failure must not resurrect a channel client-side")
@@ -506,18 +877,18 @@ func TestChatScreen_ErrorEvent_renders_at_issuing_window(t *testing.T) {
 // from. Bare `/topic` fails in a DM window because a DM is never
 // persisted as a channel row (SQLiteStore.SaveWindow refuses to save
 // one), so GetWindow always errors for a DM's name; that failure
-// exercises the same rc.errorEvent path a channel-issued failure
+// exercises the same issuing-window result path a channel-issued failure
 // takes.
 func TestChatScreen_ErrorEvent_renders_at_issuing_dm_window(t *testing.T) {
-	sess, mgr, user := newTestSession(t)
+	sess, mgr, user, eventStore := newTestSessionWithStore(t)
 
 	counterpart := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	require.NoError(t, sess.SaveInstance(t.Context(), counterpart))
+	require.NoError(t, eventStore.SaveInstance(t.Context(), counterpart))
 
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	dm := domain.NewDMWindow(counterpart, time.Time{})
+	dm := newDMWindow(counterpart.ID(), counterpart.Nick(), time.Time{})
 	screen.channels.Insert(newWindow(dm))
 	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
 
@@ -531,23 +902,49 @@ func TestChatScreen_ErrorEvent_renders_at_issuing_dm_window(t *testing.T) {
 	// issuing_window covers for a channel.
 	screen, _ = screen.focus("#other")
 
-	errEvent, ok := cmd().(domain.ErrorEvent)
-	require.True(t, ok, "want domain.ErrorEvent, got %T", cmd())
-	require.Equal(t, dm.Name(), errEvent.Target)
+	result, ok := cmd().(chatcmd.CommandResult)
+	require.True(t, ok)
+	errorResult, ok := result.Message.(chatcmd.CommandErrorResult)
+	require.True(t, ok)
+	wantText := commandErrorText("topic", errorResult.Error.Err)
 
-	_, storeErr := sess.GetWindow(t.Context(), dm.Name())
-	require.Error(t, storeErr, "a DM window is never persisted, so GetWindow must fail")
-	wantText := commandErrorText("topic", storeErr)
+	screen, renderCmd, handled := screen.routeReplies(result)
+	messages := collectMsgs(renderCmd)
 
-	screen, renderCmd := screen.handleErrorEvent(errEvent)
-
-	msgs := collectMsgs(renderCmd)
-	_, moved := containsMsg[chatcmd.ChannelFocusMsg](msgs)
-	require.False(t, moved, "an error at a background DM window must not move focus")
-
-	require.Equal(t, []string{wantText}, commandErrorTexts(screen.scrollbackOf(dm.Name())))
-	require.Empty(t, commandErrorTexts(screen.scrollbackOf("#other")),
-		"the error must not land in the window the user switched to")
+	require.Equal(t, struct {
+		IssuingWindow domain.Window
+		Handled       bool
+		Active        domain.ChannelName
+		DMScrollback  []domain.Event
+		Other         []domain.Event
+		Messages      []tea.Msg
+	}{
+		IssuingWindow: dm,
+		Handled:       true,
+		Active:        "#other",
+		DMScrollback: []domain.Event{domain.CommandError{
+			Target: dm.Name(), Err: wantText, At: errorResult.Error.At,
+		}},
+		Messages: []tea.Msg{
+			components.ScrollbackUpdatedMsg{Channel: dm.Name()},
+			nil,
+			components.NickListThinkingMsg{},
+		},
+	}, struct {
+		IssuingWindow domain.Window
+		Handled       bool
+		Active        domain.ChannelName
+		DMScrollback  []domain.Event
+		Other         []domain.Event
+		Messages      []tea.Msg
+	}{
+		IssuingWindow: result.IssuingWindow,
+		Handled:       handled,
+		Active:        screen.active.Name(),
+		DMScrollback:  screen.scrollbackOf(dm.Name()),
+		Other:         screen.scrollbackOf("#other"),
+		Messages:      messages,
+	})
 }
 
 // TestChatScreen_ErrorEvent_dm_window_closed_before_it_arrives covers
@@ -562,15 +959,15 @@ func TestChatScreen_ErrorEvent_renders_at_issuing_dm_window(t *testing.T) {
 // window an error always reached before ErrorEvent carried a Target
 // at all.
 func TestChatScreen_ErrorEvent_dm_window_closed_before_it_arrives(t *testing.T) {
-	sess, mgr, user := newTestSession(t)
+	sess, mgr, user, eventStore := newTestSessionWithStore(t)
 
 	counterpart := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
-	require.NoError(t, sess.SaveInstance(t.Context(), counterpart))
+	require.NoError(t, eventStore.SaveInstance(t.Context(), counterpart))
 
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	dm := domain.NewDMWindow(counterpart, time.Time{})
+	dm := newDMWindow(counterpart.ID(), counterpart.Nick(), time.Time{})
 	screen.channels.Insert(newWindow(dm))
 	screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
 
@@ -684,19 +1081,6 @@ func TestChatScreen_MessageSubmit_on_status_channel_renders_usage_hint(t *testin
 	}}, hints)
 }
 
-func sameType(a, b any) bool {
-	return fmt.Sprintf("%T", a) == fmt.Sprintf("%T", b)
-}
-
-func msgsTypes(msgs []tea.Msg) []string {
-	types := make([]string, len(msgs))
-	for i, msg := range msgs {
-		types[i] = fmt.Sprintf("%T", msg)
-	}
-
-	return types
-}
-
 // TestChatScreen_NickChange_then_Quit_removes_instance guards the
 // invariant that renaming an instance (via NickChangeEvent) doesn't
 // orphan its entry in the channel's member list. Identity is keyed by
@@ -712,13 +1096,14 @@ func msgsTypes(msgs []tea.Msg) []string {
 func TestChatScreen_completion_all_instance_commands_see_instances_outside_active_channel(t *testing.T) {
 	ctx := t.Context()
 	s := storetest.NewMemoryStore(t)
-
-	require.NoError(t, s.SaveInstance(ctx, domain.NewModelInstance(
-		"inst-outsider", "outsider", "test/model", "", nil,
-	)))
-
-	apiClient := &uitest.FakeAPI{}
+	apiClient := &uitest.FakeAPI{
+		GenerateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
+			return "outsider", nil
+		},
+	}
 	sess, mgr, user := uitest.NewTestSession(t, s, apiClient, nil, nil, "", "", t.Context)
+	require.NoError(t, user.Join(ctx, "#else"))
+	uitest.AddModel(t, user, "#else", "test/model", "")
 
 	screen, err := NewChatScreen(func() context.Context { return ctx }, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
@@ -755,9 +1140,8 @@ func TestChatScreen_completion_all_instance_commands_see_instances_outside_activ
 	}
 }
 
-// the *Instance pointer, so a later QuitEvent carrying the same
-// handle still finds and removes the entry cleanly regardless of the
-// nick carried on the event.
+// the stable instance ID, so later lifecycle events can carry
+// independent actor snapshots and still update the same entry.
 func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	screen := newScreenFixture(t)
 
@@ -770,16 +1154,16 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	bot := domain.NewModelInstance("bot-1", "oldnick", "test/model", "", nil)
 
 	screen, _ = screen.handleJoinEvent(domain.Join{
-		Target:   "#general",
-		Instance: bot,
-		At:       now,
+		Target: "#general",
+		Source: domain.ClientSource(bot.ID(), bot.Nick()),
+		At:     now,
 	})
 
 	cw := requireChannelWindow(t, screen, "#general")
 	require.Equal(t, []domain.Member{{
-		Instance: bot,
-		Nick:     "oldnick",
-		Modes:    domain.MemberModes{},
+		InstanceID: bot.ID(),
+		Nick:       "oldnick",
+		Modes:      domain.MemberModes{},
 	}}, slices.Collect(cw.Members.All()))
 
 	// Rename: the session mutates the instance's own nick before
@@ -789,25 +1173,23 @@ func TestChatScreen_NickChange_then_Quit_removes_instance(t *testing.T) {
 	bot.SetNick("newnick")
 
 	_, _ = screen.handleNickChangeEvent(domain.NickChange{
-		Instance: bot,
-		OldNick:  "oldnick",
-		NewNick:  "newnick",
-		At:       now,
+		Source:  domain.ClientSource(bot.ID(), "oldnick"),
+		NewNick: "newnick",
+		At:      now,
 	}, []domain.ChannelName{"#general"})
 
 	cw = requireChannelWindow(t, screen, "#general")
 	require.Equal(t, []domain.Member{{
-		Instance: bot,
-		Nick:     "newnick",
-		Modes:    domain.MemberModes{},
+		InstanceID: bot.ID(),
+		Nick:       "newnick",
+		Modes:      domain.MemberModes{},
 	}}, slices.Collect(cw.Members.All()),
 		"nick change should sync the member snapshot while preserving identity")
 
-	// Quit keyed by the same *Instance pointer cleanly removes the
-	// member regardless of the nick carried on the event.
+	// A separate snapshot with the same ID still removes the member.
 	_, _ = screen.handleQuitEvent(domain.Quit{
-		Instance: bot,
-		At:       now,
+		Source: domain.ClientSource(bot.ID(), "newnick"),
+		At:     now,
 	}, []domain.ChannelName{"#general"})
 
 	cw = requireChannelWindow(t, screen, "#general")
@@ -832,9 +1214,9 @@ func TestChatScreen_QuitEvent_routes_to_targets_only(t *testing.T) {
 
 	bot := domain.NewModelInstance("bot-1", "botty", "test/model", "", nil)
 	now := time.Now()
-	quit := domain.Quit{Nick: "botty", Instance: bot, At: now}
+	quit := domain.Quit{Source: domain.ClientSource(bot.ID(), "botty"), At: now}
 
-	screen.bufferProtocolEvent(quit, []domain.ChannelName{"#x", "#y"})
+	screen, _ = screen.bufferProtocolEvent(quit, []domain.ChannelName{"#x", "#y"}, nil)
 
 	expected := []domain.Event{quit}
 
@@ -859,13 +1241,12 @@ func TestChatScreen_NickChangeEvent_routes_to_targets_only(t *testing.T) {
 	bot := domain.NewModelInstance("bot-1", "newnick", "test/model", "", nil)
 	now := time.Now()
 	nick := domain.NickChange{
-		OldNick:  "oldnick",
-		NewNick:  "newnick",
-		Instance: bot,
-		At:       now,
+		Source:  domain.ClientSource(bot.ID(), "oldnick"),
+		NewNick: "newnick",
+		At:      now,
 	}
 
-	screen.bufferProtocolEvent(nick, []domain.ChannelName{"#x", "#y"})
+	screen, _ = screen.bufferProtocolEvent(nick, []domain.ChannelName{"#x", "#y"}, nil)
 
 	expected := []domain.Event{nick}
 

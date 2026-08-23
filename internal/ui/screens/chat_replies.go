@@ -10,9 +10,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 )
+
+type replyEventMsg struct {
+	issuingWindow domain.Window
+	event         domain.ProtocolEvent
+}
 
 // routeReplies answers a command the user issued: the point-to-point
 // numerics the dispatcher returned in `protocol.Response.Events`, the
@@ -22,88 +28,29 @@ import (
 // scrollback and none reaches the shared channel log.
 func (s ChatScreen) routeReplies(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 	switch msg := msg.(type) {
-	case chatcmd.ReplyEvents:
-		return s, s.deliverReplyEvents(msg), true
+	case chatcmd.CommandResult:
+		return s.routeCommandResult(msg)
 
-	case chatcmd.HelpResult:
-		return s, s.logAndShow(domain.Help{Target: s.activeName(), At: time.Now()}), true
+	case chatcmd.HelpResult, chatcmd.ClearResult, chatcmd.TopicInfoResult,
+		chatcmd.UsageError, chatcmd.NoChannelError, chatcmd.PokeRequested:
+		return s.routeCommandResult(chatcmd.CommandResult{
+			IssuingWindow: activeWindowIdentity(s),
+			Message:       msg,
+		})
 
-	case chatcmd.ClearResult:
-		if s.active == nil {
-			return s, nil, true
-		}
+	case replyEventMsg:
+		return s, s.logReplyEvent(msg.issuingWindow, msg.event), true
 
-		s.active.Scrollback.Clear()
-
-		return s, msgCmd(components.ScrollbackClearedMsg{Channel: s.active.Name()}), true
-
-	case chatcmd.TopicInfoResult:
-		return s, s.logAndShow(domain.TopicInfo{
-			Target:     msg.Window.Name(),
-			Topic:      msg.Window.Topic,
-			TopicSetBy: msg.Window.TopicSetBy,
-			TopicSetAt: msg.Window.TopicSetAt,
-			At:         time.Now(),
-		}), true
-
-	case chatcmd.UsageError:
-		return s, s.logAndShow(domain.UsageHint{
-			Target: s.activeName(), Command: msg.Command, Usage: msg.Usage, At: time.Now(),
-		}), true
-
-	case chatcmd.NoChannelError:
-		usage := "join a channel first"
-		if msg.Command == "part" {
-			usage = "no channel to part from"
-		}
-
-		return s, s.logAndShow(domain.UsageHint{
-			Command: msg.Command, Usage: usage, At: time.Now(),
-		}), true
-
-	case domain.Invited:
-		// Echo path for the inviter's own `/invite` result. `session.handleInvite`
-		// returns the resulting `Invited` in `protocol.Response.Events`,
-		// which `chatcmd.sendCommand` delivers to the chat-screen via
-		// `chatcmd.ReplyEvents`. The session bus does not deliver this event
-		// back to the inviter, so this is the only way the inviter sees the
-		// RPL_INVITING-equivalent line in scrollback. An invitation confers
-		// no membership (RFC 2812 §3.2.7): the nick list gains the invitee
-		// only when the JOIN arrives, if it ever does.
+	case domain.Inviting:
 		return s, s.logAndShowOn(msg.Target, msg), true
 
 	case domain.SystemNotice:
-		// Command-reply feedback path for the issuing client. A handler
-		// such as `session.handleInvite` returns a `SystemNotice` (for a
-		// failed `/invite`, "no such nick: <target>") in
-		// `protocol.Response.Events`, which `chatcmd.sendCommand` delivers
-		// via `chatcmd.ReplyEvents`. The session bus does not deliver this
-		// notice back over the protocol feed, so this arm renders it on the
-		// notice's own target channel.
 		return s, s.logAndShowOn(msg.Target, msg), true
 
 	case domain.Whois:
-		// Command-reply feedback path for the issuing client's `/whois`.
-		// `session.handleWhois` returns the identity snapshot in
-		// `protocol.Response.Events`; `chatcmd.sendCommand` delivers it via
-		// `chatcmd.ReplyEvents`. The dispatcher stamps the snapshot's
-		// `Target` with the window the command was issued from, so this arm
-		// renders it there. A whois issued with no active window carries an
-		// empty target; `logAndShow` routes it to `&modeloff`, matching the
-		// other numeric replies.
-		if msg.Target == "" {
-			return s, s.logAndShow(msg), true
-		}
-
-		return s, s.logAndShowOn(msg.Target, msg), true
+		return s, s.logAndShow(msg), true
 
 	case domain.ListReply:
-		// Command-reply feedback path for the issuing client's `/list`.
-		// `session.handleList` returns one `ListReply` per channel followed
-		// by a closing `ListEnd` in `protocol.Response.Events`;
-		// `chatcmd.sendCommand` delivers them in order via
-		// `chatcmd.ReplyEvents`. Each renders on the active channel through
-		// the generic bus-event path.
 		return s, s.logAndShow(msg), true
 
 	case domain.ListEnd:
@@ -117,26 +64,219 @@ func (s ChatScreen) routeReplies(msg tea.Msg) (ChatScreen, tea.Cmd, bool) {
 	return s, nil, false
 }
 
+func activeWindowIdentity(s ChatScreen) domain.Window {
+	if s.active == nil {
+		return nil
+	}
+
+	return s.active.Window
+}
+
+func activeWindowRevision(s ChatScreen) uint64 {
+	if s.active == nil {
+		return 0
+	}
+
+	return s.active.Revision
+}
+
+func (s ChatScreen) routeCommandResult(
+	result chatcmd.CommandResult,
+) (ChatScreen, tea.Cmd, bool) {
+	switch msg := result.Message.(type) {
+	case chatcmd.ReplyEvents:
+		if listReplyEvents(msg.Events) {
+			return s.applyListReplyEvents(result.IssuingWindow, msg)
+		}
+
+		return s, s.deliverReplyEvents(result.IssuingWindow, msg), true
+
+	case chatcmd.CommandErrorResult:
+		next, cmd := s.handleErrorEventForWindow(msg.Error, result.IssuingWindow)
+		return next, cmd, true
+
+	case chatcmd.HelpResult:
+		return s, s.logReplyEvent(result.IssuingWindow, domain.Help{
+			Target: issuingWindowName(result.IssuingWindow), At: time.Now(),
+		}), true
+
+	case chatcmd.ClearResult:
+		window, ok := s.exactWindow(result.IssuingWindow)
+		if !ok {
+			return s, nil, true
+		}
+
+		window.Scrollback.Clear()
+
+		return s, msgCmd(components.ScrollbackClearedMsg{Channel: window.Name()}), true
+
+	case chatcmd.DMClosedMsg:
+		window, ok := s.exactWindow(result.IssuingWindow)
+		if !ok || window.Kind() != domain.KindDM || window.Name() != msg.Window ||
+			window.Revision != result.IssuingWindowRevision {
+			return s, nil, true
+		}
+
+		next, cmd := s.handleDMClosedMsg(msg)
+		return next, cmd, true
+
+	case chatcmd.TopicInfoResult:
+		channel, _ := result.IssuingWindow.(*domain.ChannelWindow)
+		return s, s.logAndShowForChannel(channel, msg.Topic), true
+
+	case chatcmd.UsageError:
+		return s, s.logReplyEvent(result.IssuingWindow, domain.UsageHint{
+			Target:  issuingWindowName(result.IssuingWindow),
+			Command: msg.Command,
+			Usage:   msg.Usage,
+			At:      time.Now(),
+		}), true
+
+	case chatcmd.NoChannelError:
+		usage := "join a channel first"
+		if msg.Command == "part" {
+			usage = "no channel to part from"
+		}
+
+		return s, s.logReplyEvent(result.IssuingWindow, domain.UsageHint{
+			Command: msg.Command, Usage: usage, At: time.Now(),
+		}), true
+
+	case chatcmd.PokeRequested:
+		return s, s.handlePoke(result.IssuingWindow), true
+
+	case domain.ErrorEvent:
+		next, cmd := s.handleErrorEventForWindow(msg, result.IssuingWindow)
+		return next, cmd, true
+
+	case domain.SystemNotice:
+		return s, s.logReplyEvent(result.IssuingWindow, msg), true
+	}
+
+	if next, cmd, ok := s.routeConfigResults(result.IssuingWindow, result.Message); ok {
+		return next, cmd, true
+	}
+
+	next, cmd := s.route(result.Message)
+	return next, cmd, true
+}
+
+func issuingWindowName(window domain.Window) domain.ChannelName {
+	if window == nil {
+		return ""
+	}
+
+	return window.Name()
+}
+
+func (s ChatScreen) exactWindow(identity domain.Window) (*Window, bool) {
+	if identity == nil {
+		return nil, false
+	}
+
+	window, ok := s.windowByName(identity.Name())
+	if !ok || window.Window != identity {
+		return nil, false
+	}
+
+	return window, true
+}
+
 // deliverReplyEvents re-delivers each confirmation event from a
 // command's `protocol.Response.Events` as its own message, in
 // dispatcher order, so each lands on its per-event render arm. The
 // [tea.Sequence] preserves ordering — for `/list` the
 // `domain.ListReply` rows render before the closing
 // `domain.ListEnd`.
-func (s ChatScreen) deliverReplyEvents(events chatcmd.ReplyEvents) tea.Cmd {
-	cmds := make([]tea.Cmd, 0, len(events))
-	for _, event := range events {
+func (s ChatScreen) deliverReplyEvents(
+	issuingWindow domain.Window,
+	reply chatcmd.ReplyEvents,
+) tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(reply.Events)+1)
+	for _, event := range reply.Events {
 		// The user-client's own chat traffic returns over the bus
 		// (echo-message) and renders there. The reply path carries the
 		// point-to-point numerics (Whois, ListReply, …).
 		if _, ok := event.(domain.Message); ok {
 			continue
 		}
-
-		cmds = append(cmds, msgCmd(event))
+		cmds = append(cmds, msgCmd(replyEventMsg{
+			issuingWindow: issuingWindow, event: event,
+		}))
+	}
+	if reply.Error != nil {
+		cmds = append(cmds, msgCmd(chatcmd.CommandResult{
+			IssuingWindow: issuingWindow,
+			Message: chatcmd.CommandErrorResult{
+				Error: *reply.Error,
+			},
+		}))
 	}
 
 	return tea.Sequence(cmds...)
+}
+
+func listReplyEvents(events []domain.ProtocolEvent) bool {
+	if len(events) == 0 {
+		return false
+	}
+
+	for _, event := range events {
+		switch event.(type) {
+		case domain.ListReply, domain.ListEnd:
+		default:
+			return false
+		}
+	}
+
+	return true
+}
+
+func (s ChatScreen) applyListReplyEvents(
+	issuingWindow domain.Window,
+	reply chatcmd.ReplyEvents,
+) (ChatScreen, tea.Cmd, bool) {
+	target, ok := s.replyTarget(issuingWindow)
+	moveFocus := s.active == nil
+	if !ok {
+		target = domain.StatusChannelName
+		moveFocus = true
+	}
+
+	for _, event := range reply.Events {
+		s.appendToScrollback(target, event)
+	}
+
+	cmds := []tea.Cmd{msgCmd(components.ScrollbackUpdatedMsg{Channel: target})}
+	if moveFocus {
+		cmds = append(cmds, msgCmd(chatcmd.ChannelFocusMsg{Channel: target, At: time.Now()}))
+	}
+
+	return s, tea.Batch(cmds...), true
+}
+
+func (s ChatScreen) logReplyEvent(
+	issuingWindow domain.Window,
+	event domain.Event,
+) tea.Cmd {
+	if channel, ok := issuingWindow.(*domain.ChannelWindow); ok {
+		return s.logAndShowForChannel(channel, event)
+	}
+
+	if issuingWindow == nil {
+		if s.active == nil {
+			return s.logAndShow(event)
+		}
+
+		return s.logAndShowOn(domain.StatusChannelName, event)
+	}
+
+	target, ok := s.replyTarget(issuingWindow)
+	if !ok {
+		return s.logAndShow(event)
+	}
+
+	return s.logAndShowOn(target, event)
 }
 
 // logAndShow renders a numeric or UI-feedback event in the active
@@ -159,6 +299,58 @@ func (s ChatScreen) logAndShow(event domain.Event) tea.Cmd {
 		s.logAndShowOn(domain.StatusChannelName, event),
 		msgCmd(chatcmd.ChannelFocusMsg{Channel: domain.StatusChannelName, At: time.Now()}),
 	)
+}
+
+// logAndShowForChannel uses pointer identity to keep a delayed reply tied to
+// the channel incarnation in which the command ran. A new channel can reuse
+// the same IRC name after the old channel closes.
+func (s ChatScreen) logAndShowForChannel(channel *domain.ChannelWindow, event domain.Event) tea.Cmd {
+	if s.active == nil {
+		return s.logAndShow(event)
+	}
+
+	if target, ok := s.replyTargetForChannel(channel); ok {
+		return s.logAndShowOn(target, event)
+	}
+
+	return s.logAndShow(event)
+}
+
+func (s ChatScreen) replyTargetForChannel(channel *domain.ChannelWindow) (domain.ChannelName, bool) {
+	if channel == nil {
+		return "", false
+	}
+
+	current, open := s.windowByName(channel.Name())
+	if open && current.Window == channel {
+		return channel.Name(), true
+	}
+	if s.active == nil || open && s.active == current {
+		return domain.StatusChannelName, true
+	}
+
+	return s.active.Name(), true
+}
+
+func (s ChatScreen) replyTarget(window domain.Window) (domain.ChannelName, bool) {
+	if channel, ok := window.(*domain.ChannelWindow); ok {
+		return s.replyTargetForChannel(channel)
+	}
+	if window == nil {
+		return "", false
+	}
+	if _, isDM := window.(*dmWindow); isDM {
+		if current, ok := s.exactWindow(window); ok {
+			return current.Name(), true
+		}
+		if s.active == nil {
+			return "", false
+		}
+
+		return s.active.Name(), true
+	}
+
+	return s.fallbackTarget(window.Name())
 }
 
 // logAndShowOn renders a numeric or UI-feedback event in the
@@ -247,15 +439,41 @@ func (s ChatScreen) fallbackTarget(ch domain.ChannelName) (domain.ChannelName, b
 // wrapped chain ("send: send message: Post \"https://...\": dial
 // tcp: ...") never lands in front of the user. The error renders at
 // fallbackTarget(msg.Target): the window the failed command was
-// issued from when the chat-screen still has it open, the active
-// window otherwise.
+// issued from when the chat-screen still has that window open, the
+// active window otherwise.
 func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd) {
+	target, ok := s.fallbackTarget(msg.Target)
+	return s.handleErrorEventAt(msg, target, ok, s.replyWindowTarget(msg.Target))
+}
+
+func (s ChatScreen) handleErrorEventForWindow(
+	msg domain.ErrorEvent,
+	issuingWindow domain.Window,
+) (ChatScreen, tea.Cmd) {
+	if issuingWindow == nil {
+		return s.handleErrorEventAt(msg, domain.StatusChannelName, true, nil)
+	}
+
+	target, ok := s.replyTarget(issuingWindow)
+	return s.handleErrorEventAt(
+		msg, target, ok, protocol.WindowTargetForKey(issuingWindow.Name()),
+	)
+}
+
+func (s ChatScreen) handleErrorEventAt(
+	msg domain.ErrorEvent,
+	target domain.ChannelName,
+	ok bool,
+	issuingWindow protocol.WindowTarget,
+) (ChatScreen, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	slog.Default().ErrorContext(s.baseContext(), "command failed",
 		"operation", msg.Operation, "error", msg.Err)
 
-	target, _ := s.fallbackTarget(msg.Target)
+	if !ok {
+		target = domain.StatusChannelName
+	}
 
 	commandError := domain.CommandError{
 		Target: target,
@@ -263,11 +481,27 @@ func (s ChatScreen) handleErrorEvent(msg domain.ErrorEvent) (ChatScreen, tea.Cmd
 		At:     msg.At,
 	}
 
-	cmds = append(cmds, s.logAndShowOn(target, commandError))
-	cmds = append(cmds, s.recordReply(commandError))
+	if s.active == nil {
+		cmds = append(cmds, s.logAndShow(commandError))
+	} else {
+		cmds = append(cmds, s.logAndShowOn(target, commandError))
+	}
+	cmds = append(cmds, s.recordReply(issuingWindow, commandError))
 	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{}))
 
 	return s, tea.Batch(cmds...)
+}
+
+func (s ChatScreen) replyWindowTarget(name domain.ChannelName) protocol.WindowTarget {
+	window, open := s.windowByName(name)
+	if !open || window.Kind() == domain.KindStatus {
+		return nil
+	}
+	if window.Kind() == domain.KindDM {
+		return protocol.DirectWindowTarget(domain.InstanceID(name))
+	}
+
+	return protocol.ChannelWindowTarget(name)
 }
 
 // commandErrorText renders a command failure for the transcript: the
@@ -308,9 +542,9 @@ func shortErrorText(err error) string {
 // to its reply log through the user-client. It is best-effort and
 // renders nothing: the live view is already served by the
 // accompanying `logAndShow`.
-func (s ChatScreen) recordReply(reply domain.IssuerReply) tea.Cmd {
+func (s ChatScreen) recordReply(window protocol.WindowTarget, reply domain.IssuerReply) tea.Cmd {
 	return func() tea.Msg {
-		s.user.RecordReply(s.baseContext(), reply)
+		s.user.RecordReply(s.baseContext(), window, reply)
 		return nil
 	}
 }

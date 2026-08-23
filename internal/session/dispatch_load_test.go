@@ -66,12 +66,9 @@ func TestModelClient_load_is_join_scoped(t *testing.T) {
 
 		// A message that predates the model's join. It is in the
 		// channel log but must not reach the model's prompt.
-		_, err := s.AppendEvent(ctx, "#room", domain.Message{
-			Target: "#room",
-			From:   "early-bird",
-			Body:   "before you joined",
-			At:     beforeJoin,
-		})
+		_, err := s.AppendEvent(ctx, "#room", domain.Message{Source: domain.LegacyClientSource(
+
+			"early-bird"), Target: "#room", Body: "before you joined", At: beforeJoin})
 		require.NoError(t, err)
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -108,12 +105,9 @@ func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
-		_, err := s.AppendEvent(ctx, "#room", domain.Message{
-			Target: "#room",
-			From:   "early-bird",
-			Body:   "some history",
-			At:     fixedTime.Add(-time.Hour),
-		})
+		_, err := s.AppendEvent(ctx, "#room", domain.Message{Source: domain.LegacyClientSource(
+
+			"early-bird"), Target: "#room", Body: "some history", At: fixedTime.Add(-time.Hour)})
 		require.NoError(t, err)
 
 		botty := seedInstance(t, sess, s, instanceSpec{
@@ -190,15 +184,16 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 			{
 				{
 					Kind:   protocol.KindPrivMsg,
-					From:   string(userNick(t, sess)),
+					Source: domain.ClientSource(protocol.UserClientID, userNick(t, sess)),
 					Target: "#general",
 					Body:   "look up target",
 					At:     fixedTime,
 				},
 				{
-					Kind: protocol.KindServerReply,
-					Body: "whois target: test/model",
-					At:   fixedTime,
+					Kind:   protocol.KindServerReply,
+					Source: domain.ServerSource(domain.StatusServerName),
+					Body:   "whois target: test/model",
+					At:     fixedTime,
 				},
 			},
 		}, captured.snapshot(),

@@ -19,8 +19,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "message",
 			event: domain.Message{
+				Source: domain.ClientSource("inst-alice", "alice"),
 				Target: "#general",
-				From:   "alice",
 				Body:   "hello world",
 				At:     ts,
 			},
@@ -28,8 +28,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "action message",
 			event: domain.Message{
+				Source: domain.ClientSource("inst-alice", "alice"),
 				Target: "#general",
-				From:   "alice",
 				Body:   "waves",
 				Action: true,
 				At:     ts,
@@ -38,16 +38,16 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "join",
 			event: domain.Join{
+				Source: domain.ClientSource("inst-bob", "bob"),
 				Target: "#general",
-				Nick:   "bob",
 				At:     ts,
 			},
 		},
 		{
 			name: "join with created",
 			event: domain.Join{
+				Source:  domain.ClientSource("inst-bob", "bob"),
 				Target:  "#new",
-				Nick:    "bob",
 				Created: true,
 				At:      ts,
 			},
@@ -55,8 +55,8 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "join with message",
 			event: domain.Join{
+				Source:  domain.ClientSource("inst-bob", "bob"),
 				Target:  "#general",
-				Nick:    "bob",
 				Message: "hello everyone",
 				At:      ts,
 			},
@@ -64,16 +64,16 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "part",
 			event: domain.Part{
+				Source: domain.ClientSource("inst-bob", "bob"),
 				Target: "#general",
-				Nick:   "bob",
 				At:     ts,
 			},
 		},
 		{
 			name: "part with message",
 			event: domain.Part{
+				Source:  domain.ClientSource("inst-bob", "bob"),
 				Target:  "#general",
-				Nick:    "bob",
 				Message: "see ya later",
 				At:      ts,
 			},
@@ -81,7 +81,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "quit",
 			event: domain.Quit{
-				Nick:    "bob",
+				Source:  domain.ClientSource("inst-bob", "bob"),
 				Message: "gone fishing",
 				At:      ts,
 			},
@@ -89,51 +89,57 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "quit without message",
 			event: domain.Quit{
-				Nick: "bob",
-				At:   ts,
+				Source: domain.ClientSource("inst-bob", "bob"),
+				At:     ts,
 			},
 		},
 		{
 			name: "topic change",
 			event: domain.TopicChange{
+				Source: domain.ClientSource("inst-alice", "alice"),
 				Target: "#general",
 				Topic:  "new topic",
-				By:     "alice",
 				At:     ts,
 			},
 		},
 		{
 			name: "mode change",
 			event: domain.ChannelModeChange{
-				Target: "#general",
-				Nick:   "bob",
-				Flag:   domain.ModeChannelVoice, Add: true,
-				By: "ChanServ",
+				Source:  domain.ClientSource("inst-chanserv", "ChanServ"),
+				Target:  "#general",
+				Subject: "bob",
+				Flag:    domain.ModeChannelVoice, Add: true,
 				At: ts,
 			},
 		},
 		{
 			name: "invited",
 			event: domain.Invited{
-				Target: "#general",
-				Nick:   "botty",
-				By:     "alice",
-				At:     ts,
+				Source:  domain.ClientSource("inst-alice", "alice"),
+				Target:  "#general",
+				Invitee: "botty",
+				At:      ts,
+			},
+		},
+		{
+			name: "inviting",
+			event: domain.Inviting{
+				Target: "#general", Invitee: "botty", At: ts,
 			},
 		},
 		{
 			name: "kicked",
 			event: domain.Kicked{
-				Target: "#general",
-				Nick:   "botty",
-				By:     "alice",
-				At:     ts,
+				Source:  domain.ClientSource("inst-alice", "alice"),
+				Target:  "#general",
+				Subject: "botty",
+				At:      ts,
 			},
 		},
 		{
 			name: "nick change",
 			event: domain.NickChange{
-				OldNick: "bob",
+				Source:  domain.ClientSource("inst-bob", "bob"),
 				NewNick: "robert",
 				At:      ts,
 			},
@@ -141,7 +147,6 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		{
 			name: "whois",
 			event: domain.Whois{
-				Target:  "#general",
 				Nick:    "botty",
 				ModelID: "test/model",
 				At:      ts,
@@ -235,6 +240,7 @@ func TestPersistableEvent_partition(t *testing.T) {
 		"topic change":        domain.TopicChange{},
 		"channel mode change": domain.ChannelModeChange{},
 		"invited":             domain.Invited{},
+		"inviting":            domain.Inviting{},
 		"kicked":              domain.Kicked{},
 		"nick change":         domain.NickChange{},
 		"topic info":          domain.TopicInfo{},
@@ -299,7 +305,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 	}{
 		{
 			name:     "channel target routes to channel",
-			msg:      domain.Message{Target: "#general", InstanceID: bottyID, From: "botty"},
+			msg:      domain.Message{Source: domain.ClientSource(bottyID, "botty"), Target: "#general"},
 			self:     userID,
 			wantKey:  "#general",
 			wantOK:   true,
@@ -307,7 +313,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 		},
 		{
 			name:     "user-to-model dm routes to model peer",
-			msg:      domain.Message{Target: domain.ChannelName(bottyID), InstanceID: userID, From: "iain"},
+			msg:      domain.Message{Source: domain.ClientSource(userID, "iain"), Target: domain.ChannelName(bottyID)},
 			self:     userID,
 			wantKey:  domain.ChannelName(bottyID),
 			wantOK:   true,
@@ -315,7 +321,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 		},
 		{
 			name:     "model-to-user dm routes to model peer",
-			msg:      domain.Message{Target: domain.ChannelName(userID), InstanceID: bottyID, From: "botty"},
+			msg:      domain.Message{Source: domain.ClientSource(bottyID, "botty"), Target: domain.ChannelName(userID)},
 			self:     userID,
 			wantKey:  domain.ChannelName(bottyID),
 			wantOK:   true,
@@ -323,7 +329,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 		},
 		{
 			name:     "model-to-model dm visible to one party",
-			msg:      domain.Message{Target: domain.ChannelName(helperID), InstanceID: bottyID, From: "botty"},
+			msg:      domain.Message{Source: domain.ClientSource(bottyID, "botty"), Target: domain.ChannelName(helperID)},
 			self:     bottyID,
 			wantKey:  domain.ChannelName(helperID),
 			wantOK:   true,
@@ -331,7 +337,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 		},
 		{
 			name:     "model-to-model dm visible to other party",
-			msg:      domain.Message{Target: domain.ChannelName(helperID), InstanceID: bottyID, From: "botty"},
+			msg:      domain.Message{Source: domain.ClientSource(bottyID, "botty"), Target: domain.ChannelName(helperID)},
 			self:     helperID,
 			wantKey:  domain.ChannelName(bottyID),
 			wantOK:   true,
@@ -339,7 +345,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 		},
 		{
 			name:     "foreign model-to-model dm hides from user",
-			msg:      domain.Message{Target: domain.ChannelName(helperID), InstanceID: bottyID, From: "botty"},
+			msg:      domain.Message{Source: domain.ClientSource(bottyID, "botty"), Target: domain.ChannelName(helperID)},
 			self:     userID,
 			wantKey:  "",
 			wantOK:   false,
@@ -347,7 +353,7 @@ func TestMessage_RoutingKey(t *testing.T) {
 		},
 		{
 			name:     "status target routes to status",
-			msg:      domain.Message{Target: domain.StatusChannelName, InstanceID: userID, From: "iain"},
+			msg:      domain.Message{Source: domain.ClientSource(userID, "iain"), Target: domain.StatusChannelName},
 			self:     userID,
 			wantKey:  domain.StatusChannelName,
 			wantOK:   true,

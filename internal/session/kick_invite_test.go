@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"testing"
 	"testing/synctest"
 
@@ -8,6 +9,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	storemod "github.com/laney/modeloff/internal/store"
 )
 
 // seedPassiveInstance registers a model instance whose subscription
@@ -22,11 +24,59 @@ func seedPassiveInstance(t *testing.T, sess *Session, nick domain.Nick, model do
 
 	c := &passiveClient{id: protocol.ClientID(inst.ID())}
 
-	sub, err := sess.Subscribe(c, protocol.SubscribeOptions{Instance: inst})
+	sub, err := subscribeTestClient(t.Context(), t, sess, c, protocol.SubscribeOptions{})
 	require.NoError(t, err)
 	c.sub = sub
 
 	return inst, c
+}
+
+func TestSession_failed_invitation_write_does_not_grant_join_authority(t *testing.T) {
+	sess, backing := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+	window, err := sess.loadChannelWindow(ctx, "#dev")
+	require.NoError(t, err)
+	window.Modes.InviteOnly = true
+	require.NoError(t, sess.persistChannelWindow(ctx, window))
+
+	botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
+	sentinel := errors.New("save failed")
+	failing := &teardownFailureStore{Store: backing, saveWindowErr: sentinel}
+	failing.armed.Store(true)
+	sess.store = failing
+
+	resp, inviteErr := userClient(t, sess).Send(ctx, protocol.Invite{
+		Nick: "botty", Channel: "#dev",
+	})
+	failing.armed.Store(false)
+	joinErr := joinAs(ctx, sess, botty, "#dev", "")
+	window, windowErr := sess.loadChannelWindow(ctx, "#dev")
+
+	var inviteOnly domain.ChannelInviteOnlyError
+	require.Equal(t, struct {
+		Response          protocol.Response
+		SaveFailed        bool
+		JoinWasRefused    bool
+		WindowError       error
+		InvitationPresent bool
+	}{
+		SaveFailed:     true,
+		JoinWasRefused: true,
+	}, struct {
+		Response          protocol.Response
+		SaveFailed        bool
+		JoinWasRefused    bool
+		WindowError       error
+		InvitationPresent bool
+	}{
+		Response:          resp,
+		SaveFailed:        errors.Is(inviteErr, sentinel),
+		JoinWasRefused:    errors.As(joinErr, &inviteOnly),
+		WindowError:       windowErr,
+		InvitationPresent: window.Invitations.Contains(botty.ID()),
+	})
 }
 
 // TestSession_join_replays_names_and_topic_to_the_joiner covers RFC
@@ -49,18 +99,10 @@ func TestSession_join_replays_names_and_topic_to_the_joiner(t *testing.T) {
 
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#dev",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				At:         fixedTime,
-				Instance:   botty,
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#dev",
+				At:     fixedTime,
 			},
-			domain.NamesReplyEvent{
-				Channel: "#dev",
-				Members: testMembers(t, sess, s, "testuser", "botty"),
-				At:      fixedTime,
-			},
-			domain.NamesEnd{Channel: "#dev", At: fixedTime},
 			domain.TopicInfo{
 				Target:     "#dev",
 				Topic:      "ongoing work",
@@ -68,6 +110,12 @@ func TestSession_join_replays_names_and_topic_to_the_joiner(t *testing.T) {
 				TopicSetAt: fixedTime,
 				At:         fixedTime,
 			},
+			domain.NamesReplyEvent{
+				Channel: "#dev",
+				Members: testMembers(t, sess, s, "testuser", "botty"),
+				At:      fixedTime,
+			},
+			domain.NamesEnd{Channel: "#dev", At: fixedTime},
 		}, drainDeliveries(joiner))
 	})
 }
@@ -79,30 +127,57 @@ func TestSession_join_replays_names_and_topic_to_the_joiner(t *testing.T) {
 // event to it.
 func TestSession_kick_reaches_the_kicked_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess, _ := newTestSession(t)
+		sess, s := newTestSession(t)
 		ctx := t.Context()
 
 		require.NoError(t, userJoin(ctx, t, sess, "#dev"))
+		require.NoError(t, userJoin(ctx, t, sess, "#other"))
 
 		botty, victim := seedPassiveInstance(t, sess, "botty", "test/model")
 		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#other", ""))
+		turnID, err := s.BeginModelTurn(ctx, storemod.ModelTurn{
+			InstanceID: botty.ID(),
+			Window:     protocol.ChannelWindowTarget("#dev"),
+			ModelID:    botty.ModelID,
+			StartedAt:  fixedTime,
+		}, storemod.ModelTurnEntry{
+			Kind: storemod.ModelTurnInput,
+			Data: []byte(`{"input":"channel context"}`),
+			At:   fixedTime,
+		})
+		require.NoError(t, err)
 		drainDeliveries(victim)
-
 		require.NoError(t, kickViaWire(ctx, t, sess, "#dev", "botty"))
+		require.NoError(t, sess.changeNickAs(ctx, botty, "renamed"))
 		synctest.Wait()
 
-		require.Equal(t, []domain.Event{domain.Kicked{
-			Target:     "#dev",
-			Nick:       "botty",
-			InstanceID: botty.ID(),
-			By:         "testuser",
-			At:         fixedTime,
-			Instance:   botty,
-		}}, drainDeliveries(victim))
+		require.Equal(t, []domain.Event{
+			domain.Kicked{
+				Source:        domain.ClientSource(userInstance(t, sess).ID(), "testuser"),
+				Target:        "#dev",
+				Subject:       "botty",
+				SubjectIsSelf: true,
+				At:            fixedTime,
+			},
+			domain.NickChange{
+				Source:  domain.ClientSource(botty.ID(), "botty"),
+				NewNick: "renamed",
+				At:      fixedTime,
+			},
+		}, drainDeliveries(victim))
 
 		window, err := sess.loadChannelWindow(ctx, "#dev")
 		require.NoError(t, err)
 		require.False(t, window.Members.HasInstance(botty), "the kick still removes membership")
+
+		entries, err := s.ModelTurnEntries(ctx, turnID)
+		require.NoError(t, err)
+		require.Equal(t, []storemod.ModelTurnEntry{{
+			Kind: storemod.ModelTurnInput,
+			Data: []byte(`{"input":"channel context"}`),
+			At:   fixedTime,
+		}}, entries)
 	})
 }
 
@@ -142,7 +217,7 @@ func TestSession_invite_records_nothing_for_an_unknown_nick(t *testing.T) {
 		require.NoError(t, userJoin(ctx, t, sess, "#dev"))
 
 		event, err := sess.inviteAs(ctx, userInstance(t, sess), "ghost", "#dev")
-		require.NoError(t, err)
+		require.Equal(t, domain.UnknownNickError{Nick: "ghost", At: fixedTime}, err)
 		require.Equal(t, domain.SystemNotice{
 			Target: "#dev",
 			Text:   "no such nick: ghost",
@@ -273,13 +348,10 @@ func TestSession_invite_can_target_the_user(t *testing.T) {
 		event, err := sess.inviteAs(ctx, botty, userNick(t, sess), "#dev")
 		require.NoError(t, err)
 		require.Equal(t, domain.Invited{
-			Target:       "#dev",
-			Nick:         userNick(t, sess),
-			InstanceID:   "",
-			By:           "botty",
-			ByInstanceID: botty.ID(),
-			At:           fixedTime,
-			Instance:     userInstance(t, sess),
+			Source:  domain.ClientSource(botty.ID(), "botty"),
+			Target:  "#dev",
+			Invitee: userNick(t, sess),
+			At:      fixedTime,
 		}, event)
 
 		window, err := sess.loadChannelWindow(ctx, "#dev")
@@ -319,21 +391,17 @@ func TestSession_user_join_consumes_an_invitation_from_a_model(t *testing.T) {
 	})
 }
 
-// TestSession_whois_resolves_a_connected_client_the_store_cannot_see
-// pins the follow-up AGENTS.md's "Out of scope" list named: WHOIS
-// answers from the registry of connected clients, so a subscribed
-// client resolves even before any instances row exists for it.
-// [modelmanager]'s registration writes the row and subscribes the
-// client in that order, so the row lagging the subscription is the
-// normal shape of an in-flight ADDMODEL, not just a test fixture.
-func TestSession_whois_resolves_a_connected_client_the_store_cannot_see(t *testing.T) {
+// TestSession_whois_resolves_a_connected_client_from_the_registry
+// proves that WHOIS resolves through the connected-client registry.
+func TestSession_whois_resolves_a_connected_client_from_the_registry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess, _ := newTestSession(t)
+		sess, store := newTestSession(t)
 		ctx := t.Context()
 
 		inst := domain.NewModelInstance("inst-ghost", "ghost", "test/model", "", nil)
+		require.NoError(t, store.SaveInstance(ctx, inst))
 		fc := newPlainClient(protocol.ClientID(inst.ID()))
-		_, err := sess.Subscribe(fc, protocol.SubscribeOptions{Instance: inst})
+		_, err := subscribeTestClient(t.Context(), t, sess, fc, protocol.SubscribeOptions{})
 		require.NoError(t, err)
 
 		resp, err := sess.Handle(ctx, userClient(t, sess), protocol.Whois{Nick: "ghost"})
@@ -367,25 +435,19 @@ func TestSession_whois_refuses_an_instance_row_whose_client_never_attached(t *te
 	})
 }
 
-// TestSession_mode_grants_op_to_a_connected_client_the_store_cannot_see
-// covers the same registry-vs-store divergence for MODE: `setMemberModeAs`
-// resolves `change.Target` through `resolveConnectedNick`, so a model
-// that is subscribed and already a channel member, but has no
-// instances row yet, can still be granted `+o`. The member list is
-// mutated directly rather than through `joinAs`, which would write
-// the row itself as a side effect of recording membership; this is
-// the shape an in-flight ADDMODEL is in between attaching the new
-// client and the JOIN that follows it.
-func TestSession_mode_grants_op_to_a_connected_client_the_store_cannot_see(t *testing.T) {
+// TestSession_mode_grants_op_to_a_connected_client covers the same
+// connected-registry resolution for a member MODE change.
+func TestSession_mode_grants_op_to_a_connected_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess, _ := newTestSession(t)
+		sess, store := newTestSession(t)
 		ctx := t.Context()
 
 		require.NoError(t, userJoin(ctx, t, sess, "#dev"))
 
 		ghost := domain.NewModelInstance("inst-ghost", "ghost", "test/model", "", nil)
+		require.NoError(t, store.SaveInstance(ctx, ghost))
 		fc := newPlainClient(protocol.ClientID(ghost.ID()))
-		_, err := sess.Subscribe(fc, protocol.SubscribeOptions{Instance: ghost})
+		_, err := subscribeTestClient(t.Context(), t, sess, fc, protocol.SubscribeOptions{})
 		require.NoError(t, err)
 
 		window, err := sess.loadChannelWindow(ctx, "#dev")

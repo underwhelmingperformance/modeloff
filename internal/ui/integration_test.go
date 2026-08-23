@@ -183,7 +183,7 @@ func TestApp_terminal_output_shows_full_model_nick_in_user_list(t *testing.T) {
 		Channels: channels,
 	})
 
-	client := testclient.New(grok.Nick(), sess,
+	client := testclient.NewStored(grok.Nick(), sess, store,
 		testclient.WithInstanceID(grok.ID()),
 		testclient.WithModelID(grok.ModelID),
 		testclient.WithChannels("#general"),
@@ -423,6 +423,31 @@ func (f *integrationAPI) ListModels(context.Context) ([]api.ModelInfo, error) {
 	return nil, nil
 }
 
+func (f *integrationAPI) RenderEventRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	systemPrompt api.SystemPrompt,
+	history []protocol.IRCMessage,
+	events []protocol.IRCMessage,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	return api.RenderEventRequest(
+		modelID, selfInstanceID, systemPrompt, history, events, tools...,
+	)
+}
+
+func (f *integrationAPI) RenderToolResultRequest(
+	conv *api.Conversation,
+	results []api.ToolResult,
+	tools ...api.ToolDefinition,
+) (api.RenderedEventRequest, error) {
+	if conv == nil {
+		return api.RenderedEventRequest{}, nil
+	}
+
+	return api.RenderToolResultRequest(conv, results, tools...)
+}
+
 func (f *integrationAPI) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
@@ -547,7 +572,7 @@ type instanceSpec struct {
 	Channels *orderedmap.OrderedMap[domain.ChannelName, time.Time]
 }
 
-func seedInstance(t *testing.T, sess *session.Session, _ *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
+func seedInstance(t *testing.T, sess *session.Session, store *storemod.SQLiteStore, spec instanceSpec) *domain.Instance {
 	t.Helper()
 
 	opts := []testclient.Option{
@@ -564,7 +589,7 @@ func seedInstance(t *testing.T, sess *session.Session, _ *storemod.SQLiteStore, 
 		opts = append(opts, testclient.WithChannels(channels...))
 	}
 
-	client := testclient.New(spec.Nick, sess, opts...)
+	client := testclient.NewStored(spec.Nick, sess, store, opts...)
 	require.NoError(t, client.Attach(t.Context()), "attach test client for seeded instance")
 	t.Cleanup(client.Detach)
 

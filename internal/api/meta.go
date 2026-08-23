@@ -165,7 +165,7 @@ func (c *OpenRouterClient) generateNick(
 
 			for formatAttempt := 1; formatAttempt <= maxNickFormatAttempts; formatAttempt++ {
 				var err error
-				resp, rawResp, err = c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+				resp, rawResp, err = c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 					Model:          shared.ChatModel(string(smallModel)),
 					Messages:       messages,
 					ResponseFormat: nicknameResponseFormat(),
@@ -290,7 +290,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 	err := c.inSpan(ctx, "api.openrouter.generate_personas",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(smallModel))},
 		func(ctx context.Context, span trace.Span) error {
-			resp, rawResp, err := c.chatCompletion(ctx, smallModel, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
+			resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 				Model: shared.ChatModel(string(smallModel)),
 				Messages: []openai.ChatCompletionMessageParamUnion{
 					openai.UserMessage(personaGenerationPrompt),

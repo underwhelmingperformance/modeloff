@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 
@@ -59,7 +60,7 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 		sess, s := newTestSessionWithAPI(t, fake)
 		ctx := t.Context()
 
-		botty := seedInstance(t, sess, s, instanceSpec{
+		seedInstance(t, sess, s, instanceSpec{
 			Nick:    "botty",
 			ModelID: "test/model-botty",
 		})
@@ -76,28 +77,21 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 
 		synctest.Wait()
 
-		wantInvited := domain.Invited{
-			Target:       "#room",
-			Nick:         "botty",
-			InstanceID:   botty.ID(),
-			By:           userNick(t, sess),
-			ByInstanceID: "",
-			At:           fixedTime,
-			Instance:     botty,
+		wantInviting := domain.Inviting{
+			Target: "#room", Invitee: "botty", At: fixedTime,
 		}
 
-		require.Equal(t, []protocol.Event{wantInvited}, resp.Events,
-			"the Send response carries the Invited envelope — the inviter's RPL_INVITING")
+		require.Equal(t, []protocol.Event{wantInviting}, resp.Events,
+			"the Send response carries RPL_INVITING; the target receives INVITE")
 
 		require.Equal(t, []call{
 			{
 				modelID: "test/model-botty",
 				triggers: []protocol.IRCMessage{{
-					Kind:       protocol.KindInvite,
-					From:       string(userNick(t, sess)),
-					InstanceID: "",
-					Target:     "#room",
-					At:         fixedTime,
+					Kind:   protocol.KindInvite,
+					Source: domain.ClientSource(userInstance(t, sess).ID(), userNick(t, sess)),
+					Target: "#room",
+					At:     fixedTime,
 				}},
 			},
 		}, calls,
@@ -118,5 +112,88 @@ func TestInviteAs_delivery_is_scoped_to_inviter_and_invitee(t *testing.T) {
 		}
 		require.Empty(t, storedInvites,
 			"INVITE is not channel chat; the channel events log should not carry it")
+	})
+}
+
+func TestInviteAs_destroyed_channel_revokes_the_invitation_turn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		started := make(chan struct{})
+		proceed := make(chan struct{})
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				calls.Add(1)
+				close(started)
+				<-proceed
+
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
+					ID: "rejoin", Name: "join", Args: []byte(`{"channel":"#room"}`),
+				}}}, nil
+			},
+		}
+
+		sess, store := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+		seedInstance(t, sess, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+		seedChannelWithMembers(t, sess, store, "#room", userNick(t, sess))
+
+		resp, err := userClient(t, sess).Send(ctx, protocol.Invite{Nick: "botty", Channel: "#room"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		<-started
+		require.NoError(t, userPart(ctx, t, sess, "#room", "done"))
+		close(proceed)
+
+		synctest.Wait()
+
+		require.Equal(t, int32(1), calls.Load())
+		_, err = sess.loadChannelWindow(ctx, "#room")
+		require.Error(t, err)
+	})
+}
+
+func TestInviteAs_recreated_channel_does_not_revive_an_old_invitation_turn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		started := make(chan struct{})
+		proceed := make(chan struct{})
+		fake := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				if calls.Add(1) != 1 {
+					return api.CompletionResult{}, nil
+				}
+
+				close(started)
+				<-proceed
+
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
+					ID: "stale-rejoin", Name: "join", Args: []byte(`{"channel":"#room"}`),
+				}}}, nil
+			},
+		}
+
+		sess, store := newTestSessionWithAPI(t, fake)
+		ctx := t.Context()
+		botty := seedInstance(t, sess, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+		seedChannelWithMembers(t, sess, store, "#room", userNick(t, sess))
+
+		resp, err := userClient(t, sess).Send(ctx, protocol.Invite{Nick: "botty", Channel: "#room"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		<-started
+
+		require.NoError(t, userPart(ctx, t, sess, "#room", "done"))
+		require.NoError(t, userJoin(ctx, t, sess, "#room"))
+		resp, err = userClient(t, sess).Send(ctx, protocol.Invite{Nick: "botty", Channel: "#room"})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		close(proceed)
+
+		synctest.Wait()
+
+		window, err := sess.loadChannelWindow(ctx, "#room")
+		require.NoError(t, err)
+		require.False(t, window.Members.HasInstance(botty))
+		require.Equal(t, int32(2), calls.Load())
 	})
 }

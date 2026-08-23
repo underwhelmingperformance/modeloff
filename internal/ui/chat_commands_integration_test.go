@@ -180,9 +180,11 @@ func TestApp_welcome_join_command_with_teatest(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff")
 
 	tm.Submit("/join #general")
-	tm.WaitFor("Created channel #general")
-
-	view := tm.CurrentView()
+	view := tm.WaitForView(func(view string) bool {
+		return strings.Contains(view, "Created channel #general") &&
+			strings.Contains(view, "▸#general") &&
+			strings.Count(view, "#general") >= 3
+	})
 	require.Equal(t, []string{"Channels", "&modeloff", "▸#general"}, sidebarColumn(view))
 
 	content := normaliseContent(contentColumn(view))

@@ -32,14 +32,195 @@ func TestSession_quit_on_an_anonymous_channel_arrives_as_a_part(t *testing.T) {
 		require.NoError(t, sess.quitAs(ctx, botty, "gone"))
 		synctest.Wait()
 
-		require.Equal(t, []domain.Event{domain.Part{
-			Target:  "#anon",
-			Nick:    domain.AnonymousNick,
-			Message: "gone",
-			At:      fixedTime,
-		}}, collectEmittedEvents(t, sess),
+		require.Equal(t, []domain.Event{domain.Part{Source: domain.AnonymousSource(),
+
+			Target: "#anon", Message: "gone", At: fixedTime}}, collectEmittedEvents(t, sess),
 			"the channel is told somebody left it, and not who or that they left the server")
 	})
+}
+
+func TestSubscription_anonymous_scrollback_keeps_the_wire_projection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, store := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		viewer := seedInstanceRow(t, store, instanceSpec{Nick: "viewer", ModelID: "test/viewer"})
+		client := &subscribeFakeClient{id: protocol.ClientID(viewer.ID())}
+		sub, err := subscribeTestClient(t.Context(), t, sess, client, protocol.SubscribeOptions{
+			ReplayHistory: true,
+		})
+		require.NoError(t, err)
+		response, err := sess.Handle(ctx, client, protocol.Join{Channels: []domain.ChannelName{"#anon"}})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		sub.Activate()
+		for range 3 {
+			<-sub.Events()
+		}
+
+		speaker, _ := seedPassiveInstance(t, sess, "speaker", "test/speaker")
+		require.NoError(t, joinAs(ctx, sess, speaker, "#anon", ""))
+		require.NoError(t, sess.changeNickAs(ctx, speaker, "renamed"))
+		_, err = sess.sendMessageAs(ctx, speaker, "#anon", "secret origin")
+		require.NoError(t, err)
+		require.NoError(t, sess.quitAs(ctx, speaker, "gone"))
+
+		entries, err := sub.Scrollback(ctx, protocol.ChannelWindowTarget("#anon"), 100)
+		require.NoError(t, err)
+
+		var join domain.Join
+		var message domain.Message
+		var part domain.Part
+		for _, entry := range entries {
+			switch event := entry.Event.(type) {
+			case domain.Join:
+				if id, ok := event.Source.InstanceID(); !ok || id != viewer.ID() {
+					join = event
+				}
+			case domain.Message:
+				if event.Body == "secret origin" {
+					message = event
+				}
+			case domain.Part:
+				if event.Message == "gone" {
+					part = event
+				}
+			case domain.Quit:
+				t.Fatalf("anonymous scrollback exposed QUIT: %#v", event)
+			case domain.NickChange:
+				t.Fatalf("anonymous scrollback exposed NICK: %#v", event)
+			}
+		}
+
+		require.Equal(t, domain.Join{Source: domain.AnonymousSource(),
+
+			Target: "#anon", At: fixedTime},
+
+			join)
+		require.Equal(t, domain.Message{Source: domain.AnonymousSource(),
+
+			Target: "#anon", Body: "secret origin", At: fixedTime},
+
+			message)
+		require.Equal(t, domain.Part{Source: domain.AnonymousSource(),
+
+			Target: "#anon", Message: "gone", At: fixedTime},
+
+			part)
+	})
+}
+
+func TestSession_anonymous_membership_events_hide_other_members(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, store := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		viewer := seedInstanceRow(t, store, instanceSpec{Nick: "viewer", ModelID: "test/viewer"})
+		client := &subscribeFakeClient{id: protocol.ClientID(viewer.ID())}
+		sub, err := subscribeTestClient(t.Context(), t, sess, client, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+		response, err := sess.Handle(ctx, client, protocol.Join{
+			Channels: []domain.ChannelName{"#anon"},
+		})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		synctest.Wait()
+		drainSubscriptionEvents(sub)
+
+		speaker, _ := seedPassiveInstance(t, sess, "speaker", "test/speaker")
+		require.NoError(t, joinAs(ctx, sess, speaker, "#anon", ""))
+		synctest.Wait()
+		require.Equal(t, []domain.Event{domain.Join{Source: domain.AnonymousSource(),
+
+			Target: "#anon", At: fixedTime}}, drainSubscriptionEvents(sub))
+
+		require.NoError(t, sess.changeNickAs(ctx, speaker, "renamed"))
+		synctest.Wait()
+		require.Empty(t, drainSubscriptionEvents(sub))
+
+		require.NoError(t, sess.partAs(ctx, speaker, "#anon", "left"))
+		synctest.Wait()
+		require.Equal(t, []domain.Event{domain.Part{Source: domain.AnonymousSource(),
+
+			Target: "#anon", Message: "left", At: fixedTime}}, drainSubscriptionEvents(sub))
+
+		require.NoError(t, joinAs(ctx, sess, speaker, "#anon", ""))
+		synctest.Wait()
+		drainSubscriptionEvents(sub)
+
+		require.NoError(t, sess.kickAs(ctx, userInstance(t, sess), speaker, "#anon"))
+		synctest.Wait()
+		require.Equal(t, []domain.Event{domain.Kicked{Source: domain.AnonymousSource(),
+
+			Target: "#anon", Subject: domain.AnonymousNick, At: fixedTime}}, drainSubscriptionEvents(sub))
+	})
+}
+
+func TestSession_anonymous_member_mode_hides_the_user_subject(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, store := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		viewer := seedInstanceRow(t, store, instanceSpec{Nick: "viewer", ModelID: "test/viewer"})
+		client := &subscribeFakeClient{id: protocol.ClientID(viewer.ID())}
+		sub, err := subscribeTestClient(ctx, t, sess, client, protocol.SubscribeOptions{ReplayHistory: true})
+		require.NoError(t, err)
+		response, err := sess.Handle(ctx, client, protocol.Join{Channels: []domain.ChannelName{"#anon"}})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		sub.Activate()
+		synctest.Wait()
+		drainSubscriptionEvents(sub)
+
+		response, err = userClient(t, sess).Send(ctx, protocol.ChannelMode{
+			Channel: "#anon",
+			Changes: []protocol.ChannelModeChange{{
+				Flag:   domain.ModeChannelVoice,
+				Add:    true,
+				Target: "testuser",
+			}},
+		})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		synctest.Wait()
+
+		masked := domain.ChannelModeChange{Source: domain.AnonymousSource(),
+
+			Target: "#anon", Subject: domain.AnonymousNick, Flag: domain.ModeChannelVoice, Add: true, At: fixedTime}
+
+		require.Equal(t, []domain.Event{masked}, drainSubscriptionEvents(sub))
+
+		entries, err := sub.Scrollback(ctx, protocol.ChannelWindowTarget("#anon"), 100)
+		require.NoError(t, err)
+		var modeChanges []protocol.ScrollbackEntry
+		for _, entry := range entries {
+			if _, ok := entry.Event.(domain.ChannelModeChange); ok {
+				modeChanges = append(modeChanges, entry)
+			}
+		}
+		require.Equal(t, []protocol.ScrollbackEntry{{Event: masked}}, modeChanges)
+	})
+}
+
+func drainSubscriptionEvents(sub protocol.Subscription) []domain.Event {
+	var events []domain.Event
+	for {
+		select {
+		case delivery := <-sub.Events():
+			events = append(events, delivery.Event)
+		default:
+			return events
+		}
+	}
 }
 
 // TestSession_quit_reaches_named_channels_unmasked pins the other
@@ -67,29 +248,21 @@ func TestSession_quit_reaches_named_channels_unmasked(t *testing.T) {
 
 		require.Equal(t, []domain.Event{
 			domain.Quit{
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				Message:    "gone",
-				At:         fixedTime,
-				Instance:   botty,
-			},
-			domain.Part{
-				Target:  "#anon",
-				Nick:    domain.AnonymousNick,
+				Source:  domain.ClientSource(botty.ID(), "botty"),
 				Message: "gone",
 				At:      fixedTime,
 			},
+			domain.Part{Source: domain.AnonymousSource(),
+
+				Target: "#anon", Message: "gone", At: fixedTime},
 		}, collectEmittedEvents(t, sess))
 	})
 }
 
-// TestSession_dispatch_events_are_masked_on_an_anonymous_channel
-// covers the thinking indicator: a dispatch-lifecycle event carries
-// the instance handle, which names the client running the turn. On a
-// channel where every message is attributed to the mask, that would
-// say out loud who is about to speak, so the handle is stripped for
-// a recipient that shares only anonymous channels with the actor.
-func TestSession_dispatch_events_are_masked_on_an_anonymous_channel(t *testing.T) {
+// TestSession_dispatch_events_are_withheld_from_anonymous_peers
+// covers the thinking indicator: only the actor may observe its own
+// dispatch lifecycle when the turn runs in an anonymous channel.
+func TestSession_dispatch_events_are_withheld_from_anonymous_peers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess, _ := newTestSession(t)
 		ctx := t.Context()
@@ -97,19 +270,42 @@ func TestSession_dispatch_events_are_masked_on_an_anonymous_channel(t *testing.T
 		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
 		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
 
-		botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
 		require.NoError(t, joinAs(ctx, sess, botty, "#anon", ""))
 
-		collectEmittedEvents(t, sess)
+		synctest.Wait()
+		collectProtocolDeliveries(userClient(t, sess))
+		collectProtocolDeliveries(client)
 
-		sess.Emit(ctx, domain.ModelDispatchStarted{Instance: botty, At: fixedTime})
-		sess.Emit(ctx, domain.ModelDispatchDone{Instance: botty, At: fixedTime})
+		target := protocol.ChannelWindowTarget("#anon")
+		source := domain.ClientSource(botty.ID(), botty.Nick())
+		dispatch := sess.BeginModelDispatch(ctx, mustWindowGuard(t, client, target), target,
+			domain.ModelDispatchStarted{Source: source, At: fixedTime})
+		dispatch.Done(ctx, domain.ModelDispatchDone{Source: source, At: fixedTime})
 		synctest.Wait()
 
-		require.Equal(t, []domain.Event{
-			domain.ModelDispatchStarted{At: fixedTime},
-			domain.ModelDispatchDone{At: fixedTime},
-		}, collectEmittedEvents(t, sess))
+		type observedDeliveries struct {
+			Peer  []protocol.Delivery
+			Actor []protocol.Delivery
+		}
+		require.Equal(t, observedDeliveries{
+			Peer: []protocol.Delivery{},
+			Actor: []protocol.Delivery{
+				{
+					Event:   domain.ModelDispatchStarted{Source: source, At: fixedTime},
+					Targets: []domain.ChannelName{"#anon"},
+					Window:  target,
+				},
+				{
+					Event:   domain.ModelDispatchDone{Source: source, At: fixedTime},
+					Targets: []domain.ChannelName{"#anon"},
+					Window:  target,
+				},
+			},
+		}, observedDeliveries{
+			Peer:  collectProtocolDeliveries(userClient(t, sess)),
+			Actor: collectProtocolDeliveries(client),
+		})
 	})
 }
 
@@ -123,17 +319,132 @@ func TestSession_dispatch_events_name_the_actor_on_a_named_channel(t *testing.T)
 
 		require.NoError(t, userJoin(ctx, t, sess, "#open"))
 
-		botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
 		require.NoError(t, joinAs(ctx, sess, botty, "#open", ""))
 
 		collectEmittedEvents(t, sess)
 
-		sess.Emit(ctx, domain.ModelDispatchStarted{Instance: botty, At: fixedTime})
+		target := protocol.ChannelWindowTarget("#open")
+		sess.BeginModelDispatch(ctx, mustWindowGuard(t, client, target), target, domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime})
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{
-			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime},
 		}, collectEmittedEvents(t, sess))
+	})
+}
+
+func TestSession_dispatch_done_reaches_the_start_audience_after_anonymous_mode(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#general", ""))
+		collectEmittedEvents(t, sess)
+
+		target := protocol.ChannelWindowTarget("#general")
+		dispatch := sess.BeginModelDispatch(ctx, mustWindowGuard(t, client, target), target, domain.ModelDispatchStarted{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		setChannelModes(t, sess, "#general", domain.ChannelModes{Anonymous: true})
+		dispatch.Done(ctx, domain.ModelDispatchDone{
+			Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+		})
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{
+			domain.ModelDispatchStarted{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+			domain.ModelDispatchDone{
+				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
+			},
+		}, collectEmittedEvents(t, sess))
+	})
+}
+
+func TestSession_dispatch_events_do_not_name_an_anonymous_target(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#open"))
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#open", ""))
+		require.NoError(t, joinAs(ctx, sess, botty, "#anon", ""))
+		collectEmittedEvents(t, sess)
+
+		target := protocol.ChannelWindowTarget("#open")
+		sess.BeginModelDispatch(ctx, mustWindowGuard(t, client, target), target, domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime})
+		synctest.Wait()
+
+		require.Equal(t, protocol.Delivery{
+			Event:   domain.ModelDispatchStarted{Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime},
+			Targets: []domain.ChannelName{"#open"},
+			Window:  protocol.ChannelWindowTarget("#open"),
+		}, <-userClient(t, sess).Events())
+	})
+}
+
+func TestSession_dispatch_failure_does_not_name_an_anonymous_target(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		botty, _ := seedPassiveInstance(t, sess, "botty", "test/model")
+		require.NoError(t, joinAs(ctx, sess, botty, "#anon", ""))
+		collectEmittedEvents(t, sess)
+
+		sess.EmitModelFailure(ctx, protocol.ChannelWindowTarget("#anon"), domain.ModelUnavailableError{Source: domain.ClientSource(botty.ID(), "botty"), At: fixedTime})
+		synctest.Wait()
+
+		require.Equal(t, protocol.Delivery{
+			Event: domain.ModelUnavailableError{
+				Source: domain.AnonymousSource(), At: fixedTime,
+			},
+			Targets: []domain.ChannelName{"#anon"},
+			Window:  protocol.ChannelWindowTarget("#anon"),
+		}, <-userClient(t, sess).Events())
+	})
+}
+
+func TestSession_invite_masks_the_anonymous_inviter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		_, invitee := seedPassiveInstance(t, sess, "botty", "test/model")
+		drainDeliveries(invitee)
+
+		response, err := userClient(t, sess).Send(ctx, protocol.Invite{
+			Nick: "botty", Channel: "#anon",
+		})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		require.Equal(t, []protocol.Event{domain.Inviting{
+			Target:  "#anon",
+			Invitee: "botty",
+			At:      fixedTime,
+		}}, response.Events)
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{domain.Invited{
+			Source:  domain.AnonymousSource(),
+			Target:  "#anon",
+			Invitee: "botty",
+			At:      fixedTime,
+		}}, drainDeliveries(invitee))
 	})
 }
 
@@ -151,6 +462,7 @@ func TestSession_join_replay_masks_names_on_an_anonymous_channel(t *testing.T) {
 
 		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
 		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+		require.NoError(t, sess.setTopicAs(ctx, userInstance(t, sess), "#anon", "quiet room"))
 
 		botty, joiner := seedPassiveInstance(t, sess, "botty", "test/model")
 		drainDeliveries(joiner)
@@ -160,11 +472,16 @@ func TestSession_join_replay_masks_names_on_an_anonymous_channel(t *testing.T) {
 
 		require.Equal(t, []domain.Event{
 			domain.Join{
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#anon",
+				At:     fixedTime,
+			},
+			domain.TopicInfo{
 				Target:     "#anon",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
+				Topic:      "quiet room",
+				TopicSetBy: domain.AnonymousNick,
+				TopicSetAt: fixedTime,
 				At:         fixedTime,
-				Instance:   botty,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#anon",
@@ -173,6 +490,56 @@ func TestSession_join_replay_masks_names_on_an_anonymous_channel(t *testing.T) {
 			},
 			domain.NamesEnd{Channel: "#anon", At: fixedTime},
 		}, drainDeliveries(joiner))
+	})
+}
+
+func TestSession_anonymous_topic_does_not_trust_a_reused_setter_nick(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, _ := newTestSession(t)
+		ctx := t.Context()
+
+		realSetter := userInstance(t, sess)
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+		require.NoError(t, sess.setTopicAs(ctx, realSetter, "#anon", "quiet room"))
+		require.NoError(t, sess.changeNickAs(ctx, realSetter, "renamed-user"))
+
+		joiner := domain.NewModelInstance("inst-reused-nick", "testuser", "test/model", "", nil)
+		require.NoError(t, sess.store.SaveInstance(ctx, joiner))
+		subscription := &passiveClient{id: protocol.ClientID(joiner.ID())}
+		sub, err := subscribeTestClient(t.Context(), t, sess, subscription, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+		subscription.sub = sub
+		drainDeliveries(subscription)
+
+		require.NoError(t, joinAs(ctx, sess, joiner, "#anon", ""))
+		synctest.Wait()
+
+		var topicInfo domain.TopicInfo
+		for _, event := range drainDeliveries(subscription) {
+			if topic, ok := event.(domain.TopicInfo); ok {
+				topicInfo = topic
+			}
+		}
+
+		require.Equal(t, domain.TopicInfo{
+			Target:     "#anon",
+			Topic:      "quiet room",
+			TopicSetBy: domain.AnonymousNick,
+			TopicSetAt: fixedTime,
+			At:         fixedTime,
+		}, topicInfo)
+
+		response, err := sess.Handle(ctx, subscription, protocol.TopicQuery{Channel: "#anon"})
+		require.NoError(t, err)
+		require.NoError(t, response.Err)
+		require.Equal(t, []protocol.Event{domain.TopicInfo{
+			Target:     "#anon",
+			Topic:      "quiet room",
+			TopicSetBy: domain.AnonymousNick,
+			TopicSetAt: fixedTime,
+			At:         fixedTime,
+		}}, response.Events)
 	})
 }
 
@@ -195,11 +562,9 @@ func TestSession_join_replay_names_the_members_on_a_named_channel(t *testing.T) 
 
 		require.Equal(t, []domain.Event{
 			domain.Join{
-				Target:     "#open",
-				Nick:       "botty",
-				InstanceID: botty.ID(),
-				At:         fixedTime,
-				Instance:   botty,
+				Source: domain.ClientSource(botty.ID(), "botty"),
+				Target: "#open",
+				At:     fixedTime,
 			},
 			domain.NamesReplyEvent{
 				Channel: "#open",
@@ -228,11 +593,9 @@ func TestSession_nick_reaches_a_client_in_no_channels(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{domain.NickChange{
-			OldNick:    "botty",
-			NewNick:    "renamed",
-			InstanceID: botty.ID(),
-			At:         fixedTime,
-			Instance:   botty,
+			Source:  domain.ClientSource(botty.ID(), "botty"),
+			NewNick: "renamed",
+			At:      fixedTime,
 		}}, drainDeliveries(client))
 	})
 }
@@ -263,7 +626,7 @@ func TestSession_channel_mode_change_names_its_issuer_by_id(t *testing.T) {
 
 		collectEmittedEvents(t, sess)
 
-		resp, err = sess.Handle(ctx, sess.LookupClient(protocol.ClientID(botty.ID())), protocol.ChannelMode{
+		resp, err = sess.Handle(ctx, sess.clientOwner(protocol.ClientID(botty.ID())), protocol.ChannelMode{
 			Channel: "#dev",
 			Changes: []protocol.ChannelModeChange{{Flag: domain.ModeModerated, Add: true}},
 		})
@@ -272,12 +635,11 @@ func TestSession_channel_mode_change_names_its_issuer_by_id(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, []domain.Event{domain.ChannelModeChange{
-			Target:       "#dev",
-			Flag:         domain.ModeModerated,
-			Add:          true,
-			By:           "botty",
-			ByInstanceID: botty.ID(),
-			At:           fixedTime,
+			Source: domain.ClientSource(botty.ID(), "botty"),
+			Target: "#dev",
+			Flag:   domain.ModeModerated,
+			Add:    true,
+			At:     fixedTime,
 		}}, collectEmittedEvents(t, sess))
 	})
 }

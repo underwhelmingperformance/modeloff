@@ -32,9 +32,7 @@ func NewChannelWindow(name ChannelName, created time.Time) *ChannelWindow {
 
 // Clone returns an independent copy of the window. The member list
 // and invitation set are copied, so mutating either side afterwards
-// leaves the other untouched; the `*Instance` handles inside the
-// member list stay shared, since those are the canonical identity
-// pointers every holder compares by.
+// leaves the other untouched.
 func (w *ChannelWindow) Clone() *ChannelWindow {
 	if w == nil {
 		return nil

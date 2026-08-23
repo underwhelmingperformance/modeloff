@@ -41,13 +41,10 @@ import (
 type Session interface {
 	// Subscribe registers the client with the session and returns
 	// the per-client delivery handle.
-	Subscribe(c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error)
+	Subscribe(ctx context.Context, c protocol.Client, opts protocol.SubscribeOptions) (protocol.Subscription, error)
 
 	// Handle is the wire dispatcher's entry point.
 	Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error)
-
-	// GetWindow retrieves an addressable window by name.
-	GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error)
 
 	// PokeNow asks the session to run an immediate poke pass over
 	// every channel. The session owns the poke schedule and the bus
@@ -78,6 +75,7 @@ type Store interface {
 	// the channel onto it, a NICK rewrites the nick, and the QUIT
 	// teardown deletes it.
 	SaveInstance(ctx context.Context, inst *domain.Instance) error
+	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 
 	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
 
@@ -103,6 +101,9 @@ type Store interface {
 	ListDMWindows(ctx context.Context) ([]domain.InstanceID, error)
 	AddDMWindow(ctx context.Context, peer domain.InstanceID) error
 	RemoveDMWindow(ctx context.Context, peer domain.InstanceID) error
+
+	SetLastWindow(ctx context.Context, window domain.Window) error
+	ClearLastWindow(ctx context.Context) error
 }
 
 // ReplyLog is the write handle the user-client uses to persist its
@@ -112,14 +113,14 @@ type Store interface {
 // user-client records its replies without routing them through the
 // session.
 type ReplyLog interface {
-	Record(ctx context.Context, issuer domain.InstanceID, reply domain.IssuerReply) error
+	Record(ctx context.Context, issuer domain.InstanceID, window protocol.WindowTarget, reply domain.IssuerReply) error
 }
 
 // appendInstanceReply is the store-side reply-log write the concrete
 // `*store.SQLiteStore` provides. [NewStoreReplyLog] adapts it to
 // [ReplyLog], discarding the returned row id.
 type appendInstanceReply interface {
-	AppendInstanceReply(ctx context.Context, id domain.InstanceID, reply domain.IssuerReply) (int64, error)
+	AppendInstanceReply(ctx context.Context, id domain.InstanceID, window protocol.WindowTarget, reply domain.IssuerReply) (int64, error)
 }
 
 // NewStoreReplyLog adapts a store's instance-reply write to the
@@ -132,8 +133,13 @@ type storeReplyLog struct {
 	store appendInstanceReply
 }
 
-func (l storeReplyLog) Record(ctx context.Context, issuer domain.InstanceID, reply domain.IssuerReply) error {
-	_, err := l.store.AppendInstanceReply(ctx, issuer, reply)
+func (l storeReplyLog) Record(
+	ctx context.Context,
+	issuer domain.InstanceID,
+	window protocol.WindowTarget,
+	reply domain.IssuerReply,
+) error {
+	_, err := l.store.AppendInstanceReply(ctx, issuer, window, reply)
 	return err
 }
 
@@ -142,13 +148,24 @@ func (l storeReplyLog) Record(ctx context.Context, issuer domain.InstanceID, rep
 // subscription on the owning [Session]; the chat-screen reads
 // identity through it and sends wire commands through it.
 type UserClient struct {
-	instance *domain.Instance
-	sess     Session
-	store    Store
-	replyLog ReplyLog
+	instance   *domain.Instance
+	sess       Session
+	store      Store
+	replyLog   ReplyLog
+	credential *protocol.UserCredential
 
 	mu  sync.Mutex
 	sub protocol.Subscription
+
+	autojoinMu       sync.Mutex
+	autojoinRevision uint64
+	commandsMu       sync.Mutex
+	commandsClosed   bool
+	commands         sync.WaitGroup
+	uiStateMu        sync.Mutex
+	uiStateRevision  uint64
+	uiStateLatest    map[uiStateKey]uint64
+	uiStateTail      <-chan struct{}
 
 	// restoring is set while [UserClient.JoinAutojoinChannels] is
 	// replaying the autojoin list, so the JOINs it issues do not
@@ -157,29 +174,130 @@ type UserClient struct {
 	restoring atomic.Bool
 }
 
+type uiStateKind uint8
+
+const (
+	uiStateDMWindow uiStateKind = iota
+	uiStateLastWindow
+)
+
+type uiStateKey struct {
+	kind uiStateKind
+	peer domain.InstanceID
+}
+
+var lastWindowStateKey = uiStateKey{kind: uiStateLastWindow}
+
+func dmWindowStateKey(peer domain.InstanceID) uiStateKey {
+	return uiStateKey{kind: uiStateDMWindow, peer: peer}
+}
+
+// UIStateWrite is an accepted client-state write. Wait returns when the write
+// has finished or when a newer write for the same state has superseded it.
+type UIStateWrite struct {
+	result *uiStateWriteResult
+}
+
+type uiStateWriteResult struct {
+	done chan struct{}
+	err  error
+}
+
+// Wait returns the result of the client-state write.
+func (w UIStateWrite) Wait() error {
+	<-w.result.done
+	return w.result.err
+}
+
+// UIStateSnapshot identifies a point in the user's ordered client-state
+// mutation stream.
+type UIStateSnapshot struct {
+	client   *UserClient
+	revision uint64
+}
+
+// DMWindowUnchanged reports whether the open state for peer has remained
+// unchanged since this snapshot was taken.
+func (s UIStateSnapshot) DMWindowUnchanged(peer domain.InstanceID) bool {
+	return s.stateUnchanged(dmWindowStateKey(peer))
+}
+
+func (s UIStateSnapshot) stateUnchanged(key uiStateKey) bool {
+	s.client.uiStateMu.Lock()
+	defer s.client.uiStateMu.Unlock()
+
+	return s.client.uiStateLatest[key] <= s.revision
+}
+
+const commandBookkeepingTimeout = 5 * time.Second
+
 // New returns an unattached `UserClient` for `nick`. Call
 // [UserClient.Attach] to register it with the session before any
 // command flows through it.
-func New(nick domain.Nick, sess Session, store Store, replyLog ReplyLog) *UserClient {
+func New(
+	nick domain.Nick,
+	sess Session,
+	store Store,
+	replyLog ReplyLog,
+	credential *protocol.UserCredential,
+) *UserClient {
 	return &UserClient{
-		instance: domain.NewUserInstance(nick),
-		sess:     sess,
-		store:    store,
-		replyLog: replyLog,
+		instance:      domain.NewUserInstance(nick),
+		sess:          sess,
+		store:         store,
+		replyLog:      replyLog,
+		credential:    credential,
+		uiStateLatest: make(map[uiStateKey]uint64),
 	}
 }
 
-// Instance returns the canonical user `*domain.Instance`. Identity
-// checks against this pointer are how callers recognise user-origin
-// events; the handle is stable for the process lifetime, with
-// in-place nick renames via [domain.Instance.SetNick].
-func (uc *UserClient) Instance() *domain.Instance { return uc.instance }
+// ID returns the user's stable identity. Its value is the empty user
+// sentinel, which remains a present client ID on protocol sources.
+func (uc *UserClient) ID() domain.InstanceID { return uc.instance.ID() }
 
-// Nick is shorthand for `uc.Instance().Nick()`.
+// Nick returns the user's current display nick.
 func (uc *UserClient) Nick() domain.Nick { return uc.instance.Nick() }
+
+// InChannel reports whether the user is currently a member of ch.
+func (uc *UserClient) InChannel(ch domain.ChannelName) bool {
+	return uc.instance.InChannel(ch)
+}
 
 // Identity reports the sentinel [protocol.UserClientID].
 func (uc *UserClient) Identity() protocol.ClientID { return protocol.UserClientID }
+
+// Drain closes command admission and waits for accepted commands and their
+// client-owned bookkeeping to finish.
+func (uc *UserClient) Drain(ctx context.Context) error {
+	uc.commandsMu.Lock()
+	uc.commandsClosed = true
+	uc.commandsMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		uc.commands.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (uc *UserClient) beginCommand() bool {
+	uc.commandsMu.Lock()
+	defer uc.commandsMu.Unlock()
+
+	if uc.commandsClosed {
+		return false
+	}
+
+	uc.commands.Add(1)
+	return true
+}
 
 // Send routes `cmd` through the session's dispatcher with this
 // client as the issuing actor, and keeps this client's own state in
@@ -195,19 +313,42 @@ func (uc *UserClient) Identity() protocol.ClientID { return protocol.UserClientI
 // the one place that covers them all. Doing it per call site would
 // leave whichever one was forgotten showing a channel as unread the
 // moment you arrive in it.
+//
+// A multi-target JOIN can return successful events and an execution
+// error from another target. Process the successful events before
+// returning the error because those joins have already committed.
 func (uc *UserClient) Send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
+	if !uc.beginCommand() {
+		return protocol.Response{}, protocol.ErrSubscriptionClosed
+	}
+	defer uc.commands.Done()
+
+	return uc.send(ctx, cmd)
+}
+
+func (uc *UserClient) send(ctx context.Context, cmd protocol.Command) (protocol.Response, error) {
 	resp, err := uc.sess.Handle(ctx, uc, cmd)
-	if err != nil {
+
+	joined := false
+	if _, ok := cmd.(protocol.Join); ok {
+		bookkeepingCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), commandBookkeepingTimeout,
+		)
+		defer cancel()
+
+		joined = uc.markJoinedChannelsRead(bookkeepingCtx, resp.Events)
+		if err == nil || joined {
+			uc.saveAutojoinList(bookkeepingCtx, cmd)
+		}
+
 		return resp, err
 	}
 
-	if _, ok := cmd.(protocol.Join); ok {
-		uc.markJoinedChannelsRead(ctx, resp.Events)
+	if err == nil {
+		uc.saveAutojoinList(ctx, cmd)
 	}
 
-	uc.saveAutojoinList(ctx, cmd)
-
-	return resp, nil
+	return resp, err
 }
 
 // saveAutojoinList rewrites the autojoin list after a command that
@@ -247,11 +388,49 @@ func (uc *UserClient) saveAutojoinList(ctx context.Context, cmd protocol.Command
 // autojoin list. A failed write is logged and nothing else: the
 // command that prompted it has already succeeded.
 func (uc *UserClient) writeAutojoinList(ctx context.Context) {
-	if err := uc.store.SetAutojoinChannels(ctx, uc.autojoinChannels()); err != nil {
+	uc.autojoinMu.Lock()
+	defer uc.autojoinMu.Unlock()
+
+	uc.autojoinRevision++
+	uc.writeAutojoinChannels(ctx, uc.autojoinChannels())
+}
+
+func (uc *UserClient) writeAutojoinChannels(ctx context.Context, channels []domain.ChannelName) {
+	if err := uc.store.SetAutojoinChannels(ctx, channels); err != nil {
 		slog.Default().ErrorContext(ctx, "save autojoin list",
 			"component", "userclient",
 			"error", err,
 		)
+	}
+}
+
+// ObserveKick records a server-driven removal and returns the
+// persistence work for the UI to run asynchronously. The returned
+// function does nothing if a later membership command has already
+// written a newer list.
+func (uc *UserClient) ObserveKick(kicked domain.Kicked) func(context.Context) {
+	if !kicked.SubjectIsSelf {
+		return nil
+	}
+	if uc.restoring.Load() {
+		return nil
+	}
+
+	uc.autojoinMu.Lock()
+	uc.autojoinRevision++
+	revision := uc.autojoinRevision
+	channels := uc.autojoinChannelsExcept(kicked.Target)
+	uc.autojoinMu.Unlock()
+
+	return func(ctx context.Context) {
+		uc.autojoinMu.Lock()
+		defer uc.autojoinMu.Unlock()
+
+		if uc.autojoinRevision != revision {
+			return
+		}
+
+		uc.writeAutojoinChannels(ctx, channels)
 	}
 }
 
@@ -263,6 +442,10 @@ func (uc *UserClient) writeAutojoinList(ctx context.Context) {
 // is never a membership; a DM window holds no shared state to rejoin
 // and would reach `joinAs` under its `InstanceID`-shaped name.
 func (uc *UserClient) autojoinChannels() []domain.ChannelName {
+	return uc.autojoinChannelsExcept("")
+}
+
+func (uc *UserClient) autojoinChannelsExcept(excluded domain.ChannelName) []domain.ChannelName {
 	channels := uc.instance.Channels()
 	if channels == nil {
 		return nil
@@ -272,6 +455,9 @@ func (uc *UserClient) autojoinChannels() []domain.ChannelName {
 
 	for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
 		if domain.InferChannelKind(pair.Key) != domain.KindChannel {
+			continue
+		}
+		if excluded != "" && domain.EqualChannel(pair.Key, excluded) {
 			continue
 		}
 
@@ -289,16 +475,22 @@ func (uc *UserClient) autojoinChannels() []domain.ChannelName {
 // event, both leave a channel simply absent from `events`, so
 // neither ever gets a stamp. The derivation is fail-closed: it
 // withholds a stamp by default, and grants one only for a channel
-// `events` confirms joined.
-func (uc *UserClient) markJoinedChannelsRead(ctx context.Context, events []protocol.Event) {
+// `events` confirms joined. It reports whether at least one channel
+// joined.
+func (uc *UserClient) markJoinedChannelsRead(ctx context.Context, events []protocol.Event) bool {
+	joinedAny := false
+
 	for _, ev := range events {
 		joined, ok := ev.(domain.JoinedChannel)
 		if !ok {
 			continue
 		}
 
+		joinedAny = true
 		uc.markJoinedChannelRead(ctx, joined.Channel)
 	}
+
+	return joinedAny
 }
 
 // markJoinedChannelRead stamps the read cursor for a channel this
@@ -380,11 +572,15 @@ func (uc *UserClient) Attach(ctx context.Context) error {
 	if err := uc.store.SaveInstance(ctx, uc.instance); err != nil {
 		return fmt.Errorf("register user client: %w", err)
 	}
+	canonical, err := uc.store.GetInstanceByID(ctx, uc.instance.ID())
+	if err != nil {
+		return fmt.Errorf("load registered user client: %w", err)
+	}
+	uc.instance = canonical
 
-	sub, err := uc.sess.Subscribe(uc, protocol.SubscribeOptions{
-		Instance:     uc.instance,
-		InitialModes: []domain.Mode{domain.ModeOperator},
-		EchoMessage:  true,
+	sub, err := uc.sess.Subscribe(ctx, uc, protocol.SubscribeOptions{
+		UserCredential: uc.credential,
+		EchoMessage:    true,
 	})
 	if err != nil {
 		return fmt.Errorf("attach user client: %w", err)
@@ -402,6 +598,41 @@ func (uc *UserClient) Subscription() protocol.Subscription {
 	defer uc.mu.Unlock()
 
 	return uc.sub
+}
+
+// Window returns the user's current context for an open IRC window.
+func (uc *UserClient) Window(ctx context.Context, name domain.ChannelName) (protocol.WindowContext, error) {
+	uc.mu.Lock()
+	sub := uc.sub
+	uc.mu.Unlock()
+	if sub == nil {
+		return nil, fmt.Errorf("user client is not attached")
+	}
+
+	target := protocol.WindowTargetForKey(name)
+	if target == nil {
+		return nil, fmt.Errorf("window %q has no IRC conversation", name)
+	}
+
+	guard, err := sub.GuardWindow(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+
+	return guard.Context(ctx)
+}
+
+// DirectoryChannels returns the channel directory visible to the
+// attached user.
+func (uc *UserClient) DirectoryChannels(ctx context.Context) ([]domain.ChannelDirectoryEntry, error) {
+	uc.mu.Lock()
+	sub := uc.sub
+	uc.mu.Unlock()
+	if sub == nil {
+		return nil, fmt.Errorf("user client is not attached")
+	}
+
+	return sub.DirectoryChannels(ctx)
 }
 
 // Join issues a wire JOIN as the user-actor. The read cursor moves
@@ -424,7 +655,12 @@ func (uc *UserClient) Part(ctx context.Context, ch domain.ChannelName, reason st
 // [protocol.TargetForWindow] turns the typed window into the target
 // the server resolves.
 func (uc *UserClient) SendMessage(ctx context.Context, window domain.Window, body string) (domain.Message, error) {
-	resp, err := uc.Send(ctx, protocol.PrivMsg{Target: protocol.TargetForWindow(window), Body: body})
+	target, ok := protocol.TargetForWindow(window)
+	if !ok {
+		return domain.Message{}, fmt.Errorf("window %q has no message target", window.Name())
+	}
+
+	resp, err := uc.Send(ctx, protocol.PrivMsg{Target: target, Body: body})
 	if err != nil {
 		return domain.Message{}, err
 	}
@@ -444,7 +680,12 @@ func (uc *UserClient) SendMessage(ctx context.Context, window domain.Window, bod
 // SendAction issues a wire ACTION (`/me`) as the user-actor. It
 // addresses `window` exactly as [UserClient.SendMessage] does.
 func (uc *UserClient) SendAction(ctx context.Context, window domain.Window, body string) (domain.Message, error) {
-	resp, err := uc.Send(ctx, protocol.Action{Target: protocol.TargetForWindow(window), Body: body})
+	target, ok := protocol.TargetForWindow(window)
+	if !ok {
+		return domain.Message{}, fmt.Errorf("window %q has no message target", window.Name())
+	}
+
+	resp, err := uc.Send(ctx, protocol.Action{Target: target, Body: body})
 	if err != nil {
 		return domain.Message{}, err
 	}
@@ -520,6 +761,11 @@ func (uc *UserClient) JoinedAt(ch domain.ChannelName) time.Time {
 // far, and a process that ended there would come back to a list
 // missing the tail it never reached.
 func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
+	if !uc.beginCommand() {
+		return protocol.ErrSubscriptionClosed
+	}
+	defer uc.commands.Done()
+
 	tracer := otel.GetTracerProvider().Tracer("github.com/laney/modeloff/internal/userclient")
 	ctx, span := tracer.Start(ctx, "userclient.autojoin",
 		trace.WithAttributes(attribute.String(observability.AttrOperation, "userclient.autojoin")),
@@ -549,21 +795,11 @@ func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 
 	var failed int
 	for chunk := range slices.Chunk(channels, protocol.MaxJoinTargets) {
-		resp, sendErr := uc.Send(ctx, protocol.Join{Channels: chunk})
-		if sendErr != nil {
-			failed += len(chunk)
-			slog.Default().ErrorContext(ctx, "autojoin channels",
-				"component", "userclient",
-				"channels", chunk,
-				"error", sendErr,
-			)
-			continue
-		}
-
-		joined := 0
+		resp, sendErr := uc.send(ctx, protocol.Join{Channels: chunk})
+		joined := make(map[domain.ChannelKey]struct{})
 		for _, ev := range resp.Events {
-			if _, ok := ev.(domain.JoinedChannel); ok {
-				joined++
+			if event, ok := ev.(domain.JoinedChannel); ok {
+				joined[domain.KeyForChannel(event.Channel)] = struct{}{}
 				continue
 			}
 
@@ -573,7 +809,27 @@ func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 			)
 		}
 
-		failed += len(chunk) - joined
+		var unconfirmed []domain.ChannelName
+		var confirmed []domain.ChannelName
+		for _, channel := range chunk {
+			if _, ok := joined[domain.KeyForChannel(channel)]; !ok {
+				unconfirmed = append(unconfirmed, channel)
+				continue
+			}
+
+			confirmed = append(confirmed, channel)
+		}
+		failed += len(unconfirmed)
+
+		if sendErr != nil {
+			slog.Default().ErrorContext(ctx, "autojoin channels",
+				"component", "userclient",
+				"requested_channels", chunk,
+				"confirmed_channels", confirmed,
+				"unconfirmed_channels", unconfirmed,
+				"error", sendErr,
+			)
+		}
 	}
 
 	span.SetAttributes(
@@ -630,18 +886,87 @@ func (uc *UserClient) DMWindows(ctx context.Context) ([]domain.InstanceID, error
 	return uc.store.ListDMWindows(ctx)
 }
 
-// OpenDMWindow records that the user has a DM window open with
-// `peer`, so a later run reopens it. Idempotent.
-func (uc *UserClient) OpenDMWindow(ctx context.Context, peer domain.InstanceID) error {
-	return uc.store.AddDMWindow(ctx, peer)
+// UIStateSnapshot returns the current point in the ordered client-state
+// mutation stream.
+func (uc *UserClient) UIStateSnapshot() UIStateSnapshot {
+	uc.uiStateMu.Lock()
+	defer uc.uiStateMu.Unlock()
+
+	return UIStateSnapshot{client: uc, revision: uc.uiStateRevision}
 }
 
-// CloseDMWindow drops `peer` from the set of open DM windows. The
-// conversation itself survives: the event log keeps both directions
-// of it, and messaging the counterpart again reopens the window with
-// its history intact. Idempotent.
-func (uc *UserClient) CloseDMWindow(ctx context.Context, peer domain.InstanceID) error {
-	return uc.store.RemoveDMWindow(ctx, peer)
+// RecordDMWindowOpen records that the user has a DM window open with peer.
+func (uc *UserClient) RecordDMWindowOpen(peer domain.InstanceID) UIStateWrite {
+	return uc.scheduleUIStateWrite(dmWindowStateKey(peer), func(ctx context.Context) error {
+		return uc.store.AddDMWindow(ctx, peer)
+	})
+}
+
+// RecordDMWindowClosed removes peer from the set of open DM windows. The
+// conversation remains in the event log.
+func (uc *UserClient) RecordDMWindowClosed(peer domain.InstanceID) UIStateWrite {
+	return uc.scheduleUIStateWrite(dmWindowStateKey(peer), func(ctx context.Context) error {
+		return uc.store.RemoveDMWindow(ctx, peer)
+	})
+}
+
+// RecordLastWindow records the window the user last viewed. A nil window
+// clears the preference; the empty name remains the user's valid self-DM.
+func (uc *UserClient) RecordLastWindow(window domain.Window) UIStateWrite {
+	var selected domain.Window
+	if window != nil {
+		selected = domain.WindowKey(window.Name())
+	}
+
+	return uc.scheduleUIStateWrite(lastWindowStateKey, func(ctx context.Context) error {
+		if selected == nil {
+			return uc.store.ClearLastWindow(ctx)
+		}
+
+		return uc.store.SetLastWindow(ctx, selected)
+	})
+}
+
+func (uc *UserClient) scheduleUIStateWrite(
+	key uiStateKey,
+	write func(context.Context) error,
+) UIStateWrite {
+	result := &uiStateWriteResult{done: make(chan struct{})}
+	if !uc.beginCommand() {
+		result.err = protocol.ErrSubscriptionClosed
+		close(result.done)
+		return UIStateWrite{result: result}
+	}
+
+	uc.uiStateMu.Lock()
+	uc.uiStateRevision++
+	revision := uc.uiStateRevision
+	uc.uiStateLatest[key] = revision
+	predecessor := uc.uiStateTail
+	uc.uiStateTail = result.done
+	uc.uiStateMu.Unlock()
+
+	go func() {
+		defer uc.commands.Done()
+		defer close(result.done)
+
+		if predecessor != nil {
+			<-predecessor
+		}
+
+		uc.uiStateMu.Lock()
+		current := uc.uiStateLatest[key]
+		uc.uiStateMu.Unlock()
+		if current != revision {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), commandBookkeepingTimeout)
+		defer cancel()
+		result.err = write(ctx)
+	}()
+
+	return UIStateWrite{result: result}
 }
 
 // RecordReply persists one of the user's own point-to-point replies
@@ -651,9 +976,13 @@ func (uc *UserClient) CloseDMWindow(ctx context.Context, peer domain.InstanceID)
 // future restore or inspector reads; the user does not see it again
 // this session. Best-effort: a failed write is logged, since the
 // reply was already rendered live.
-func (uc *UserClient) RecordReply(ctx context.Context, reply domain.IssuerReply) {
+func (uc *UserClient) RecordReply(
+	ctx context.Context,
+	window protocol.WindowTarget,
+	reply domain.IssuerReply,
+) {
 	id := domain.InstanceID(uc.Identity())
-	if err := uc.replyLog.Record(ctx, id, reply); err != nil {
+	if err := uc.replyLog.Record(ctx, id, window, reply); err != nil {
 		slog.Default().ErrorContext(ctx, "record user reply",
 			"component", "userclient",
 			"error", err,

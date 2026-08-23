@@ -88,22 +88,22 @@ func (s *Session) checkSendGates(ctx context.Context, actor *domain.Instance, ch
 // what admits the client it is adding, so the server does not have
 // to write an invitation nobody issued into the channel's list
 // first.
-func (s *Session) checkJoinGates(window *domain.ChannelWindow, actor *domain.Instance, kind joinKind, key string) error {
+func (s *Session) checkJoinGates(window *domain.ChannelWindow, actor *domain.Instance, kind joinKind, key string) (bool, error) {
 	if window.Modes.Key != "" && key != window.Modes.Key {
-		return domain.ChannelKeyMismatchError{Channel: window.Name(), At: s.now()}
+		return false, domain.ChannelKeyMismatchError{Channel: window.Name(), At: s.now()}
 	}
 
 	if window.Modes.UserLimit > 0 && window.Members.Len() >= window.Modes.UserLimit {
-		return domain.ChannelFullError{Channel: window.Name(), At: s.now()}
+		return false, domain.ChannelFullError{Channel: window.Name(), At: s.now()}
 	}
 
 	invited := window.Invitations.Remove(actor.ID())
 
 	if window.Modes.InviteOnly && !invited && kind != operatorJoin {
-		return domain.ChannelInviteOnlyError{Channel: window.Name(), At: s.now()}
+		return false, domain.ChannelInviteOnlyError{Channel: window.Name(), At: s.now()}
 	}
 
-	return nil
+	return invited, nil
 }
 
 // joinKind says on whose authority a join is happening, which is
@@ -153,8 +153,9 @@ func (s *Session) requireChannelOp(actor *domain.Instance, window *domain.Channe
 
 // channelVisibleTo reports whether `issuer` may be told that a
 // channel with these modes and this name exists. `LIST`, `WHOIS` and
-// `NAMES` all give this one answer, so a channel cannot be hidden
-// from one of them and revealed by another.
+// `NAMES` all apply this predicate. WHOIS also omits an anonymous
+// channel from another actor's membership list; the channel can be
+// visible without its occupants being visible.
 //
 // A channel carrying neither `+s` nor `+p` is public and visible to
 // anyone (RFC 2811 §4.2.5, §4.2.6). Either flag hides it, with two
@@ -195,6 +196,6 @@ func (s *Session) actorHasServerOper(actor *domain.Instance) bool {
 // [protocol.Oper] elevation written to the serverClient is honoured
 // without the issuing client object changing.
 func (s *Session) idHasServerOper(id protocol.ClientID) bool {
-	sc := s.lookupClientHandle(id)
+	sc := s.activeClientHandle(id)
 	return sc != nil && sc.HasMode(domain.ModeOperator)
 }

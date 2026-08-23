@@ -33,10 +33,10 @@ func stripLine(s string) string {
 func TestRenderChannelEvent_by_kind(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
-	message := domain.Message{Target: "#test", From: "alice", Body: "hello", At: at}
+	message := domain.Message{Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hello", At: at}
 	notice := domain.SystemNotice{Target: "#test", Text: "OpenRouter API key saved.", At: at}
-	join := domain.Join{Target: "#test", Nick: "alice", At: at}
-	invited := domain.Invited{Target: "#test", Nick: "alice", By: "laney", At: at}
+	join := domain.Join{Source: domain.LegacyClientSource("alice"), Target: "#test", At: at}
+	invited := domain.Invited{Source: domain.LegacyClientSource("laney"), Target: "#test", Invitee: "alice", At: at}
 
 	tests := map[string]struct {
 		kind  domain.ChannelKind
@@ -81,7 +81,6 @@ func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
 	whois := domain.Whois{
-		Target:   "#dev",
 		Nick:     "alice",
 		ModelID:  "anthropic/claude-3-haiku",
 		Persona:  "a cheerful pirate",
@@ -116,20 +115,21 @@ func TestChannelModeChangeText(t *testing.T) {
 		want  string
 	}{
 		"boolean": {
-			event: domain.ChannelModeChange{
-				Target: "#dev", Flag: domain.ModeInviteOnly, Add: true, By: "laney", At: at,
-			},
+			event: domain.ChannelModeChange{Source: domain.LegacyClientSource(
+				"laney"), Target: "#dev", Flag: domain.ModeInviteOnly, Add: true, At: at},
+
 			want: "laney sets mode +i on #dev",
 		},
 		"member": {
-			event: domain.ChannelModeChange{
-				Target: "#dev", Nick: "botty", Flag: domain.ModeOperator, Add: true, By: "laney", At: at,
-			},
+			event: domain.ChannelModeChange{Source: domain.LegacyClientSource(
+				"laney"), Target: "#dev", Subject: "botty", Flag: domain.ModeOperator, Add: true, At: at},
+
 			want: "laney sets mode +o botty on #dev",
 		},
 		"parametric": {
 			event: domain.ChannelModeChange{
-				Target: "#dev", Param: "20", Flag: domain.ModeUserLimit, Add: true, By: "laney", At: at,
+				Source: domain.LegacyClientSource("laney"), Target: "#dev",
+				Param: "20", Flag: domain.ModeUserLimit, Add: true, At: at,
 			},
 			want: "laney sets mode +l 20 on #dev",
 		},
@@ -157,9 +157,8 @@ func TestRenderWhoisEvent_human_user_has_no_dangling_line(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
 	whois := domain.Whois{
-		Target: "#dev",
-		Nick:   "laney",
-		At:     at,
+		Nick: "laney",
+		At:   at,
 	}
 
 	want := "*** laney is the human user"
@@ -167,10 +166,7 @@ func TestRenderWhoisEvent_human_user_has_no_dangling_line(t *testing.T) {
 }
 
 func TestRenderMessage_anonymous_body(t *testing.T) {
-	message := domain.Message{
-		Target: "#dev", From: domain.AnonymousNick, InstanceID: "alice-instance",
-		Body: "hi", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC),
-	}
+	message := domain.Message{Source: domain.AnonymousSource(), Target: "#dev", Body: "hi", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
 
 	got := renderMessage(message, nil, "testuser", noTimestamp(), language.BritishEnglish)
 	require.Equal(t, "<anonymous> hi", stripLine(got))
@@ -183,16 +179,16 @@ func TestRenderMessage_anonymous_body(t *testing.T) {
 // the case under `go test`, so a rendered line carries no ANSI codes
 // to compare and cannot show whether the colour varies by sender.
 func TestNickStyleFor_anonymous_lines_share_one_colour(t *testing.T) {
-	alice := domain.Message{From: domain.AnonymousNick, InstanceID: "alice-instance"}
-	bob := domain.Message{From: domain.AnonymousNick, InstanceID: "bob-instance"}
+	alice := domain.Message{Source: domain.AnonymousSource()}
+	bob := domain.Message{Source: domain.AnonymousSource()}
 
 	require.Equal(t, nickStyleFor(alice).GetForeground(), nickStyleFor(bob).GetForeground(),
 		"two anonymous senders with different instance ids must share one nick colour")
 }
 
 func TestNickStyleFor_named_lines_vary_by_instance(t *testing.T) {
-	alice := domain.Message{From: "alice", InstanceID: "alice-instance"}
-	bob := domain.Message{From: "bob", InstanceID: "bob-instance"}
+	alice := domain.Message{Source: domain.ClientSource("alice-instance", "alice")}
+	bob := domain.Message{Source: domain.ClientSource("bob-instance", "bob")}
 
 	require.NotEqual(t, nickStyleFor(alice).GetForeground(), nickStyleFor(bob).GetForeground())
 }
@@ -240,8 +236,8 @@ func TestRenderMessage_exempts_users_own_instance_from_highlight(t *testing.T) {
 	// InstanceID "" is the user's own instance (protocol.UserClientID's
 	// sentinel); its messages must never trigger the highlight ribbon
 	// even when the body contains a configured highlight word.
-	own := domain.Message{From: "laney", InstanceID: "", Body: "start now", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
-	other := domain.Message{From: "botty", InstanceID: "botty-instance", Body: "start now", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
+	own := domain.Message{Source: domain.ClientSource("", "laney"), Body: "start now", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
+	other := domain.Message{Source: domain.ClientSource("botty-instance", "botty"), Body: "start now", At: time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)}
 
 	gotOwn := renderMessage(own, []string{"start"}, "laney", noTimestamp(), language.BritishEnglish)
 	gotOther := renderMessage(other, []string{"start"}, "laney", noTimestamp(), language.BritishEnglish)

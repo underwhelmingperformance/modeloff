@@ -14,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/store"
 )
 
 // Handle is the single entry point through which every protocol
@@ -23,11 +24,19 @@ import (
 // method (`joinAs`, `partAs`, …).
 //
 // Handling is serial: each handler runs its state-touching work on
-// the session's command loop via [Session.onWriter], one command at
-// a time in arrival order, so a command sees the full effect of
-// every command before it and none of any command after it. The
-// call stays synchronous for the caller: `Handle` returns that
-// command's own `Response`.
+// the session's command loop via [Session.onGuardedWriter], one
+// command at a time in arrival order, so a command sees the full
+// effect of every command before it and none of any command after
+// it. The call stays synchronous for the caller: `Handle` returns
+// that command's own `Response`.
+//
+// A client that sent the command under a window guard ([windowGuard.Send])
+// has that guard checked on the loop, immediately before the handler
+// runs. `Handle` reads it once, here, and passes it to the dispatch
+// as an argument. Nothing else inherits it: the teardown of a peer
+// whose send queue this command's fan-out overflowed, and the
+// cleanup [Session.discardModel] runs, are the session's own work
+// and go through [Session.onWriter].
 //
 // Every command is first billed to the issuing connection's flood
 // penalty timer (RFC 1459 §8.10). A client sending faster than the
@@ -44,6 +53,11 @@ import (
 // non-nil second return is tagged with `ErrorKindDispatch` since
 // the underlying child span carries the finer-grained kind.
 func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error) {
+	if !s.beginHandler() {
+		return protocol.Response{}, ErrSessionClosed
+	}
+	defer s.handlers.Done()
+
 	var resp protocol.Response
 
 	err := (observability.SpanRunner{
@@ -52,12 +66,19 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 	}).Run(ctx, "session.handle", []attribute.KeyValue{
 		attribute.String("protocol.command", cmd.Name()),
 	}, func(ctx context.Context, span trace.Span) error {
+		if _, err := s.resolveClientActor(c); err != nil {
+			return err
+		}
+
 		if delay := s.throttleCommand(ctx, c); delay > 0 {
 			span.SetAttributes(attribute.Int64("flood.delay_ms", delay.Milliseconds()))
 		}
 
-		r, dispatchErr := s.dispatchCommand(ctx, c, cmd)
+		r, dispatchErr := s.dispatchCommand(ctx, c, commandWindowGuard(ctx), cmd)
 		resp = r
+		if dispatchErr == nil {
+			resp.Events = s.projectResponseEvents(ctx, c, resp.Events)
+		}
 
 		switch {
 		case dispatchErr != nil:
@@ -81,48 +102,93 @@ func (s *Session) Handle(ctx context.Context, c protocol.Client, cmd protocol.Co
 	return resp, err
 }
 
+func (s *Session) beginHandler() bool {
+	s.handlersMu.Lock()
+	defer s.handlersMu.Unlock()
+
+	if s.handlersClosed {
+		return false
+	}
+
+	s.handlers.Add(1)
+
+	return true
+}
+
+func (s *Session) projectResponseEvents(
+	ctx context.Context,
+	c protocol.Client,
+	events []protocol.Event,
+) []protocol.Event {
+	if len(events) == 0 {
+		return events
+	}
+
+	recipient := s.lookupClientHandle(c.Identity())
+	if recipient == nil {
+		return nil
+	}
+
+	projected := make([]protocol.Event, 0, len(events))
+	for _, event := range events {
+		view, _ := s.projectEventForRecipient(ctx, event, recipient, nil, nil, nil)
+		if view != nil {
+			projected = append(projected, view)
+		}
+	}
+
+	return projected
+}
+
 // dispatchCommand routes a [protocol.Command] to its per-command
 // handler. Split out from [Session.Handle] so the span-bracketing
 // runner sees the dispatch's `(resp, err)` shape on a single call.
-func (s *Session) dispatchCommand(ctx context.Context, c protocol.Client, cmd protocol.Command) (protocol.Response, error) {
+func (s *Session) dispatchCommand(
+	ctx context.Context,
+	c protocol.Client,
+	guard protocol.WindowGuard,
+	cmd protocol.Command,
+) (protocol.Response, error) {
 	switch cmd := cmd.(type) {
 	case protocol.Join:
-		return s.handleJoin(ctx, c, cmd)
+		return s.handleJoin(ctx, c, guard, cmd)
 	case protocol.Part:
-		return s.handlePart(ctx, c, cmd)
+		return s.handlePart(ctx, c, guard, cmd)
 	case protocol.PrivMsg:
-		return s.handlePrivMsg(ctx, c, cmd)
+		return s.handlePrivMsg(ctx, c, guard, cmd)
 	case protocol.Action:
-		return s.handleAction(ctx, c, cmd)
+		return s.handleAction(ctx, c, guard, cmd)
 	case protocol.Topic:
-		return s.handleTopic(ctx, c, cmd)
+		return s.handleTopic(ctx, c, guard, cmd)
+	case protocol.TopicQuery:
+		return s.handleTopicQuery(ctx, c, guard, cmd)
 	case protocol.Invite:
-		return s.handleInvite(ctx, c, cmd)
+		return s.handleInvite(ctx, c, guard, cmd)
 	case protocol.Kick:
-		return s.handleKick(ctx, c, cmd)
+		return s.handleKick(ctx, c, guard, cmd)
 	case protocol.Nick:
-		return s.handleNick(ctx, c, cmd)
+		return s.handleNick(ctx, c, guard, cmd)
 	case protocol.Whois:
-		return s.handleWhois(ctx, c, cmd)
+		return s.handleWhois(ctx, c, guard, cmd)
 	case protocol.List:
-		return s.handleList(ctx, c)
+		return s.handleList(ctx, c, guard, cmd)
 	case protocol.AddModel:
-		return s.handleAddModel(ctx, c, cmd)
+		return s.handleAddModel(ctx, c, guard, cmd)
 	case protocol.Quit:
-		return s.handleQuit(ctx, c, cmd)
+		return s.handleQuit(ctx, c, guard, cmd)
 	case protocol.Kill:
-		return s.handleKill(ctx, c, cmd)
+		return s.handleKill(ctx, c, guard, cmd)
 	case protocol.Oper:
-		return s.handleOper(ctx, c, cmd)
+		return s.handleOper(ctx, c, guard, cmd)
 	case protocol.ChannelMode:
-		return s.handleChannelMode(ctx, c, cmd)
+		return s.handleChannelMode(ctx, c, guard, cmd)
 	default:
 		return protocol.Response{}, fmt.Errorf("unknown command %T", cmd)
 	}
 }
 
-func (s *Session) handleChannelMode(ctx context.Context, c protocol.Client, cmd protocol.ChannelMode) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleChannelMode(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.ChannelMode) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -138,15 +204,15 @@ func (s *Session) handleChannelMode(ctx context.Context, c protocol.Client, cmd 
 // the requesting client, flag is [domain.ModeOperator]. The
 // emission shape matches the bootstrap path's promotion of the
 // user-client.
-func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protocol.Oper) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleOper(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Oper) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		if !s.operAuth(c, cmd.User, cmd.Password) {
 			return protocol.Response{Err: domain.OperFailedError{At: s.now()}}, nil
 		}
 
-		sc := s.lookupClientHandle(c.Identity())
-		if sc == nil {
-			return protocol.Response{}, fmt.Errorf("oper: client %q not registered", c.Identity())
+		sc := s.activeClientHandle(c.Identity())
+		if sc == nil || sc.owner != c {
+			return protocol.Response{}, fmt.Errorf("oper: client %q not connected", c.Identity())
 		}
 
 		s.setUserModeAs(ctx, "", sc, domain.ModeOperator, true)
@@ -178,8 +244,8 @@ func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protoco
 // know which channels joined and which did not reads `Events`. Store
 // and internal failures use the handler's second return and do not
 // masquerade as per-target IRC refusals.
-func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protocol.Join) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleJoin(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Join) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -201,6 +267,9 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 
 		for _, ch := range cmd.Channels {
 			joined, joinErr := s.joinAs(ctx, actor, clientJoin, ch, cmd.Key)
+			if joined != "" {
+				events = append(events, domain.JoinedChannel{Channel: joined})
+			}
 			if joinErr != nil {
 				if commandRefusal(joinErr) {
 					refusals = append(refusals, joinErr)
@@ -209,20 +278,20 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 						events = append(events, ev)
 					}
 				} else {
-					executionFailures = append(executionFailures, joinErr)
+					executionFailures = append(executionFailures,
+						protocol.JoinExecutionError{Channel: ch, Err: joinErr})
 				}
 				continue
 			}
 
-			events = append(events, domain.JoinedChannel{Channel: joined})
 		}
 
 		return protocol.Response{Events: events, Err: errors.Join(refusals...)}, errors.Join(executionFailures...)
 	})
 }
 
-func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protocol.Part) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handlePart(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Part) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -232,8 +301,8 @@ func (s *Session) handlePart(ctx context.Context, c protocol.Client, cmd protoco
 	})
 }
 
-func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd protocol.PrivMsg) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.PrivMsg) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -257,8 +326,8 @@ func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd prot
 	})
 }
 
-func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd protocol.Action) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleAction(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Action) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -320,7 +389,7 @@ func (s *Session) resolveMsgTarget(target protocol.MsgTarget) (domain.ChannelNam
 		return s.dmKeyFor(s.lookupClientByNick(nick), t)
 
 	case protocol.ClientTarget:
-		return s.dmKeyFor(s.lookupClientHandle(protocol.ClientID(t)), t)
+		return s.dmKeyFor(s.activeClientHandle(protocol.ClientID(t)), t)
 	}
 
 	return "", fmt.Errorf("unknown message target %T", target)
@@ -336,8 +405,8 @@ func (s *Session) dmKeyFor(sc *serverClient, addressed protocol.MsgTarget) (doma
 	return domain.ChannelName(sc.instance.ID()), nil
 }
 
-func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protocol.Topic) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleTopic(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Topic) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -347,41 +416,105 @@ func (s *Session) handleTopic(ctx context.Context, c protocol.Client, cmd protoc
 	})
 }
 
-// handleInvite delegates to [Session.inviteAs] and lands the
-// resulting envelope in `Response.Events` as the inviter's
-// RPL_INVITING-equivalent. The chat-screen's `sendCommand` reads
-// `Response.Events[0]` for synchronous numeric-reply payloads
-// (see `internal/ui/chatcmd.sendCommand` and the `WhoisCommand`
-// pattern). A typed dispatcher failure still goes through
-// [commandResult].
-//
-// A refused INVITE against an unknown nick yields a
-// [domain.SystemNotice] in place of the `RPL_INVITING` envelope; that
-// notice is an [domain.IssuerReply], so it is filed to the issuer's
-// reply log and a model re-experiences the refusal on replay. The
-// success-case [domain.Invited] is channel activity, not an
-// issuer reply, so it is not filed here.
-func (s *Session) handleInvite(ctx context.Context, c protocol.Client, cmd protocol.Invite) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleTopicQuery(
+	ctx context.Context,
+	c protocol.Client,
+	guard protocol.WindowGuard,
+	cmd protocol.TopicQuery,
+) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
 		}
 
-		event, err := s.inviteAs(ctx, actor, cmd.Nick, cmd.Channel)
+		window, err := s.loadChannelWindow(ctx, cmd.Channel)
 		if err != nil {
 			return commandResult(err)
 		}
+		if !window.Members.HasInstance(actor) || !actor.InChannel(window.Name()) {
+			return commandResult(domain.NotOnChannelError{
+				Channel: window.Name(),
+				Command: "TOPIC",
+				At:      s.now(),
+			})
+		}
 
-		events := []domain.ProtocolEvent{event}
-		s.persistInstanceReplies(ctx, c, events)
+		setBy := window.TopicSetBy
+		if window.Modes.Anonymous && setBy != "" {
+			setBy = domain.AnonymousNick
+		}
+
+		topic := domain.TopicInfo{
+			Target:     window.Name(),
+			Topic:      window.Topic,
+			TopicSetBy: setBy,
+			TopicSetAt: window.TopicSetAt,
+			At:         s.now(),
+		}
+		events := []domain.ProtocolEvent{topic}
+		s.persistInstanceReplies(ctx, c, protocol.ChannelWindowTarget(window.Name()), events)
 
 		return protocol.Response{Events: events}, nil
 	})
 }
 
-func (s *Session) handleKick(ctx context.Context, c protocol.Client, cmd protocol.Kick) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+// handleInvite delegates to [Session.inviteAs] and returns a separate
+// [domain.Inviting] value as the issuer's RPL_INVITING reply. Callers
+// structurally match the complete response for synchronous numeric
+// payloads. A typed dispatcher failure still goes through
+// [commandResult].
+//
+// A refused INVITE against an unknown nick returns its typed error and
+// a [domain.SystemNotice]. The notice is an [domain.IssuerReply], so it
+// is filed to the issuer's reply log and a model re-experiences the
+// refusal on replay. The success-case [domain.Inviting] is filed under
+// the issuing window in the same way.
+func (s *Session) handleInvite(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Invite) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
+		actor, err := s.resolveClientActor(c)
+		if err != nil {
+			return protocol.Response{}, err
+		}
+		issuerWindow, err := s.replyWindow(ctx, actor, cmd.Window, cmd.Name())
+		if err != nil {
+			return commandResult(err)
+		}
+
+		event, err := s.inviteAs(ctx, actor, cmd.Nick, cmd.Channel)
+
+		issuerEvent := event
+		switch event := event.(type) {
+		case domain.Invited:
+			issuerEvent = domain.Inviting{
+				Target: event.Target, Invitee: event.Invitee, At: event.At,
+			}
+			if issuerWindow == nil {
+				issuerWindow = protocol.ChannelWindowTarget(event.Target)
+			}
+		case domain.SystemNotice:
+			if issuerWindow == nil {
+				issuerWindow = protocol.ChannelWindowTarget(event.Target)
+			}
+		}
+		var events []domain.ProtocolEvent
+		if issuerEvent != nil {
+			events = []domain.ProtocolEvent{issuerEvent}
+			s.persistInstanceReplies(ctx, c, issuerWindow, events)
+		}
+		if err != nil {
+			response, executionErr := commandResult(err)
+			response.Events = events
+
+			return response, executionErr
+		}
+
+		return protocol.Response{Events: events}, nil
+	})
+}
+
+func (s *Session) handleKick(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Kick) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -427,8 +560,8 @@ func (s *Session) resolveConnectedNick(nick domain.Nick) (*domain.Instance, erro
 	return sc.instance, nil
 }
 
-func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protocol.Nick) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleNick(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Nick) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
@@ -451,11 +584,15 @@ func (s *Session) handleNick(ctx context.Context, c protocol.Client, cmd protoco
 // issuer may not see. The filter is [Session.channelVisibleTo], the
 // same one `LIST` answers under, so a `+s` channel cannot be hidden
 // from the directory and then read straight back out of a WHOIS.
-func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protocol.Whois) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleWhois(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Whois) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		issuer, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
+		}
+		window, err := s.replyWindow(ctx, issuer, cmd.Window, cmd.Name())
+		if err != nil {
+			return commandResult(err)
 		}
 
 		inst, err := s.resolveConnectedNick(cmd.Nick)
@@ -464,7 +601,6 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protoc
 		}
 
 		whois := domain.Whois{
-			Target:   cmd.Channel,
 			Nick:     inst.Nick(),
 			ModelID:  inst.ModelID,
 			Persona:  inst.Persona(),
@@ -473,7 +609,7 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, cmd protoc
 		}
 
 		events := []domain.ProtocolEvent{whois}
-		s.persistInstanceReplies(ctx, c, events)
+		s.persistInstanceReplies(ctx, c, window, events)
 
 		return protocol.Response{Events: events}, nil
 	})
@@ -497,6 +633,9 @@ func (s *Session) whoisChannels(ctx context.Context, issuer, target *domain.Inst
 		if !ok {
 			continue
 		}
+		if modes.Anonymous && issuer != target {
+			continue
+		}
 
 		if s.channelVisibleTo(issuer, pair.Key, modes) {
 			visible = append(visible, pair.Key)
@@ -513,14 +652,18 @@ func (s *Session) whoisChannels(ctx context.Context, issuer, target *domain.Inst
 // [Session.channelVisibleTo], applied in
 // [Session.DirectoryChannels], and it is the same one `WHOIS`
 // answers under.
-func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.Response, error) {
-	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+func (s *Session) handleList(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.List) (protocol.Response, error) {
+	return s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		issuer, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
 		}
+		window, err := s.replyWindow(ctx, issuer, cmd.Window, cmd.Name())
+		if err != nil {
+			return commandResult(err)
+		}
 
-		channels, err := s.DirectoryChannels(ctx, issuer)
+		channels, err := s.directoryChannels(ctx, issuer)
 		if err != nil {
 			return commandResult(err)
 		}
@@ -539,7 +682,7 @@ func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.R
 		// The directory rows are the lookup result the model remembers; the
 		// closing ListEnd is a wire terminator that carries no transcript
 		// line, so it stays out of the reply log.
-		s.persistInstanceReplies(ctx, c, events)
+		s.persistInstanceReplies(ctx, c, window, events)
 
 		events = append(events, domain.ListEnd{At: now})
 
@@ -547,10 +690,48 @@ func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.R
 	})
 }
 
+func (s *Session) replyWindow(
+	ctx context.Context,
+	issuer *domain.Instance,
+	target protocol.WindowTarget,
+	command string,
+) (protocol.WindowTarget, error) {
+	if target == nil {
+		return nil, nil
+	}
+	if channel, ok := protocol.ChannelWindowName(target); ok {
+		window, err := s.loadChannelWindow(ctx, channel)
+		if errors.Is(err, store.ErrNoSuchChannel) {
+			return nil, domain.NotOnChannelError{Channel: channel, Command: command, At: s.now()}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !window.Members.HasInstance(issuer) || !issuer.InChannel(window.Name()) {
+			return nil, domain.NotOnChannelError{
+				Channel: window.Name(), Command: command, At: s.now(),
+			}
+		}
+
+		return protocol.ChannelWindowTarget(window.Name()), nil
+	}
+	if peer, ok := protocol.DirectWindowPeer(target); ok {
+		if s.activeClientHandle(protocol.ClientID(peer)) == nil {
+			return nil, fmt.Errorf(
+				"%s reply window %q: %w", command, peer, protocol.ErrWindowAuthorityChanged,
+			)
+		}
+
+		return target, nil
+	}
+
+	return nil, fmt.Errorf("%s reply window: %w: %T", command, protocol.ErrInvalidWindowTarget, target)
+}
+
 // handleQuit dispatches a QUIT: [Session.quitAs] broadcasts it to
 // the channels the actor was on and unwinds its membership, and the
-// issuing client's model-client is then released via
-// [Session.releaseClient].
+// issuing client's connection is then revoked. Its queued QUIT and
+// terminal ERROR drain before the subscription and model-client close.
 //
 // A model can end its own connection: the `quit` tool runs on that
 // model's dispatch goroutine, so this handler is reached from
@@ -560,15 +741,18 @@ func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.R
 // the dispatch goroutine it ends may be queued behind that loop.
 // Once the QUIT has been broadcast, a later persistence failure does
 // not keep the connection alive. The handler still returns that
-// failure after releasing the client.
-func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protocol.Quit) (protocol.Response, error) {
-	if !s.externalHandlers.enter() {
-		return protocol.Response{}, ErrSessionClosed
+// failure after starting the terminal drain.
+func (s *Session) handleQuit(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Quit) (protocol.Response, error) {
+	var terminal *serverClient
+	if c.Identity() != protocol.UserClientID {
+		terminal = s.lookupClientHandle(c.Identity())
+		if terminal != nil {
+			terminal.beginTermination()
+		}
 	}
-	defer s.externalHandlers.leave()
 
 	committed := false
-	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+	resp, err := s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		actor, resolveErr := s.resolveClientActor(c)
 		if resolveErr != nil {
 			return protocol.Response{}, resolveErr
@@ -581,7 +765,14 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 	})
 
 	if committed {
-		s.releaseAndForgetClient(c.Identity())
+		s.instanceDeleted(c.Identity())
+		if terminal != nil {
+			terminal.sealOutbound()
+		}
+		s.emitScoped(ctx, domain.ConnectionError{Reason: "Connection closed", At: s.now()}, clientScope{client: domain.InstanceID(c.Identity())})
+		s.reapModelConnection(c.Identity())
+	} else if terminal != nil {
+		terminal.abortTermination()
 	}
 
 	return resp, err
@@ -609,15 +800,9 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 // `joinAs` records membership before it emits, so the membership
 // filter admits it.
 //
-// The cost of that ordering is a window between step 3 and step 4
-// where the new client is a bus member of a channel whose member
-// list does not yet contain it: `registerModelAs` stamps the
-// channel onto the instance, which is what the delivery filter
-// reads, while `ChannelWindow.Members` gains it only in step 4. It
-// can therefore see channel traffic a moment before it has joined.
-// The skew is one-directional — anything it tries to say is refused
-// by the send gates, which read the channel's member list — and it
-// is the price of the subscription existing before the broadcast.
+// The registered instance has no channel membership until step 4.
+// Its subscription can therefore exist before JOIN without receiving
+// channel traffic from before that membership begins.
 //
 // A failure in step 3 or step 4 unwinds what came before it: the
 // client is detached and the instance deleted, so a refused ADDMODEL
@@ -627,12 +812,7 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 // it, so a message addressed to any nick in the member list reaches
 // somebody, and a registration that stopped short of connecting
 // would put a nick there that nothing can reach.
-func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
-	if !s.externalHandlers.enter() {
-		return protocol.Response{}, ErrSessionClosed
-	}
-	defer s.externalHandlers.leave()
-
+func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.AddModel) (protocol.Response, error) {
 	if !s.idHasServerOper(c.Identity()) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
@@ -640,6 +820,14 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	actor, err := s.resolveClientActor(c)
 	if err != nil {
 		return protocol.Response{}, err
+	}
+	issuer := s.activeClientHandle(c.Identity())
+	if issuer == nil || issuer.owner != c {
+		return protocol.Response{}, fmt.Errorf("add model issuer: %w", protocol.ErrSubscriptionClosed)
+	}
+	issuerGeneration, active := issuer.connection()
+	if !active {
+		return protocol.Response{}, fmt.Errorf("add model issuer: %w", protocol.ErrSubscriptionClosed)
 	}
 
 	var prepared PreparedInstance
@@ -664,7 +852,11 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 
 	var inst *domain.Instance
 
-	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+	resp, err := s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
+		if !issuer.connectionValid(issuerGeneration) {
+			return protocol.Response{}, fmt.Errorf("add model issuer: %w", protocol.ErrSubscriptionClosed)
+		}
+
 		registered, registerErr := s.registerModelAs(ctx, cmd.Channel, cmd.Model, prepared.Nick, prepared.Persona)
 		if registerErr != nil {
 			return commandResult(registerErr)
@@ -679,7 +871,7 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 		return resp, err
 	}
 
-	attachedClient, attachErr := s.modelClientFactory.Attach(ctx, s, inst)
+	modelClient, attachErr := s.startModelClient(ctx, inst)
 	if attachErr != nil {
 		s.discardModel(ctx, inst)
 
@@ -689,22 +881,18 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 		))
 	}
 
-	admitted, admitErr := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
-		if attachedClient != nil {
-			id := protocol.ClientID(inst.ID())
-			sc := s.lookupClientHandle(id)
-			if sc == nil || sc.instance != inst {
-				return commandResult(&ClientDisconnectedError{ID: id})
-			}
+	admitted, admitErr := s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
+		if !issuer.connectionValid(issuerGeneration) {
+			return protocol.Response{}, fmt.Errorf("add model issuer: %w", protocol.ErrSubscriptionClosed)
 		}
 
-		resp, err := commandResult(s.admitModelAs(ctx, actor, inst, cmd.Channel))
+		channel, admissionErr := s.admitModelAs(ctx, c, actor, modelClient, inst, cmd.Channel)
+		resp, err := commandResult(admissionErr)
 		if err != nil || resp.Err != nil {
-			s.retireClient(protocol.ClientID(inst.ID()))
 			return resp, err
 		}
 
-		resp.Events = s.preparationNotices(ctx, c, cmd.Channel, prepared.Warnings)
+		resp.Events = s.preparationNotices(ctx, c, channel, prepared.Warnings)
 
 		return resp, nil
 	})
@@ -745,7 +933,7 @@ func (s *Session) preparationNotices(
 		events = append(events, domain.SystemNotice{Target: ch, Text: warning, At: now})
 	}
 
-	s.persistInstanceReplies(ctx, c, events)
+	s.persistInstanceReplies(ctx, c, protocol.ChannelWindowTarget(ch), events)
 
 	return events
 }
@@ -753,19 +941,24 @@ func (s *Session) preparationNotices(
 const discardModelTimeout = 5 * time.Second
 
 // discardModel unwinds a registration whose JOIN did not land. It
-// removes any membership that the failed join installed in live
-// state, then attempts to delete the instance. The client is always
-// released because an ADDMODEL failure must not leave a subscribed
-// dispatch goroutine behind. Indexed memory is retained when the
-// instance deletion fails.
-func (s *Session) discardModel(_ context.Context, inst *domain.Instance) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.baseContext()), discardModelTimeout)
+// removes any membership installed by a partially committed join,
+// deletes the instance when possible, and records a tombstone when
+// cleanup must continue after restart.
+func (s *Session) discardModel(ctx context.Context, inst *domain.Instance) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardModelTimeout)
 	defer cancel()
 
-	s.retireClient(protocol.ClientID(inst.ID()))
-	markErr := s.store.MarkInstancePendingDeletion(ctx, inst.ID())
+	id := protocol.ClientID(inst.ID())
+	if client := s.lookupClientHandle(id); client != nil {
+		client.replayMu.Lock()
+		client.turnGeneration++
+		client.deactivateConnection()
+		client.replayMu.Unlock()
+	}
+
+	markErr := s.store.MarkInstancePendingDeletion(cleanupCtx, inst.ID())
 	deleted := false
-	_, cleanupErr := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+	_, cleanupErr := s.onWriter(cleanupCtx, func(ctx context.Context) (protocol.Response, error) {
 		var cleanupErrors []error
 
 		for _, ch := range s.instanceChannelNames(inst) {
@@ -790,7 +983,7 @@ func (s *Session) discardModel(_ context.Context, inst *domain.Instance) {
 	})
 
 	if !deleted && markErr != nil {
-		if retryErr := s.store.MarkInstancePendingDeletion(ctx, inst.ID()); retryErr != nil {
+		if retryErr := s.store.MarkInstancePendingDeletion(cleanupCtx, inst.ID()); retryErr != nil {
 			markErr = errors.Join(markErr, fmt.Errorf("retry mark instance pending deletion: %w", retryErr))
 		} else {
 			markErr = nil
@@ -798,13 +991,13 @@ func (s *Session) discardModel(_ context.Context, inst *domain.Instance) {
 	}
 
 	if deleted {
-		s.releaseAndForgetClient(protocol.ClientID(inst.ID()))
-	} else {
-		s.releaseClient(protocol.ClientID(inst.ID()))
+		s.instanceDeleted(protocol.ClientID(inst.ID()))
 	}
 
+	s.reapDeadModelConnection(protocol.ClientID(inst.ID()))
+
 	if err := errors.Join(markErr, cleanupErr); err != nil {
-		slog.Default().ErrorContext(ctx, "discard model after failed add",
+		slog.Default().ErrorContext(cleanupCtx, "discard model after failed add",
 			"component", "session",
 			"instance_id", inst.ID(),
 			"error", err,
@@ -817,18 +1010,13 @@ func (s *Session) discardModel(_ context.Context, inst *domain.Instance) {
 // on the command loop, so it runs once the loop has let the KILL
 // go. The operator gate is checked on the loop alongside the act
 // it authorises.
-func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
-	if !s.externalHandlers.enter() {
-		return protocol.Response{}, ErrSessionClosed
-	}
-	defer s.externalHandlers.leave()
+func (s *Session) handleKill(ctx context.Context, c protocol.Client, guard protocol.WindowGuard, cmd protocol.Kill) (protocol.Response, error) {
+	var killed *domain.Instance
+	var killedBy domain.Nick
+	var terminal *serverClient
+	var instanceDeleted bool
 
-	var (
-		killed       *domain.Instance
-		forgetKilled bool
-	)
-
-	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+	resp, err := s.onGuardedWriter(ctx, guard, func(ctx context.Context) (protocol.Response, error) {
 		if !s.idHasServerOper(c.Identity()) {
 			return protocol.Response{Err: domain.NotOperatorError{Command: "KILL", At: s.now()}}, nil
 		}
@@ -837,29 +1025,44 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 		if resolveErr != nil {
 			return protocol.Response{}, resolveErr
 		}
+		killedBy = oper.Nick()
 
 		target, targetErr := s.resolveConnectedNick(cmd.Nick)
 		if targetErr != nil {
 			return commandResult(targetErr)
 		}
+		if target.ID() != domain.InstanceID(protocol.UserClientID) {
+			terminal = s.lookupClientHandle(protocol.ClientID(target.ID()))
+			if terminal != nil {
+				terminal.beginTermination()
+			}
+		}
 
 		outcome := s.killAs(ctx, oper, target, cmd.Reason)
 		killed = target
-		forgetKilled = outcome.instanceDeleted
+		instanceDeleted = outcome.instanceDeleted
 
 		return commandResult(outcome.err)
 	})
 
 	if killed == nil {
+		if terminal != nil {
+			terminal.abortTermination()
+		}
 		return resp, err
 	}
-
-	id := protocol.ClientID(killed.ID())
-	if forgetKilled {
-		s.releaseAndForgetClient(id)
-	} else {
-		s.releaseClient(id)
+	if terminal != nil {
+		terminal.sealOutbound()
 	}
+	s.emitScoped(ctx, domain.ConnectionError{
+		Reason: fmt.Sprintf("Killed by %s (%s)", killedBy, cmd.Reason),
+		At:     s.now(),
+	}, clientScope{client: killed.ID()})
+
+	if instanceDeleted {
+		s.instanceDeleted(protocol.ClientID(killed.ID()))
+	}
+	s.reapModelConnection(protocol.ClientID(killed.ID()))
 
 	return resp, err
 }
@@ -883,6 +1086,9 @@ func commandRefusal(err error) bool {
 	if observability.ErrorKindOf(err) == observability.ErrorKindValidation {
 		return true
 	}
+	if errors.Is(err, protocol.ErrWindowAuthorityChanged) {
+		return true
+	}
 
 	var event protocol.Event
 
@@ -895,30 +1101,20 @@ func quitWasCommitted(err error) bool {
 	return errors.As(err, &committed)
 }
 
-// ClientDisconnectedError reports a command issued after a closable
-// client's QUIT committed but before its resources were reaped.
-type ClientDisconnectedError struct {
-	ID protocol.ClientID
-}
-
-func (e *ClientDisconnectedError) Error() string {
-	return fmt.Sprintf("client %q is disconnected", e.ID)
-}
-
 // resolveClientActor turns a [protocol.Client] handle into the
 // `*domain.Instance` the `*As` methods take as their actor
 // argument. The registered subscription carries the canonical
 // instance pointer; the dispatcher reads it directly with no store
-// round-trip. An unregistered client is a structural bug — the
-// dispatcher only sees handles the session issued.
+// round-trip. The dispatcher accepts only the exact non-nil pointer
+// that registered the subscription.
 func (s *Session) resolveClientActor(c protocol.Client) (*domain.Instance, error) {
-	sc := s.registeredClientHandle(c.Identity())
-	if sc == nil {
-		return nil, fmt.Errorf("client %q not registered with this session", c.Identity())
-	}
-	if sc.retired.Load() {
-		return nil, &ClientDisconnectedError{ID: c.Identity()}
+	if !validClientHandle(c) {
+		return nil, fmt.Errorf("client handle: %w", ErrInvalidClientHandle)
 	}
 
+	sc := s.activeClientHandle(c.Identity())
+	if sc == nil || sc.owner != c {
+		return nil, fmt.Errorf("client %q: %w", c.Identity(), ErrClientNotConnected)
+	}
 	return sc.instance, nil
 }

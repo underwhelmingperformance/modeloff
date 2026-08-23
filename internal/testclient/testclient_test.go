@@ -34,10 +34,13 @@ func newFixture(t *testing.T) *fixture {
 	})
 	t.Cleanup(func() { _ = mgr.DetachAll(context.Background()) })
 
-	sess := session.New(t.Context, s, mgr, nil)
+	userCredential := protocol.NewUserCredential()
+	sess := session.New(t.Context(), s, mgr, nil,
+		session.WithUserCredential(userCredential))
 	t.Cleanup(func() { _ = sess.Shutdown(context.Background()) })
 
-	user := userclient.New("testuser", sess, s, userclient.NewStoreReplyLog(s))
+	user := userclient.New("testuser", sess, s,
+		userclient.NewStoreReplyLog(s), userCredential)
 	require.NoError(t, user.Attach(t.Context()))
 
 	return &fixture{sess: sess, store: s, user: user}
@@ -46,7 +49,7 @@ func newFixture(t *testing.T) *fixture {
 func TestTestClient_New_applies_defaults(t *testing.T) {
 	f := newFixture(t)
 
-	bot := testclient.New("seedbot", f.sess)
+	bot := testclient.NewStored("seedbot", f.sess, f.store)
 
 	require.Equal(t, protocol.ClientID("test-seedbot"), bot.Identity())
 	require.Equal(t, domain.Nick("seedbot"), bot.Instance().Nick())
@@ -57,7 +60,7 @@ func TestTestClient_New_applies_defaults(t *testing.T) {
 func TestTestClient_New_applies_options(t *testing.T) {
 	f := newFixture(t)
 
-	bot := testclient.New("seedbot", f.sess,
+	bot := testclient.NewStored("seedbot", f.sess, f.store,
 		testclient.WithInstanceID("inst-custom"),
 		testclient.WithModelID("vendor/model"),
 		testclient.WithPersona("a curious bot"),
@@ -78,7 +81,7 @@ func TestTestClient_New_applies_options(t *testing.T) {
 func TestTestClient_Attach_persists_and_subscribes(t *testing.T) {
 	f := newFixture(t)
 
-	bot := testclient.New("seedbot", f.sess,
+	bot := testclient.NewStored("seedbot", f.sess, f.store,
 		testclient.WithInstanceID("inst-seedbot"),
 	)
 
@@ -94,7 +97,7 @@ func TestTestClient_Attach_persists_and_subscribes(t *testing.T) {
 func TestTestClient_Attach_is_idempotent(t *testing.T) {
 	f := newFixture(t)
 
-	bot := testclient.New("seedbot", f.sess)
+	bot := testclient.NewStored("seedbot", f.sess, f.store)
 
 	require.NoError(t, bot.Attach(t.Context()))
 	require.NoError(t, bot.Attach(t.Context()))
@@ -106,7 +109,7 @@ func TestTestClient_Send_routes_through_dispatcher(t *testing.T) {
 
 	require.NoError(t, f.user.Join(t.Context(), "#general"))
 
-	bot := testclient.New("seedbot", f.sess,
+	bot := testclient.NewStored("seedbot", f.sess, f.store,
 		testclient.WithChannels("#general"),
 	)
 	require.NoError(t, bot.Attach(t.Context()))
@@ -120,7 +123,7 @@ func TestTestClient_Send_routes_through_dispatcher(t *testing.T) {
 func TestTestClient_Detach_is_idempotent(t *testing.T) {
 	f := newFixture(t)
 
-	bot := testclient.New("seedbot", f.sess)
+	bot := testclient.NewStored("seedbot", f.sess, f.store)
 	require.NoError(t, bot.Attach(t.Context()))
 
 	bot.Detach()

@@ -2,10 +2,39 @@ package protocol
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 )
+
+var (
+	// ErrSubscriptionClosed means the server has revoked a subscription's
+	// authority and its actor-bound capabilities can no longer be used.
+	ErrSubscriptionClosed = errors.New("subscription is closed")
+
+	// ErrInvalidWindowTarget means a caller supplied no channel or direct
+	// conversation to an actor-bound window operation.
+	ErrInvalidWindowTarget = errors.New("invalid window target")
+
+	// ErrWindowAuthorityChanged means the actor lost access to the requested
+	// window while an actor-bound read was in progress.
+	ErrWindowAuthorityChanged = errors.New("window authority changed")
+)
+
+// JoinExecutionError identifies the JOIN target whose server-side operation
+// failed after command validation.
+type JoinExecutionError struct {
+	Channel domain.ChannelName
+	Err     error
+}
+
+func (e JoinExecutionError) Error() string {
+	return fmt.Sprintf("join %s: %v", e.Channel, e.Err)
+}
+
+func (e JoinExecutionError) Unwrap() error { return e.Err }
 
 // Client is a connected participant on the wire. The dispatcher does
 // not know whether it is talking to a chat-screen client or a model
@@ -14,9 +43,11 @@ import (
 // the same `Events` channel.
 //
 // Lifetime is implicit. The user-client lives for the session; each
-// model-client lives for its `*domain.Instance`. The server reaps
+// model-client lives for one registered actor. The server reaps
 // subscriptions inside the [AddModel]/[Quit]/[Kill] handlers and
 // inside `Session.Shutdown`; there is no separate Disconnect call.
+// Implementations use non-nil pointer values so the session can bind
+// a subscription to one exact connection object.
 type Client interface {
 	// Identity returns the client's stable [ClientID].
 	// [UserClientID] names the user-client; any non-empty id is the
@@ -32,9 +63,9 @@ type Client interface {
 	// Events returns the read end of the per-client delivery
 	// stream. Each [Delivery] wraps an [Event] alongside the
 	// originating handler's span context for OTel trace continuity.
-	// The server is the sole writer and owns the channel's
-	// lifecycle: it closes the channel on [Quit] / [Kill] / session
-	// shutdown.
+	// The server is the sole writer. Consumers use
+	// [Subscription.Done] to observe the end of a subscription;
+	// the delivery channel itself remains open.
 	Events() <-chan Delivery
 
 	// Caps exposes the client's modes (and any future runtime
@@ -83,6 +114,29 @@ func (c liveCaps) Has(capability command.Capability) bool {
 // [Client.Caps] holder does not hold +o.
 const CapOperator command.Capability = "operator"
 
+// UserCredential is an unforgeable capability shared by the session
+// constructor and its one user-client. Equality is by pointer: a
+// different credential does not authenticate the sentinel identity.
+type UserCredential struct{ nonce byte }
+
+// NewUserCredential creates the capability used to bind one session
+// to its user-client.
+func NewUserCredential() *UserCredential { return &UserCredential{nonce: 1} }
+
+// Attachment authorises one model client to attach as the identity for
+// which the session registered it. Constructing an Attachment does not
+// grant authority; the session accepts only the exact value it issued.
+type Attachment struct{ nonce byte }
+
+// NewAttachment creates an opaque attachment value for the session to
+// register before it asks a model-client factory to attach an actor.
+func NewAttachment() *Attachment { return &Attachment{nonce: 1} }
+
+// MaxScrollbackEntries bounds one actor-scoped scrollback read. The
+// store can grow past its retention headroom between process starts,
+// so the session enforces this limit independently of retention.
+const MaxScrollbackEntries = 2000
+
 // Subscription is the handle a client carries after attaching to a
 // session. It exposes the per-client delivery stream, a "done"
 // signal that fires when the subscription is reaped (either by the
@@ -90,7 +144,7 @@ const CapOperator command.Capability = "operator"
 // QUIT / KILL handler), and the release mechanism.
 type Subscription interface {
 	// Events returns the read end of the per-client delivery
-	// stream. Same semantics as [Client.Events] — the
+	// stream. Same semantics as [Client.Events]: the
 	// subscription handle is the canonical way to get at it once
 	// a client has been attached via [Session.Subscribe].
 	Events() <-chan Delivery
@@ -101,21 +155,113 @@ type Subscription interface {
 	// Events to exit cleanly when the session has detached them.
 	Done() <-chan struct{}
 
+	// Scrollback returns the actor's current view of one channel or
+	// direct-message window. The session binds the actor to this
+	// subscription, so callers cannot choose an identity. Each call
+	// rechecks that the actor may still read the window and caps the
+	// result at [MaxScrollbackEntries].
+	Scrollback(ctx context.Context, window WindowTarget, limit int) ([]ScrollbackEntry, error)
+
+	// Replies returns this actor's private issuer replies for exactly
+	// one window. A nil window selects session-wide replies. The
+	// session binds the identity to this subscription, rechecks window
+	// authority, and caps each read at [MaxScrollbackEntries].
+	Replies(ctx context.Context, window WindowTarget, limit int) ([]ReplyEntry, error)
+
+	// DirectoryChannels returns the channel directory visible to this
+	// subscription's actor.
+	DirectoryChannels(ctx context.Context) ([]domain.ChannelDirectoryEntry, error)
+
+	// Nick returns the nick the server currently holds for this
+	// subscription's actor. A NICK rename is server state, so the
+	// answer comes from the session and not from whatever copy of
+	// the actor the client was constructed with.
+	Nick() domain.Nick
+
+	// GuardWindow captures this subscription's current authority for a
+	// window. Valid becomes false if the subscription closes, a channel
+	// membership interval ends, or a DM counterpart disconnects.
+	GuardWindow(ctx context.Context, window WindowTarget) (WindowGuard, error)
+
+	// GuardInvitation captures the actor's current invitation to a
+	// channel. It becomes invalid if the channel disappears or the
+	// invitation is consumed or revoked.
+	GuardInvitation(ctx context.Context, channel domain.ChannelName) (WindowGuard, error)
+
+	// Activate ends attach-time replay and releases deliveries that
+	// arrived after the scrollback snapshots. It is idempotent. A
+	// subscription created without ReplayHistory is active already.
+	Activate()
+
 	// Unsubscribe removes the client from the session's subscriber
 	// registry and closes [Done]. Idempotent.
 	Unsubscribe()
 }
 
-// SubscribeOptions configures a Subscribe call. Instance is the
-// canonical actor handle the dispatcher reads to resolve the actor
-// for any command this client issues; it is required.
-// InitialModes applies the given modes to the subscription before
-// the first event can be delivered, so a client granted +o at
-// subscribe time sees the [domain.UserModeChange] event as the first
-// item on its bus.
+// WindowGuard checks whether one subscription still has the same
+// authority for a window. It exposes no store identifier or membership
+// generation.
+//
+// Send is part of the same authority. The session checks the guard
+// on its command loop immediately before the command's handler runs,
+// so the command reaches the handler only while the authority still
+// stands.
+type WindowGuard interface {
+	Valid(ctx context.Context) bool
+	Context(ctx context.Context) (WindowContext, error)
+	RunWithAuthority(ctx context.Context, operation func() error) error
+	Send(ctx context.Context, client Client, cmd Command) (Response, error)
+}
+
+// WindowContext is the current state from which a model turn may be
+// assembled. A context describes the conversation, but it does not grant
+// access to it; the [WindowGuard] remains the authority and is rechecked
+// before upstream calls and tool execution.
+//
+// Direct conversations expose only the counterpart's stable identity. A
+// nick belongs to the messages in which the server disclosed it, not to the
+// conversation key, so a rename cannot leave cached presentation state here.
+type WindowContext interface {
+	Target() WindowTarget
+	Topic() (domain.TopicInfo, bool)
+}
+
+// ModelDispatch tracks the recipients that observed the start of one
+// model turn. Done sends the matching completion to those recipients.
+type ModelDispatch interface {
+	Done(ctx context.Context, event domain.ModelDispatchDone)
+}
+
+// ScrollbackEntry is one ordered event in an actor's visible
+// scrollback. Store row identifiers remain inside the session; the
+// actor receives only the event it could have observed.
+type ScrollbackEntry struct {
+	Event domain.PersistableEvent
+}
+
+// ReplyEntry is one private issuer reply together with the window in
+// which the actor issued the command. A nil Window marks session-wide
+// state that is safe to include in every window.
+type ReplyEntry struct {
+	Window WindowTarget
+	Event  domain.IssuerReply
+}
+
+// SubscribeOptions configures a Subscribe call. The session resolves
+// the canonical actor from the subscribing client's identity.
 type SubscribeOptions struct {
-	Instance     *domain.Instance
-	InitialModes []domain.Mode
+	// Attachment authorises a model identity. The session issues it as
+	// part of server-side model registration or startup. It must be nil
+	// for the user identity.
+	Attachment *Attachment
+
+	// UserCredential additionally authenticates the reusable sentinel
+	// user identity. It must be nil for every model identity.
+	UserCredential *UserCredential
+
+	// ReplayHistory keeps live deliveries queued until the client has
+	// loaded its visible scrollback and called [Subscription.Activate].
+	ReplayHistory bool
 
 	// EchoMessage grants IRCv3 echo-message: the session delivers the
 	// client's own PRIVMSG / ACTION back to it over Events, so a

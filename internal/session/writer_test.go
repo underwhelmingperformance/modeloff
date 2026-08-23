@@ -45,6 +45,16 @@ func (s *blockingSaveStore) SaveWindow(ctx context.Context, window domain.Window
 	return s.Store.SaveWindow(ctx, window)
 }
 
+func (s *blockingSaveStore) CommitChannelJoin(
+	ctx context.Context,
+	join storemod.ChannelJoin,
+) (storemod.CommittedChannelEvent, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+
+	return s.Store.CommitChannelJoin(ctx, join)
+}
+
 func (g *gatedStore) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
 	<-g.gate
 
@@ -88,7 +98,7 @@ func attachBareClient(t *testing.T, sess *Session, inst *domain.Instance) *bareC
 
 	c := &bareClient{sess: sess, id: protocol.ClientID(inst.ID()), instance: inst}
 
-	sub, err := sess.Subscribe(c, protocol.SubscribeOptions{Instance: inst})
+	sub, err := subscribeTestClient(t.Context(), t, sess, c, protocol.SubscribeOptions{})
 	require.NoError(t, err)
 	c.sub = sub
 
@@ -105,7 +115,7 @@ func newGatedTestSession(t *testing.T, gate <-chan struct{}) (*Session, *storemo
 	s := storetest.NewMemoryStore(t)
 	factory := newTestModelClientFactory(t, &apitest.Fake{})
 
-	sess := New(t.Context, &gatedStore{Store: s, gate: gate}, factory, nil)
+	sess := New(t.Context(), &gatedStore{Store: s, gate: gate}, factory, nil)
 	t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
 
 	attachTestUserClient(t, sess, "testuser")
@@ -347,7 +357,7 @@ func TestSession_add_model_rolls_back_when_the_join_is_refused(t *testing.T) {
 		// The nick is free again, so a later claim is not refused.
 		require.NoError(t, sess.requireNickAvailable(ctx, "fakenick", nil))
 
-		_, resolveErr := sess.ResolveNick(ctx, "fakenick")
+		_, _, resolveErr := sess.ResolveNick(ctx, "fakenick")
 		require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)
 
 		require.Equal(t, []domain.InstanceID{""}, instanceIDs(t, s),
@@ -465,7 +475,7 @@ func TestSession_Shutdown_waits_for_an_accepted_writer_job(t *testing.T) {
 			release: make(chan struct{}),
 		}
 		factory := newTestModelClientFactory(t, &apitest.Fake{})
-		sess := New(t.Context, blocking, factory, nil)
+		sess := New(t.Context(), blocking, factory, nil)
 		attachTestUserClient(t, sess, "testuser")
 
 		joinDone := make(chan error, 1)

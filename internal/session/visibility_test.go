@@ -64,7 +64,7 @@ func TestDirectoryChannels_hides_secret_and_private_from_a_non_member(t *testing
 
 		stranger := seedInstance(t, sess, s, instanceSpec{Nick: "stranger", ModelID: "test/model"})
 
-		entries, err := sess.DirectoryChannels(ctx, stranger)
+		entries, err := sess.directoryChannels(ctx, stranger)
 		require.NoError(t, err)
 
 		require.Equal(t, []domain.ChannelDirectoryEntry{
@@ -88,7 +88,7 @@ func TestDirectoryChannels_shows_everything_to_an_operator(t *testing.T) {
 		oper := seedInstance(t, sess, s, instanceSpec{Nick: "oper", ModelID: "test/model"})
 		grantOperator(t, sess, oper)
 
-		entries, err := sess.DirectoryChannels(ctx, oper)
+		entries, err := sess.directoryChannels(ctx, oper)
 		require.NoError(t, err)
 
 		require.Equal(t, []domain.ChannelDirectoryEntry{
@@ -96,6 +96,34 @@ func TestDirectoryChannels_shows_everything_to_an_operator(t *testing.T) {
 			{Channel: "#public", Members: 1, Topic: "public topic"},
 			{Channel: "#secret", Members: 1, Topic: "secret topic"},
 		}, entries)
+	})
+}
+
+func TestProtocolEvent_actor_view_omits_private_state(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, eventStore := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#public"))
+		collectEmittedEvents(t, sess)
+
+		botty := seedInstanceRow(t, eventStore, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Persona:  "keeps confidences",
+			Channels: testChannels("#secret"),
+		})
+		seedChannelWithMembers(t, sess, eventStore, "#secret", "botty")
+
+		client := newPlainClient(protocol.ClientID(botty.ID()))
+		_, err := subscribeTestClient(ctx, t, sess, client, protocol.SubscribeOptions{})
+		require.NoError(t, err)
+		require.NoError(t, joinAs(ctx, sess, botty, "#public", ""))
+		synctest.Wait()
+
+		require.Equal(t, []domain.Event{domain.Join{
+			Target: "#public", Source: domain.ClientSource(botty.ID(), domain.Nick("botty")), At: fixedTime,
+		}}, drainDeliveries(userClient(t, sess)))
 	})
 }
 
@@ -121,15 +149,14 @@ func TestWhois_hides_channels_the_issuer_may_not_see(t *testing.T) {
 		stranger := seedInstance(t, sess, s, instanceSpec{Nick: "stranger", ModelID: "test/model-b"})
 		require.NoError(t, joinAs(ctx, sess, stranger, "#public", ""))
 
-		resp, err := sess.Handle(ctx, sess.LookupClient(protocol.ClientID(stranger.ID())), protocol.Whois{
-			Nick:    "botty",
-			Channel: "#public",
+		resp, err := sess.Handle(ctx, sess.clientOwner(protocol.ClientID(stranger.ID())), protocol.Whois{
+			Nick:   "botty",
+			Window: protocol.ChannelWindowTarget("#public"),
 		})
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 
 		require.Equal(t, []protocol.Event{domain.Whois{
-			Target:   "#public",
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: []domain.ChannelName{"#public"},
@@ -153,15 +180,57 @@ func TestWhois_shows_a_member_the_channels_they_share(t *testing.T) {
 			require.NoError(t, joinAs(ctx, sess, botty, ch, ""))
 		}
 
-		resp, err := userClient(t, sess).Send(ctx, protocol.Whois{Nick: "botty", Channel: "#public"})
+		resp, err := userClient(t, sess).Send(ctx, protocol.Whois{Nick: "botty", Window: protocol.ChannelWindowTarget("#public")})
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 
 		require.Equal(t, []protocol.Event{domain.Whois{
-			Target:   "#public",
 			Nick:     "botty",
 			ModelID:  "test/model",
 			Channels: []domain.ChannelName{"#public", "#private", "#secret"},
+			At:       fixedTime,
+		}}, resp.Events)
+	})
+}
+
+func TestWhois_hides_anonymous_channel_membership_from_other_actors(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess, store := newTestSession(t)
+		ctx := t.Context()
+
+		require.NoError(t, userJoin(ctx, t, sess, "#anon"))
+		setChannelModes(t, sess, "#anon", domain.ChannelModes{Anonymous: true})
+
+		botty := seedInstance(t, sess, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+		require.NoError(t, joinAs(ctx, sess, botty, "#anon", ""))
+
+		peer := seedInstance(t, sess, store, instanceSpec{Nick: "peer", ModelID: "test/peer"})
+		require.NoError(t, joinAs(ctx, sess, peer, "#anon", ""))
+
+		for _, issuer := range []*domain.Instance{userInstance(t, sess), peer} {
+			resp, err := sess.Handle(ctx, sess.clientOwner(protocol.ClientID(issuer.ID())), protocol.Whois{
+				Nick:   botty.Nick(),
+				Window: protocol.ChannelWindowTarget("#anon"),
+			})
+			require.NoError(t, err)
+			require.NoError(t, resp.Err)
+			require.Equal(t, []protocol.Event{domain.Whois{
+				Nick:    "botty",
+				ModelID: "test/model",
+				At:      fixedTime,
+			}}, resp.Events)
+		}
+
+		resp, err := sess.Handle(ctx, sess.clientOwner(protocol.ClientID(botty.ID())), protocol.Whois{
+			Nick:   botty.Nick(),
+			Window: protocol.ChannelWindowTarget("#anon"),
+		})
+		require.NoError(t, err)
+		require.NoError(t, resp.Err)
+		require.Equal(t, []protocol.Event{domain.Whois{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: []domain.ChannelName{"#anon"},
 			At:       fixedTime,
 		}}, resp.Events)
 	})

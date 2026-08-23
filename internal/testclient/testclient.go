@@ -29,10 +29,15 @@ import (
 type TestClient struct {
 	instance *domain.Instance
 	sess     *session.Session
-	modes    map[domain.Mode]struct{}
+	store    instanceStore
+	attach   *protocol.Attachment
 
 	mu  sync.Mutex
 	sub protocol.Subscription
+}
+
+type instanceStore interface {
+	SaveInstance(context.Context, *domain.Instance) error
 }
 
 // Option configures a [TestClient] at construction time.
@@ -43,7 +48,14 @@ type config struct {
 	modelID    domain.ModelID
 	persona    string
 	channels   []domain.ChannelName
-	modes      []domain.Mode
+	attachment *protocol.Attachment
+}
+
+// WithAttachment supplies the attachment the client subscribes with.
+// Without it the client asks the session for the token that
+// authorises its own identity.
+func WithAttachment(attachment *protocol.Attachment) Option {
+	return func(c *config) { c.attachment = attachment }
 }
 
 // WithInstanceID overrides the default `"test-"+nick` instance id.
@@ -70,19 +82,31 @@ func WithChannels(channels ...domain.ChannelName) Option {
 	return func(c *config) { c.channels = append(c.channels, channels...) }
 }
 
-// WithInitialModes grants the listed user modes to the
-// subscription at attach time, the same way [userclient.UserClient]
-// requests `+o`. [TestClient.Attach] passes them as
-// [protocol.SubscribeOptions.InitialModes], landing them on the
-// session-side serverClient that the dispatcher's operator gate
-// reads.
-func WithInitialModes(modes ...domain.Mode) Option {
-	return func(c *config) { c.modes = append(c.modes, modes...) }
-}
-
 // New returns an unattached [TestClient] for `nick`. The client is
 // inert until [TestClient.Attach] runs.
 func New(nick domain.Nick, sess *session.Session, opts ...Option) *TestClient {
+	return newClient(nick, sess, nil, opts...)
+}
+
+// NewStored returns an unattached TestClient whose synthetic instance
+// can be persisted during Attach. Test fixtures pass their store
+// explicitly so the production Session API does not expose an actor-
+// registration bypass.
+func NewStored(
+	nick domain.Nick,
+	sess *session.Session,
+	store instanceStore,
+	opts ...Option,
+) *TestClient {
+	return newClient(nick, sess, store, opts...)
+}
+
+func newClient(
+	nick domain.Nick,
+	sess *session.Session,
+	store instanceStore,
+	opts ...Option,
+) *TestClient {
 	cfg := config{
 		instanceID: domain.InstanceID("test-" + nick),
 		modelID:    "test/model",
@@ -92,22 +116,23 @@ func New(nick domain.Nick, sess *session.Session, opts ...Option) *TestClient {
 		opt(&cfg)
 	}
 
-	channels := buildChannelMembership(cfg.channels)
-
-	modes := make(map[domain.Mode]struct{}, len(cfg.modes))
-	for _, m := range cfg.modes {
-		modes[m] = struct{}{}
+	attachment := cfg.attachment
+	if attachment == nil {
+		attachment = sess.IssueAttachment(protocol.ClientID(cfg.instanceID))
 	}
+
+	channels := buildChannelMembership(cfg.channels)
 
 	return &TestClient{
 		instance: domain.NewModelInstance(cfg.instanceID, nick, cfg.modelID, cfg.persona, channels),
 		sess:     sess,
-		modes:    modes,
+		store:    store,
+		attach:   attachment,
 	}
 }
 
-// Instance returns the synthetic actor handle.
-func (tc *TestClient) Instance() *domain.Instance { return tc.instance }
+// Instance returns a snapshot of the synthetic actor.
+func (tc *TestClient) Instance() *domain.Instance { return tc.instance.Snapshot() }
 
 // Identity reports the instance's id.
 func (tc *TestClient) Identity() protocol.ClientID {
@@ -133,11 +158,8 @@ func (tc *TestClient) Events() <-chan protocol.Delivery {
 	return tc.sub.Events()
 }
 
-// Caps returns an empty capability holder. Tests that need
-// capability-gated behaviour grant modes through
-// [WithInitialModes] and rely on the dispatcher's own gating; the
-// chatcmd visibility filter is not exercised through a
-// [TestClient].
+// Caps returns an empty capability holder. The chatcmd visibility
+// filter is not exercised through a [TestClient].
 func (tc *TestClient) Caps() command.CapabilityHolder {
 	return command.NoCapabilities()
 }
@@ -155,14 +177,15 @@ func (tc *TestClient) Attach(ctx context.Context) error {
 		return nil
 	}
 
-	if err := tc.sess.SaveInstance(ctx, tc.instance); err != nil {
+	if tc.store == nil {
+		return fmt.Errorf("attach test client %q: no test store", tc.instance.ID())
+	}
+
+	if err := tc.store.SaveInstance(ctx, tc.instance); err != nil {
 		return fmt.Errorf("save test instance %q: %w", tc.instance.ID(), err)
 	}
 
-	sub, err := tc.sess.Subscribe(tc, protocol.SubscribeOptions{
-		Instance:     tc.instance,
-		InitialModes: tc.initialModes(),
-	})
+	sub, err := tc.sess.Subscribe(ctx, tc, protocol.SubscribeOptions{Attachment: tc.attach})
 	if err != nil {
 		return fmt.Errorf("attach test client %q: %w", tc.instance.ID(), err)
 	}
@@ -182,18 +205,6 @@ func (tc *TestClient) Detach() {
 	if sub != nil {
 		sub.Unsubscribe()
 	}
-}
-
-func (tc *TestClient) initialModes() []domain.Mode {
-	if len(tc.modes) == 0 {
-		return nil
-	}
-
-	out := make([]domain.Mode, 0, len(tc.modes))
-	for m := range tc.modes {
-		out = append(out, m)
-	}
-	return out
 }
 
 func buildChannelMembership(channels []domain.ChannelName) *orderedmap.OrderedMap[domain.ChannelName, time.Time] {

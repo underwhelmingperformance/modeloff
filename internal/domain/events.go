@@ -25,9 +25,9 @@ type PokeEvent struct {
 
 // ErrorEvent wraps a backend error as a domain event. Target names
 // the window the failed command was issued from, the same role
-// [Whois.Target] plays for a `/whois` reply: the chat-screen renders
-// the error there even after the user has switched to a different
-// window, falling back to the active window when Target is empty.
+// the command reply envelope carries for server replies: the
+// chat-screen renders the error there even after the user has
+// switched windows, falling back when Target is empty.
 type ErrorEvent struct {
 	Operation string
 	Err       error
@@ -49,16 +49,13 @@ type Event interface {
 }
 
 // ModelDispatchStarted is emitted at the start of a single model
-// instance's dispatch turn. The event is actor-scoped — it routes
-// to every subscriber that shares at least one channel with
-// `Instance`, mirroring RFC 2812 §3.3.1's intersection rule for
-// peer-state signals like `Quit` and `NickChange`. No channel
-// field: the dispatch's window is observability metadata only,
-// and recipients track "this instance is busy" without caring
-// which specific window the turn is running in.
+// instance's dispatch turn. The session routes it only to clients
+// that can observe that turn's channel or direct-message window. The
+// routing target stays in the delivery envelope rather than the IRC
+// event because dispatch lifecycle is transient client state.
 type ModelDispatchStarted struct {
-	Instance *Instance
-	At       time.Time
+	Source Source
+	At     time.Time
 }
 
 // ModelDispatchDone is the pair to [ModelDispatchStarted], emitted
@@ -67,8 +64,8 @@ type ModelDispatchStarted struct {
 // the per-instance "thinking" mark and recomputes the aggregate
 // pending state from the union of still-dispatching instances.
 type ModelDispatchDone struct {
-	Instance *Instance
-	At       time.Time
+	Source Source
+	At     time.Time
 }
 
 // NamesReplyEvent is emitted UI-only at user-join time to broadcast
@@ -117,26 +114,40 @@ type Reconnected struct {
 	At time.Time
 }
 
-// ModelUnavailableError announces that a per-channel dispatch turn
-// could not produce a reply from a model — the store backing the
-// dispatch context was unreachable, the model returned an error,
-// or the dispatch path itself faulted. No RFC analogue; the IRC
-// dispatcher protocol does not model server-side LLM failures.
-// `Channel` and `Nick` identify the failed turn so the chat-screen
-// can surface the reason in the window the turn ran in
-// (ChatScreen.appendDispatchFailure), falling back to the active
-// window when that one is no longer open.
-type ModelUnavailableError struct {
-	Channel ChannelName
-	Nick    Nick
+// ConnectionError is the server's fatal ERROR message. It is the last
+// event sent directly to a client before its connection closes.
+type ConnectionError struct {
+	Reason string
+	At     time.Time
+}
+
+// KillNotice is the operator-authored KILL message delivered to the
+// client whose connection is about to close. Shared peers receive the
+// subsequent [Quit], not this point-to-point event.
+type KillNotice struct {
+	Source  Source
+	Subject Nick
+	Reason  string
 	At      time.Time
+}
+
+// ModelUnavailableError announces that a dispatch turn
+// could not produce a reply from a model because the context store
+// was unreachable, the model returned an error, or the dispatch path
+// faulted. No RFC analogue; the IRC
+// dispatcher protocol does not model server-side LLM failures.
+// The delivery envelope supplies each recipient's corresponding
+// window.
+type ModelUnavailableError struct {
+	Source Source
+	At     time.Time
 }
 
 // Error makes [ModelUnavailableError] satisfy `error` for the
 // emission boundary's `errors.As` extraction. The string is also
 // what surfaces to operators reading logs.
 func (e ModelUnavailableError) Error() string {
-	return fmt.Sprintf("model %q unavailable for dispatch in %s", e.Nick, e.Channel)
+	return fmt.Sprintf("model %q unavailable for dispatch", e.Source.Nick())
 }
 
 // Pure-live (non-persistable) event types implement Event so they
@@ -153,4 +164,6 @@ func (NamesReplyEvent) domainEvent()       {}
 func (NamesEnd) domainEvent()              {}
 func (Welcome) domainEvent()               {}
 func (Reconnected) domainEvent()           {}
+func (ConnectionError) domainEvent()       {}
+func (KillNotice) domainEvent()            {}
 func (ModelUnavailableError) domainEvent() {}

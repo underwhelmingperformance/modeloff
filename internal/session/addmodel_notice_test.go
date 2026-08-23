@@ -7,6 +7,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	storemod "github.com/laney/modeloff/internal/store"
 )
 
 // TestAddModel_answers_a_preparation_warning_with_a_notice covers
@@ -28,25 +29,25 @@ func TestAddModel_answers_a_preparation_warning_with_a_notice(t *testing.T) {
 	factory := sess.modelClientFactory.(*testModelClientFactory)
 	factory.prepareWarnings = []string{warning}
 
-	seedChannelWithMembers(t, sess, s, "#dev", userNick(t, sess))
+	seedChannelWithMembers(t, sess, s, "#Dev", userNick(t, sess))
 
 	resp, err := userClient(t, sess).Send(ctx, protocol.AddModel{
-		Channel: "#dev",
+		Channel: "#DEV",
 		Model:   "test/model",
 	})
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
 	require.Equal(t, []protocol.Event{
-		domain.SystemNotice{Target: "#dev", Text: warning, At: fixedTime},
+		domain.SystemNotice{Target: "#Dev", Text: warning, At: fixedTime},
 	}, resp.Events)
 
 	// The notice is the issuer's own point-to-point reply, so it is
 	// filed to the issuer's reply log the way every other one is.
 	replies, err := s.InstanceRepliesBefore(ctx, "", nil, 10)
 	require.NoError(t, err)
-	require.Equal(t, []domain.StoredEvent{
-		{ID: 1, Event: domain.SystemNotice{Target: "#dev", Text: warning, At: fixedTime}},
+	require.Equal(t, []storemod.InstanceReplyRecord{
+		{ID: 1, Window: protocol.ChannelWindowTarget("#Dev"), Event: domain.SystemNotice{Target: "#Dev", Text: warning, At: fixedTime}},
 	}, replies)
 }
 

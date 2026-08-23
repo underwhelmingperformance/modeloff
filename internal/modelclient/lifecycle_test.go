@@ -2,6 +2,8 @@ package modelclient
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
@@ -33,6 +36,7 @@ type fakeSession struct {
 	// construction by the test that needs them and read-only after.
 	dmThreads map[domain.InstanceID][]domain.StoredEvent
 	instances map[domain.InstanceID]*domain.Instance
+	windows   map[domain.ChannelName]*domain.ChannelWindow
 
 	// handleFn, when non-nil, answers a dispatched command, so a test
 	// can drive the reply events a real dispatcher would return.
@@ -45,27 +49,59 @@ type fakeSession struct {
 
 	mu          sync.Mutex
 	sub         *fakeSubscription
+	actor       *domain.Instance
 	subscribes  int
 	disconnects []protocol.ClientID
 	dmReads     []dmRead
 	emitted     []domain.ProtocolEvent
 }
 
-// dmRead records one [fakeSession.DMEventsBefore] call, so a test can
-// pin which thread the seed asked for.
+// dmRead records one subscription scrollback read, so a test can pin
+// which DM thread the seed requested.
 type dmRead struct {
 	self domain.InstanceID
 	peer domain.InstanceID
 }
 
 func newFakeSession() *fakeSession {
-	return &fakeSession{sub: newFakeSubscription()}
+	f := &fakeSession{}
+	f.sub = newFakeSubscription(func(_ context.Context, target protocol.WindowTarget, _ int) ([]protocol.ScrollbackEntry, error) {
+		direct, ok := protocol.DirectWindowPeer(target)
+		if !ok {
+			return nil, nil
+		}
+		peer := direct
+
+		f.mu.Lock()
+		f.dmReads = append(f.dmReads, dmRead{self: "inst-botty", peer: peer})
+		stored := append([]domain.StoredEvent(nil), f.dmThreads[peer]...)
+		f.mu.Unlock()
+
+		entries := make([]protocol.ScrollbackEntry, 0, len(stored))
+		for _, event := range stored {
+			entries = append(entries, protocol.ScrollbackEntry{Event: event.Event})
+		}
+
+		return entries, nil
+	})
+	f.sub.replies = func(context.Context, protocol.WindowTarget, int) ([]protocol.ReplyEntry, error) {
+		if f.repliesGate != nil {
+			<-f.repliesGate
+		}
+
+		return nil, nil
+	}
+
+	return f
 }
 
-func (f *fakeSession) Subscribe(protocol.Client, protocol.SubscribeOptions) (protocol.Subscription, error) {
+func (f *fakeSession) Subscribe(_ context.Context, client protocol.Client, _ protocol.SubscribeOptions) (protocol.Subscription, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	model := client.(*ModelClient)
+	f.actor = model.instance
+	f.sub.nick = model.instance.Nick()
 	f.subscribes++
 
 	return f.sub, nil
@@ -79,7 +115,7 @@ func (f *fakeSession) Handle(_ context.Context, _ protocol.Client, cmd protocol.
 	return f.handleFn(cmd), nil
 }
 
-func (f *fakeSession) Disconnect(_ context.Context, id protocol.ClientID, _ string) {
+func (f *fakeSession) DisconnectDeadClient(_ context.Context, id protocol.ClientID, _ string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -100,18 +136,6 @@ func (f *fakeSession) subscribeCount() int {
 	return f.subscribes
 }
 
-func (f *fakeSession) EventsBefore(context.Context, domain.ChannelName, *int64, int) ([]domain.StoredEvent, error) {
-	return nil, nil
-}
-
-func (f *fakeSession) DMEventsBefore(_ context.Context, self, peer domain.InstanceID, _ *int64, _ int) ([]domain.StoredEvent, error) {
-	f.mu.Lock()
-	f.dmReads = append(f.dmReads, dmRead{self: self, peer: peer})
-	f.mu.Unlock()
-
-	return f.dmThreads[peer], nil
-}
-
 // dmReadsSoFar returns the DM thread reads the fake has answered.
 func (f *fakeSession) dmReadsSoFar() []dmRead {
 	f.mu.Lock()
@@ -120,19 +144,48 @@ func (f *fakeSession) dmReadsSoFar() []dmRead {
 	return append([]dmRead(nil), f.dmReads...)
 }
 
-func (f *fakeSession) InstanceRepliesBefore(context.Context, domain.InstanceID, *int64, int) ([]domain.StoredEvent, error) {
-	if f.repliesGate != nil {
-		<-f.repliesGate
+func (f *fakeSession) LoadChannelWindow(_ context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
+	if window, ok := f.windows[name]; ok {
+		return window, nil
 	}
 
-	return nil, nil
+	window := domain.NewChannelWindow(name, f.Now())
+	if f.actor != nil {
+		window.Members.Add(f.actor)
+		f.actor.JoinChannel(name, f.Now())
+	}
+
+	return window, nil
 }
 
-func (f *fakeSession) LoadChannelWindow(_ context.Context, name domain.ChannelName) (*domain.ChannelWindow, error) {
-	return domain.NewChannelWindow(name, f.Now()), nil
+type fakeModelDispatch struct {
+	session *fakeSession
 }
 
-func (f *fakeSession) Emit(_ context.Context, evt domain.ProtocolEvent) {
+func (d fakeModelDispatch) Done(_ context.Context, event domain.ModelDispatchDone) {
+	d.session.recordModelEvent(event)
+}
+
+func (f *fakeSession) BeginModelDispatch(
+	_ context.Context,
+	_ protocol.WindowGuard,
+	_ protocol.WindowTarget,
+	event domain.ModelDispatchStarted,
+) protocol.ModelDispatch {
+	f.recordModelEvent(event)
+
+	return fakeModelDispatch{session: f}
+}
+
+func (f *fakeSession) EmitModelFailure(
+	_ context.Context,
+	_ protocol.WindowTarget,
+	event domain.ModelUnavailableError,
+) {
+	f.recordModelEvent(event)
+}
+
+func (f *fakeSession) recordModelEvent(evt domain.ModelClientEvent) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -147,16 +200,14 @@ func (f *fakeSession) emittedEvents() []domain.ProtocolEvent {
 	return append([]domain.ProtocolEvent(nil), f.emitted...)
 }
 
-func (f *fakeSession) ResolveInstanceByID(_ context.Context, id domain.InstanceID) (*domain.Instance, error) {
+func (f *fakeSession) ResolveInstanceByID(_ context.Context, id domain.InstanceID) (domain.Nick, error) {
 	inst, ok := f.instances[id]
 	if !ok {
-		return nil, fmt.Errorf("no such instance %q", id)
+		return "", fmt.Errorf("no such instance %q", id)
 	}
 
-	return inst, nil
+	return inst.Nick(), nil
 }
-
-func (f *fakeSession) LookupClient(protocol.ClientID) protocol.Client { return nil }
 
 // ClientCaps answers with whatever the test put in `caps`. The zero
 // value is nil, which reads as the no-capabilities holder a model
@@ -175,33 +226,143 @@ func (f *fakeSession) GetWindow(_ context.Context, name domain.ChannelName) (dom
 	return domain.NewChannelWindow(name, f.Now()), nil
 }
 
-func (f *fakeSession) ResolveNick(context.Context, domain.Nick) (*domain.Instance, error) {
-	return nil, nil
+func (f *fakeSession) ResolveNick(_ context.Context, nick domain.Nick) (domain.InstanceID, domain.Nick, error) {
+	for id, inst := range f.instances {
+		if domain.EqualNick(inst.Nick(), nick) {
+			return id, inst.Nick(), nil
+		}
+	}
+
+	return "", "", fmt.Errorf("no such nick %q", nick)
 }
 
 func (f *fakeSession) Now() time.Time { return time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC) }
 
 type fakeSubscription struct {
-	events chan protocol.Delivery
-	done   chan struct{}
-	once   sync.Once
+	events     chan protocol.Delivery
+	done       chan struct{}
+	once       sync.Once
+	activated  bool
+	nick       domain.Nick
+	scrollback func(context.Context, protocol.WindowTarget, int) ([]protocol.ScrollbackEntry, error)
+	replies    func(context.Context, protocol.WindowTarget, int) ([]protocol.ReplyEntry, error)
 }
 
-func newFakeSubscription() *fakeSubscription {
+func newFakeSubscription(scrollback func(context.Context, protocol.WindowTarget, int) ([]protocol.ScrollbackEntry, error)) *fakeSubscription {
 	return &fakeSubscription{
-		events: make(chan protocol.Delivery, 64),
-		done:   make(chan struct{}),
+		events:     make(chan protocol.Delivery, 64),
+		done:       make(chan struct{}),
+		scrollback: scrollback,
 	}
 }
 
 func (s *fakeSubscription) Events() <-chan protocol.Delivery { return s.events }
+func (s *fakeSubscription) Nick() domain.Nick                { return s.nick }
 func (s *fakeSubscription) Done() <-chan struct{}            { return s.done }
-func (s *fakeSubscription) Unsubscribe()                     { s.once.Do(func() { close(s.done) }) }
+func (s *fakeSubscription) Activate()                        { s.activated = true }
+func (s *fakeSubscription) Scrollback(ctx context.Context, window protocol.WindowTarget, limit int) ([]protocol.ScrollbackEntry, error) {
+	if s.scrollback == nil {
+		return nil, nil
+	}
+
+	return s.scrollback(ctx, window, limit)
+}
+func (s *fakeSubscription) Replies(ctx context.Context, window protocol.WindowTarget, limit int) ([]protocol.ReplyEntry, error) {
+	if s.replies == nil {
+		return nil, nil
+	}
+
+	return s.replies(ctx, window, limit)
+}
+func (*fakeSubscription) DirectoryChannels(context.Context) ([]domain.ChannelDirectoryEntry, error) {
+	return nil, nil
+}
+func (s *fakeSubscription) GuardWindow(_ context.Context, target protocol.WindowTarget) (protocol.WindowGuard, error) {
+	var window protocol.WindowContext
+	if channel, ok := protocol.ChannelWindowName(target); ok {
+		window = testChannelContext(domain.NewChannelWindow(channel, time.Time{}))
+	}
+	if peer, ok := protocol.DirectWindowPeer(target); ok {
+		window = testDirectContext(peer)
+	}
+
+	return validWindowGuard{window: window}, nil
+}
+func (s *fakeSubscription) GuardInvitation(_ context.Context, channel domain.ChannelName) (protocol.WindowGuard, error) {
+	return validWindowGuard{window: testChannelContext(domain.NewChannelWindow(channel, time.Time{}))}, nil
+}
+func (s *fakeSubscription) Unsubscribe() { s.once.Do(func() { close(s.done) }) }
+
+type validWindowGuard struct {
+	window protocol.WindowContext
+	err    error
+}
+
+func (validWindowGuard) Valid(context.Context) bool { return true }
+func (validWindowGuard) RunWithAuthority(_ context.Context, operation func() error) error {
+	return operation()
+}
+func (g validWindowGuard) Context(context.Context) (protocol.WindowContext, error) {
+	return g.window, g.err
+}
+func (validWindowGuard) Send(
+	ctx context.Context,
+	client protocol.Client,
+	cmd protocol.Command,
+) (protocol.Response, error) {
+	return client.Send(ctx, cmd)
+}
+
+type testWindowContext struct {
+	target protocol.WindowTarget
+	topic  *domain.TopicInfo
+}
+
+func (c testWindowContext) Target() protocol.WindowTarget { return c.target }
+func (c testWindowContext) Topic() (domain.TopicInfo, bool) {
+	if c.topic == nil {
+		return domain.TopicInfo{}, false
+	}
+
+	return *c.topic, true
+}
+
+func testChannelContext(window *domain.ChannelWindow) protocol.WindowContext {
+	context := testWindowContext{target: protocol.ChannelWindowTarget(window.Name())}
+	if window.Topic != "" {
+		setter := window.TopicSetBy
+		if window.Modes.Anonymous {
+			setter = domain.AnonymousNick
+		}
+
+		context.topic = &domain.TopicInfo{
+			Target: window.Name(), Topic: window.Topic,
+			TopicSetBy: setter, TopicSetAt: window.TopicSetAt,
+		}
+	}
+
+	return context
+}
+
+func testDirectContext(peer domain.InstanceID) protocol.WindowContext {
+	return testWindowContext{target: protocol.DirectWindowTarget(peer)}
+}
 
 func newTestModelClient(sess Session) *ModelClient {
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	return New(inst, sess, func() api.Client { return nil }, nil, nil, nil, nil, context.Background, nil)
+	mc := New(Config{
+		Instance:        inst,
+		Attachment:      protocol.NewAttachment(),
+		Session:         sess,
+		APIClient:       func() api.Client { return nil },
+		LifetimeContext: context.Background,
+	})
+	if fake, ok := sess.(*fakeSession); ok {
+		mc.hist.bind(fake.sub)
+	}
+
+	return mc
 }
 
 // TestModelClient_Detach_waits_for_an_in_flight_Attach pins the
@@ -248,10 +409,150 @@ func TestModelClient_Detach_waits_for_an_in_flight_Attach(t *testing.T) {
 
 		require.ErrorIs(t, <-attached, ErrReleased)
 		<-detached
+		require.False(t, sess.sub.activated)
 
 		// The connection is over, so it cannot be taken up again.
 		require.ErrorIs(t, mc.Attach(t.Context()), ErrReleased)
 	})
+}
+
+// TestModelClient_Release_during_channel_history_load covers teardown
+// after Attach publishes its subscription but before it has read every
+// joined channel. Release clears the mutable client field, while the
+// attach still owns the subscription returned by Subscribe.
+func TestModelClient_Release_during_channel_history_load(t *testing.T) {
+	sess := newFakeSession()
+	firstRead := make(chan struct{})
+	continueRead := make(chan struct{})
+
+	var mu sync.Mutex
+	var windows []domain.ChannelName
+	sess.sub.scrollback = func(_ context.Context, target protocol.WindowTarget, _ int) ([]protocol.ScrollbackEntry, error) {
+		window := protocol.WindowKey(target)
+		mu.Lock()
+		windows = append(windows, window)
+		readCount := len(windows)
+		mu.Unlock()
+
+		if readCount == 1 {
+			close(firstRead)
+			<-continueRead
+		}
+
+		return nil, nil
+	}
+
+	mc := newTestModelClient(sess)
+	mc.instance.JoinChannel("#one", sess.Now())
+	mc.instance.JoinChannel("#two", sess.Now())
+
+	attached := make(chan error, 1)
+	go func() { attached <- mc.Attach(t.Context()) }()
+
+	<-firstRead
+	mc.Release()
+	close(continueRead)
+
+	require.ErrorIs(t, <-attached, ErrReleased)
+	mc.Wait()
+	require.False(t, sess.sub.activated)
+
+	mu.Lock()
+	gotWindows := append([]domain.ChannelName(nil), windows...)
+	mu.Unlock()
+	require.Equal(t, []domain.ChannelName{"#one", "#two"}, gotWindows)
+}
+
+func TestModelClient_Attach_refuses_incomplete_channel_history(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		failScrollback     bool
+		failReplyRead      int
+		wantScrollbackRead int
+		wantReplyReads     int
+	}{
+		{
+			name: "channel scrollback fails", failScrollback: true,
+			wantScrollbackRead: 1,
+		},
+		{
+			name: "channel replies fail", failReplyRead: 1,
+			wantScrollbackRead: 1, wantReplyReads: 1,
+		},
+		{
+			name: "global replies fail", failReplyRead: 2,
+			wantScrollbackRead: 1, wantReplyReads: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sentinel := errors.New("history unavailable")
+			sess := newFakeSession()
+			scrollbackReads := 0
+			replyReads := 0
+			sess.sub.scrollback = func(
+				context.Context,
+				protocol.WindowTarget,
+				int,
+			) ([]protocol.ScrollbackEntry, error) {
+				scrollbackReads++
+				if tc.failScrollback {
+					return nil, sentinel
+				}
+
+				return nil, nil
+			}
+			sess.sub.replies = func(context.Context, protocol.WindowTarget, int) ([]protocol.ReplyEntry, error) {
+				replyReads++
+				if replyReads == tc.failReplyRead {
+					return nil, sentinel
+				}
+
+				return nil, nil
+			}
+			mc := newTestModelClient(sess)
+			mc.instance.JoinChannel("#dev", sess.Now())
+			t.Cleanup(mc.Detach)
+
+			err := mc.Attach(t.Context())
+			closed := false
+			select {
+			case <-sess.sub.Done():
+				closed = true
+			default:
+			}
+
+			require.Equal(t, struct {
+				HistoryError   bool
+				Activated      bool
+				Closed         bool
+				ScrollbackRead int
+				ReplyReads     int
+			}{
+				HistoryError:   true,
+				Closed:         true,
+				ScrollbackRead: tc.wantScrollbackRead,
+				ReplyReads:     tc.wantReplyReads,
+			}, struct {
+				HistoryError   bool
+				Activated      bool
+				Closed         bool
+				ScrollbackRead int
+				ReplyReads     int
+			}{
+				HistoryError:   errors.Is(err, sentinel),
+				Activated:      sess.sub.activated,
+				Closed:         closed,
+				ScrollbackRead: scrollbackReads,
+				ReplyReads:     replyReads,
+			})
+		})
+	}
 }
 
 // TestModelClient_Attach_is_idempotent_and_final covers the two
@@ -273,6 +574,218 @@ func TestModelClient_Attach_is_idempotent_and_final(t *testing.T) {
 	})
 }
 
+func TestModelClient_InterruptTurn_keeps_the_event_loop_alive(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess := newFakeSession()
+		firstStarted := make(chan struct{})
+		firstCancelled := make(chan struct{})
+		secondCompleted := make(chan struct{})
+		calls := 0
+		fake := &apitest.Fake{
+			SendEventsFn: func(
+				ctx context.Context,
+				_ domain.ModelID,
+				_ domain.InstanceID,
+				_ api.SystemPrompt,
+				_ []protocol.IRCMessage,
+				_ []protocol.IRCMessage,
+			) (api.CompletionResult, error) {
+				calls++
+				if calls == 1 {
+					close(firstStarted)
+					<-ctx.Done()
+					close(firstCancelled)
+
+					return api.CompletionResult{}, ctx.Err()
+				}
+
+				close(secondCompleted)
+				return api.CompletionResult{}, nil
+			},
+		}
+
+		mc := newTestModelClient(sess)
+		mc.apiFn = func() api.Client { return fake }
+		require.NoError(t, mc.Attach(t.Context()))
+		defer mc.Detach()
+
+		sess.sub.events <- protocol.Delivery{Event: domain.Message{
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: "#general", Body: "first", At: sess.Now(),
+		}}
+		<-firstStarted
+
+		mc.InterruptTurn()
+		<-firstCancelled
+
+		sess.sub.events <- protocol.Delivery{Event: domain.Message{
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: "#general", Body: "second", At: sess.Now(),
+		}}
+		<-secondCompleted
+
+		mc.Detach()
+	})
+}
+
+func TestModelClient_InterruptWindow_cancels_only_the_matching_provider_call(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sess := newFakeSession()
+		generalStarted := make(chan struct{})
+		generalCancelled := make(chan error, 1)
+		otherCompleted := make(chan struct{})
+		fake := &apitest.Fake{
+			SendEventsFn: func(
+				ctx context.Context,
+				_ domain.ModelID,
+				_ domain.InstanceID,
+				_ api.SystemPrompt,
+				_ []protocol.IRCMessage,
+				events []protocol.IRCMessage,
+			) (api.CompletionResult, error) {
+				switch events[len(events)-1].Target {
+				case "#general":
+					close(generalStarted)
+					<-ctx.Done()
+					generalCancelled <- ctx.Err()
+
+					return api.CompletionResult{}, ctx.Err()
+				case "#other":
+					close(otherCompleted)
+
+					return api.CompletionResult{}, nil
+				default:
+					return api.CompletionResult{}, fmt.Errorf("unexpected target %q", events[len(events)-1].Target)
+				}
+			},
+		}
+
+		mc := newTestModelClient(sess)
+		mc.apiFn = func() api.Client { return fake }
+		require.NoError(t, mc.Attach(t.Context()))
+
+		sess.sub.events <- protocol.Delivery{Event: domain.Message{
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: "#general", Body: "first", At: sess.Now(),
+		}}
+		<-generalStarted
+
+		mc.InterruptWindow("#other")
+		synctest.Wait()
+		select {
+		case err := <-generalCancelled:
+			t.Fatalf("another window cancelled #general: %v", err)
+		default:
+		}
+
+		mc.InterruptWindow("#general")
+		require.ErrorIs(t, <-generalCancelled, context.Canceled)
+
+		sess.sub.events <- protocol.Delivery{Event: domain.Message{
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: "#other", Body: "second", At: sess.Now(),
+		}}
+		<-otherCompleted
+		synctest.Wait()
+		mc.Detach()
+		require.Equal(t, []domain.ProtocolEvent{
+			domain.ModelDispatchStarted{Source: domain.ClientSource(mc.instance.ID(), mc.instance.Nick()), At: sess.Now()},
+			domain.ModelDispatchDone{Source: domain.ClientSource(mc.instance.ID(), mc.instance.Nick()), At: sess.Now()},
+			domain.ModelDispatchStarted{Source: domain.ClientSource(mc.instance.ID(), mc.instance.Nick()), At: sess.Now()},
+			domain.ModelDispatchDone{Source: domain.ClientSource(mc.instance.ID(), mc.instance.Nick()), At: sess.Now()},
+		}, sess.emittedEvents())
+	})
+}
+
+type blockingContinuationWaiter struct {
+	started   chan struct{}
+	cancelled chan error
+}
+
+func (w *blockingContinuationWaiter) Wait(ctx context.Context, _ time.Duration) error {
+	close(w.started)
+	<-ctx.Done()
+	w.cancelled <- ctx.Err()
+
+	return ctx.Err()
+}
+
+func TestModelClient_InterruptWindow_cancels_a_matching_continuation_wait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var effects []string
+		tools := NewToolRegistry(ToolSpec{
+			Definition: api.ToolDefinition{Name: "effect"},
+			Execute: func(_ context.Context, _ ToolContext, _ json.RawMessage) (ToolResultPayload, error) {
+				effects = append(effects, "effect applied")
+
+				return ToolResultPayload{OK: true}, nil
+			},
+		})
+		otherCompleted := make(chan struct{})
+		upstream := &apitest.Fake{
+			SendEventsFn: func(
+				_ context.Context,
+				_ domain.ModelID,
+				_ domain.InstanceID,
+				_ api.SystemPrompt,
+				_ []protocol.IRCMessage,
+				events []protocol.IRCMessage,
+			) (api.CompletionResult, error) {
+				if events[len(events)-1].Target == "#other" {
+					close(otherCompleted)
+
+					return api.CompletionResult{}, nil
+				}
+
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
+					ID: "effect-1", Name: "effect", Args: json.RawMessage(`{}`),
+				}}}, nil
+			},
+			ContinueWithToolResultsFn: func(
+				context.Context,
+				*api.Conversation,
+				[]api.ToolResult,
+			) (api.CompletionResult, error) {
+				return api.CompletionResult{}, context.DeadlineExceeded
+			},
+		}
+		waiter := &blockingContinuationWaiter{
+			started: make(chan struct{}), cancelled: make(chan error, 1),
+		}
+		sess := newFakeSession()
+		mc := New(Config{
+			Instance:        domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil),
+			Attachment:      protocol.NewAttachment(),
+			Session:         sess,
+			APIClient:       func() api.Client { return upstream },
+			Tools:           tools,
+			LifetimeContext: context.Background,
+		})
+		mc.hist.bind(sess.sub)
+		mc.retry = retryPolicy{Delay: time.Hour, Waiter: waiter}
+		require.NoError(t, mc.Attach(t.Context()))
+		defer mc.Detach()
+
+		sess.sub.events <- protocol.Delivery{Event: domain.Message{
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: "#general", Body: "first", At: sess.Now(),
+		}}
+		<-waiter.started
+
+		mc.InterruptWindow("#general")
+		require.ErrorIs(t, <-waiter.cancelled, context.Canceled)
+
+		sess.sub.events <- protocol.Delivery{Event: domain.Message{
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: "#other", Body: "second", At: sess.Now(),
+		}}
+		<-otherCompleted
+		synctest.Wait()
+		mc.Detach()
+		require.Equal(t, []string{"effect applied"}, effects)
+	})
+}
+
 // TestModelClient_dispatch_panic_disconnects_the_client pins the
 // teardown a dead dispatch goroutine gets. Left registered, the
 // subscription would go on collecting deliveries nobody reads and
@@ -283,15 +796,16 @@ func TestModelClient_dispatch_panic_disconnects_the_client(t *testing.T) {
 		sess := newFakeSession()
 		mc := newTestModelClient(sess)
 		mc.apiFn = func() api.Client { panic("upstream exploded") }
+		window := domain.NewChannelWindow("#general", sess.Now())
+		window.Members.Add(mc.instance)
+		mc.instance.JoinChannel("#general", sess.Now())
+		sess.windows = map[domain.ChannelName]*domain.ChannelWindow{"#general": window}
 
 		require.NoError(t, mc.Attach(t.Context()))
 
 		sess.sub.events <- protocol.Delivery{Event: domain.Message{
-			Target:     "#general",
-			From:       "alice",
-			InstanceID: "inst-alice",
-			Body:       "hi",
-			At:         sess.Now(),
+			Source: domain.ClientSource("inst-alice", "alice"), Target: "#general",
+			Body: "hi", At: sess.Now(),
 		}}
 
 		synctest.Wait()

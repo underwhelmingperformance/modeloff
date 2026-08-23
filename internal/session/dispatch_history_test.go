@@ -60,13 +60,11 @@ func TestModelClient_dispatch_does_not_show_trigger_in_history_and_events(t *tes
 
 		synctest.Wait()
 
-		trigger := protocol.IRCMessage{
-			Kind:   protocol.KindPrivMsg,
-			From:   string(userNick(t, sess)),
-			Target: "#room",
-			Body:   "hello bot",
-			At:     fixedTime,
-		}
+		trigger := protocol.IRCMessage{Kind: protocol.KindPrivMsg, Source: domain.ClientSource(protocol.UserClientID, userNick(
+
+			t, sess)),
+
+			Target: "#room", Body: "hello bot", At: fixedTime}
 
 		require.Equal(t, []capture{{
 			history: nil,
@@ -123,20 +121,18 @@ func TestModelClient_history_contains_self_replies(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		userTrigger1 := protocol.IRCMessage{
-			Kind:   protocol.KindPrivMsg,
-			From:   string(userNick(t, sess)),
-			Target: "#room",
-			Body:   "first",
-			At:     fixedTime,
-		}
+		userTrigger1 := protocol.IRCMessage{Kind: protocol.KindPrivMsg, Source: domain.ClientSource(protocol.UserClientID, userNick(
+
+			t, sess)),
+
+			Target: "#room", Body: "first", At: fixedTime}
+
 		bottyReply1 := protocol.IRCMessage{
-			Kind:       protocol.KindPrivMsg,
-			From:       "botty",
-			InstanceID: botty.ID(),
-			Target:     "#room",
-			Body:       "bot reply",
-			At:         fixedTime,
+			Kind:   protocol.KindPrivMsg,
+			Source: domain.ClientSource(testMemberID("botty"), "botty"),
+			Target: "#room",
+			Body:   "bot reply",
+			At:     fixedTime,
 		}
 
 		require.Equal(t, [][]protocol.IRCMessage{

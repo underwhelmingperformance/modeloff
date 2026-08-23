@@ -22,6 +22,14 @@ import (
 // `*Instance`; callers compare instances by pointer identity.
 type InstanceID string
 
+// InstanceDirectoryEntry is one row in the connected-client
+// directory used for nick completion.
+type InstanceDirectoryEntry struct {
+	InstanceID InstanceID
+	Nick       Nick
+	ModelID    ModelID
+}
+
 // GenerateInstanceID returns a random 8-byte hex string suitable for
 // use as a stable instance identifier.
 func GenerateInstanceID() InstanceID {
@@ -261,6 +269,20 @@ func (i *Instance) Persona() string {
 	defer i.mu.RUnlock()
 
 	return i.persona
+}
+
+// Snapshot returns an independent copy of the instance's display
+// state and channel memberships. Mutating the copy cannot change the
+// actor registered with the session.
+func (i *Instance) Snapshot() *Instance {
+	if i == nil {
+		return nil
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	return newInstance(i.instanceID, i.ModelID, i.nick, i.persona, namedChannels(i.channels))
 }
 
 // SetPersona updates the persona description under the write lock.

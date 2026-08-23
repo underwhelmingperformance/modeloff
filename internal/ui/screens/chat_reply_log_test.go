@@ -9,7 +9,7 @@ import (
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
-	"github.com/laney/modeloff/internal/session"
+	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/uitest"
@@ -19,7 +19,7 @@ import (
 // test reads back to assert the user-client's durable writes.
 type replyLogFixture struct {
 	screen ChatScreen
-	sess   *session.Session
+	store  *storemod.SQLiteStore
 }
 
 func newReplyLogFixture(t *testing.T) replyLogFixture {
@@ -34,16 +34,16 @@ func newReplyLogFixture(t *testing.T) replyLogFixture {
 	screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Time{})))
 	screen, _ = screen.focus("#general")
 
-	return replyLogFixture{screen: screen, sess: sess}
+	return replyLogFixture{screen: screen, store: s}
 }
 
 // userReplies reads the user-client's reply log, keyed by its empty
 // identity, with each event's timestamp zeroed so callers compare
 // against a wall-clock-free expected value.
-func userReplies(t *testing.T, sess *session.Session) []domain.PersistableEvent {
+func userReplies(t *testing.T, store *storemod.SQLiteStore) []domain.PersistableEvent {
 	t.Helper()
 
-	stored, err := sess.InstanceRepliesBefore(t.Context(), domain.InstanceID(protocol.UserClientID), nil, 100)
+	stored, err := store.InstanceRepliesBefore(t.Context(), domain.InstanceID(protocol.UserClientID), nil, 100)
 	require.NoError(t, err)
 
 	out := make([]domain.PersistableEvent, len(stored))
@@ -80,7 +80,7 @@ func TestChatScreen_PersonasList_persists_to_user_reply_log(t *testing.T) {
 
 	require.Equal(t, []domain.PersistableEvent{
 		domain.PersonasList{Personas: personas},
-	}, userReplies(t, f.sess))
+	}, userReplies(t, f.store))
 }
 
 func TestChatScreen_CommandError_persists_to_user_reply_log(t *testing.T) {
@@ -95,7 +95,98 @@ func TestChatScreen_CommandError_persists_to_user_reply_log(t *testing.T) {
 
 	require.Equal(t, []domain.PersistableEvent{
 		domain.CommandError{Target: "#general", Err: "whois: no such nick"},
-	}, userReplies(t, f.sess))
+	}, userReplies(t, f.store))
+}
+
+func TestChatScreen_CommandError_preserves_the_landing_window_kind(t *testing.T) {
+	at := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		prepare    func(*ChatScreen)
+		target     domain.ChannelName
+		wantWindow protocol.WindowTarget
+	}{
+		{
+			name:   "status is global",
+			target: domain.StatusChannelName,
+		},
+		{
+			name: "self direct message retains the empty peer id",
+			prepare: func(screen *ChatScreen) {
+				screen.channels.Insert(newWindow(newDMWindow("", "testuser", time.Time{})))
+			},
+			wantWindow: protocol.DirectWindowTarget(""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReplyLogFixture(t)
+			if tt.prepare != nil {
+				tt.prepare(&f.screen)
+			}
+
+			_, cmd := f.screen.handleErrorEvent(domain.ErrorEvent{
+				Operation: "whois", Err: errors.New("failed"), Target: tt.target, At: at,
+			})
+			collectMsgs(cmd)
+
+			got, err := f.store.InstanceRepliesBefore(t.Context(), "", nil, 10)
+			require.NoError(t, err)
+			require.Equal(t, []storemod.InstanceReplyRecord{{
+				ID: 1, Window: tt.wantWindow,
+				Event: domain.CommandError{Target: tt.target, Err: "whois: failed", At: at},
+			}}, got)
+		})
+	}
+}
+
+func TestChatScreen_CommandError_preserves_a_closed_issuing_window(t *testing.T) {
+	f := newReplyLogFixture(t)
+	issuing, open := f.screen.windowByName("#general")
+	require.True(t, open)
+	f.screen.channels.Insert(newWindow(domain.NewChannelWindow("#other", time.Time{})))
+	f.screen, _ = f.screen.focus("#other")
+	next, closeCmd := f.screen.closeWindow("#general", time.Now())
+	f.screen = next
+	collectMsgs(closeCmd)
+	f.screen.channels.Insert(newWindow(domain.NewChannelWindow("#general", time.Now())))
+	at := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+
+	updated, cmd, handled := f.screen.routeReplies(chatcmd.CommandResult{
+		IssuingWindow: issuing.Window,
+		Message: chatcmd.CommandErrorResult{Error: domain.ErrorEvent{
+			Operation: "topic", Err: errors.New("store unavailable"),
+			Target: "#general", At: at,
+		}},
+	})
+	collectMsgs(cmd)
+
+	stored, err := f.store.InstanceRepliesBefore(t.Context(), "", nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, struct {
+		Handled bool
+		Active  domain.ChannelName
+		Stored  []storemod.InstanceReplyRecord
+	}{
+		Handled: true,
+		Active:  "#other",
+		Stored: []storemod.InstanceReplyRecord{{
+			ID:     1,
+			Window: protocol.ChannelWindowTarget("#general"),
+			Event: domain.CommandError{
+				Target: "#other", Err: "topic: store unavailable", At: at,
+			},
+		}},
+	}, struct {
+		Handled bool
+		Active  domain.ChannelName
+		Stored  []storemod.InstanceReplyRecord
+	}{
+		Handled: handled,
+		Active:  updated.activeName(),
+		Stored:  stored,
+	})
 }
 
 func TestChatScreen_ConfigSet_persists_nothing_to_user_reply_log(t *testing.T) {
@@ -104,5 +195,5 @@ func TestChatScreen_ConfigSet_persists_nothing_to_user_reply_log(t *testing.T) {
 	_, cmd := f.screen.Update(chatcmd.SmallModelSetResult{ModelID: "test/model"})
 	collectMsgs(cmd)
 
-	require.Empty(t, userReplies(t, f.sess))
+	require.Empty(t, userReplies(t, f.store))
 }
