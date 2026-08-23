@@ -18,6 +18,10 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+type rowsQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // queryRow runs query/args via `QueryRowContext` and applies decode
 // to the resulting row. If the underlying scan returns
 // `sql.ErrNoRows` and missingErr is non-nil, missingErr replaces it.
@@ -47,7 +51,7 @@ func queryRow[T any](
 // `Close`/`Next`/`Err` ceremony directly.
 func queryRows[T any](
 	ctx context.Context,
-	db *sql.DB,
+	db rowsQueryer,
 	query string,
 	args []any,
 	decode func(rowScanner) (T, error),

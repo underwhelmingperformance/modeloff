@@ -11,16 +11,26 @@ import (
 	"github.com/laney/modeloff/internal/protocol"
 )
 
-// subscriberSnapshot returns a stable copy of the subscriber set
-// under the read lock so callers iterating it cannot race with a
-// concurrent registration or deregistration. The returned slice's
-// `*serverClient` pointers are shared with the registry.
+// subscriberSnapshot returns a stable copy of the active subscriber
+// set under the read lock. The returned slice's `*serverClient`
+// pointers are shared with the registry.
 func (s *Session) subscriberSnapshot() []*serverClient {
+	return s.snapshotSubscribers(false)
+}
+
+func (s *Session) registeredSubscriberSnapshot() []*serverClient {
+	return s.snapshotSubscribers(true)
+}
+
+func (s *Session) snapshotSubscribers(includeRetired bool) []*serverClient {
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
 
 	snap := make([]*serverClient, 0, len(s.subscribers))
 	for _, sub := range s.subscribers {
+		if sub.retired.Load() && !includeRetired {
+			continue
+		}
 		snap = append(snap, sub)
 	}
 
@@ -62,6 +72,14 @@ func (s *Session) subscriberSnapshot() []*serverClient {
 // user-client is a member of whatever it has joined, so the
 // chat-screen renders exactly those windows.
 func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
+	s.fanOutProtocolWithMask(ctx, pe, nil)
+}
+
+func (s *Session) fanOutProtocolWithMask(
+	ctx context.Context,
+	pe domain.ProtocolEvent,
+	maskedChannels []domain.ChannelName,
+) {
 	s.noteChatActivity(pe)
 
 	suppressOriginator, sender := chatTrafficSender(pe)
@@ -69,9 +87,8 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 
 	// `+a` rewrites the visible nick on chat-traffic events to
 	// [domain.AnonymousNick] (RFC 2811 §4.2.1) before delivery, so
-	// even the channel's own members can't see who sent what. The
-	// stored event retains the real From for audit. The actor-scoped
-	// events are masked further down, per recipient, by
+	// even the channel's own members can't see who sent what.
+	// Actor-scoped events are masked further down, per recipient, by
 	// [maskActorEvent].
 	pe = anonymiseIfNeeded(ctx, s, pe)
 
@@ -83,6 +100,11 @@ func (s *Session) fanOutProtocol(ctx context.Context, pe domain.ProtocolEvent) {
 	// the ordered map.
 	actorChannels := actorChannelSnapshot(pe)
 	anonymous := s.anonymousChannels(ctx, actorChannels)
+	for _, ch := range maskedChannels {
+		if !slices.Contains(anonymous, ch) {
+			anonymous = append(anonymous, ch)
+		}
+	}
 
 	for _, sub := range s.subscriberSnapshot() {
 		if suppressOriginator && sub.Identity() == sender {

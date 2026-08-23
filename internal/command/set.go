@@ -1,14 +1,18 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"iter"
+	"maps"
+	"math/big"
 	"reflect"
 	"sort"
 	"strings"
 
-	"github.com/invopop/jsonschema"
+	invjsonschema "github.com/invopop/jsonschema"
+	validator "github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/laney/modeloff/internal/domain"
 )
@@ -65,12 +69,12 @@ type SuggestionSource[C KindProvider] func(ctx C, state InvocationState[C]) Sugg
 
 // Positional describes a positional command argument.
 type Positional[C KindProvider] struct {
-	Name     string
-	Help     string
-	Optional bool
-	Variadic bool
-	Nargs    *int
-	Source   SuggestionSource[C]
+	Name        string
+	Help        string
+	Optional    bool
+	Variadic    bool
+	Passthrough PassthroughMode
+	Source      SuggestionSource[C]
 }
 
 // Flag describes a named flag argument (e.g. --persona).
@@ -160,8 +164,18 @@ type Node[C KindProvider] struct {
 
 	// factory creates a zero-valued pointer to the command struct for
 	// parsing. Nil for group nodes that have no struct of their own.
-	factory func() any
-	fields  []fieldMeta
+	factory          func() any
+	fields           []fieldMeta
+	toolFields       []fieldMeta
+	toolSchema       map[string]any
+	toolValidator    *validator.Schema
+	runtimeValidator *validator.Schema
+	toolXORGroups    []toolXORGroup
+}
+
+type toolXORGroup struct {
+	name    string
+	members []fieldMeta
 }
 
 // Names yields the canonical name followed by any aliases.
@@ -331,13 +345,97 @@ func (n *Node[C]) ToolName() string {
 // `["array", "null"]`, …) so providers that enforce strict
 // function-call schemas (Azure OpenAI) accept the schema.
 func (n *Node[C]) ToolParameters() map[string]any {
-	properties := map[string]any{}
-	required := make([]string, 0, len(n.fields))
+	if n.toolSchema != nil {
+		return cloneToolSchema(n.toolSchema)
+	}
 
-	for _, field := range n.fields {
+	schema, _, err := buildToolParameters(n.toolFields)
+	if err != nil {
+		return map[string]any{}
+	}
+
+	provider, err := providerToolSchema(n.ToolName(), schema)
+	if err != nil {
+		return map[string]any{}
+	}
+
+	return provider
+}
+
+func buildToolParameters(fields []fieldMeta) (map[string]any, []toolXORGroup, error) {
+	properties := map[string]any{}
+	required := make([]string, 0, len(fields))
+	groupIndexes := map[string]int{}
+	fieldProperties := map[string]bool{}
+
+	for _, field := range fields {
 		name := toSnakeCase(field.name)
-		properties[name] = toolSchemaForField(field)
+		fieldProperties[name] = true
+
+		if len(field.xorGroups) > 1 {
+			return nil, nil, &UnsupportedToolXORError{Field: field.name, Groups: field.xorGroups}
+		}
+		if len(field.xorGroups) == 1 {
+			group := field.xorGroups[0]
+			if _, ok := groupIndexes[group]; !ok {
+				groupIndexes[group] = len(groupIndexes)
+			}
+			continue
+		}
+
+		fieldSchema, err := toolSchemaForField(field)
+		if err != nil {
+			return nil, nil, err
+		}
+		properties[name] = fieldSchema
 		required = append(required, name)
+	}
+
+	groups := make([]toolXORGroup, len(groupIndexes))
+	for name, index := range groupIndexes {
+		if fieldProperties[name] {
+			return nil, nil, &ToolSchemaPropertyCollisionError{Property: name}
+		}
+		groups[index].name = name
+	}
+	for _, field := range fields {
+		if len(field.xorGroups) == 1 {
+			index := groupIndexes[field.xorGroups[0]]
+			groups[index].members = append(groups[index].members, field)
+		}
+	}
+
+	for _, group := range groups {
+		branches := make([]any, 0, len(group.members)+1)
+		groupRequired := false
+
+		for _, member := range group.members {
+			branchField := member
+			branchField.optional = false
+			name := toSnakeCase(member.name)
+			fieldSchema, err := toolSchemaForField(branchField)
+			if err != nil {
+				return nil, nil, err
+			}
+			branches = append(branches, map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					name: fieldSchema,
+				},
+				"required":             []string{name},
+				"additionalProperties": false,
+			})
+			if !member.optional {
+				groupRequired = true
+			}
+		}
+
+		if !groupRequired {
+			branches = append(branches, map[string]any{"type": "null"})
+		}
+
+		properties[group.name] = map[string]any{"anyOf": branches}
+		required = append(required, group.name)
 	}
 
 	schema := map[string]any{
@@ -350,49 +448,516 @@ func (n *Node[C]) ToolParameters() map[string]any {
 		schema["required"] = required
 	}
 
-	return schema
+	return schema, groups, nil
 }
 
 // ToolValue decodes structured tool arguments into the leaf value.
 func (n *Node[C]) ToolValue(rawArgs json.RawMessage) (any, error) {
 	if !n.Leaf() {
-		return nil, fmt.Errorf("node /%s is not a tool leaf", n.Path())
+		return nil, &NotToolLeafError{Path: n.Path()}
 	}
 
 	if n.factory == nil {
-		return nil, fmt.Errorf("node /%s has no factory", n.Path())
+		return nil, &NoFactoryError{Path: n.Path()}
 	}
 
 	if len(rawArgs) == 0 {
 		rawArgs = []byte("{}")
 	}
+	if n.toolValidator == nil || n.runtimeValidator == nil {
+		return nil, &ToolSchemaCompileError{Tool: n.ToolName(), Err: fmt.Errorf("tool schema is not compiled")}
+	}
+
+	instance, err := validator.UnmarshalJSON(bytes.NewReader(rawArgs))
+	if err != nil {
+		return nil, &ToolArgumentsDecodeError{Tool: n.ToolName(), Err: err}
+	}
+	if err := n.toolValidator.Validate(instance); err != nil {
+		return nil, toolValidationError(n.ToolName(), err)
+	}
+	if err := n.runtimeValidator.Validate(instance); err != nil {
+		return nil, toolValidationError(n.ToolName(), err)
+	}
 
 	var args map[string]json.RawMessage
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
-		return nil, fmt.Errorf("decode tool args for /%s: %w", n.Path(), err)
+		return nil, &ToolArgumentsDecodeError{Tool: n.ToolName(), Err: err}
+	}
+
+	for _, group := range n.toolXORGroups {
+		raw := args[group.name]
+		delete(args, group.name)
+		if string(raw) == "null" {
+			continue
+		}
+
+		var wrapped map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &wrapped); err != nil {
+			return nil, &ToolArgumentsDecodeError{Tool: n.ToolName(), Field: group.name, Err: err}
+		}
+		maps.Copy(args, wrapped)
 	}
 
 	value := n.factory()
 	target := reflect.ValueOf(value).Elem()
+	present := map[int]bool{}
 
-	for _, field := range n.fields {
+	for _, field := range n.toolFields {
 		key := toSnakeCase(field.name)
 		raw, ok := args[key]
 
 		if !ok || string(raw) == "null" {
-			if field.optional {
+			if field.optional || len(field.xorGroups) > 0 {
 				continue
 			}
 
 			return nil, &MissingArgError{Name: key}
 		}
 
-		if err := json.Unmarshal(raw, target.Field(field.index).Addr().Interface()); err != nil {
-			return nil, fmt.Errorf("decode tool field %q for /%s: %w", key, n.Path(), err)
+		if err := unmarshalToolField(raw, target.Field(field.index).Addr().Interface()); err != nil {
+			return nil, &ToolArgumentsDecodeError{Tool: n.ToolName(), Field: key, Err: err}
 		}
+		present[field.index] = true
+	}
+	if err := validateFields(n.toolFields, present); err != nil {
+		return nil, err
+	}
+	if err := validatePresentValues(target, n.toolFields, present); err != nil {
+		return nil, err
+	}
+	if err := validateDecodedValue(reflect.ValueOf(value)); err != nil {
+		return nil, &ValueValidationError{Name: n.ToolName(), Err: err}
 	}
 
 	return target.Interface(), nil
+}
+
+func unmarshalToolField(raw json.RawMessage, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+
+	value = canonicaliseJSONIntegers(value, reflect.TypeOf(target))
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(canonical, target)
+}
+
+func canonicaliseJSONIntegers(value any, typ reflect.Type) any {
+	if typ == nil || implementsJSONUnmarshaler(typ) {
+		return value
+	}
+
+	for typ.Kind() == reflect.Pointer {
+		if value == nil {
+			return value
+		}
+
+		typ = typ.Elem()
+		if implementsJSONUnmarshaler(typ) {
+			return value
+		}
+	}
+
+	switch typ.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if number, ok := canonicalJSONInteger(value); ok {
+			return number
+		}
+	case reflect.Map:
+		object, ok := value.(map[string]any)
+		if !ok || typ.Key().Kind() != reflect.String {
+			return value
+		}
+
+		for key, child := range object {
+			object[key] = canonicaliseJSONIntegers(child, typ.Elem())
+		}
+	case reflect.Slice, reflect.Array:
+		array, ok := value.([]any)
+		if !ok {
+			return value
+		}
+
+		for index, child := range array {
+			array[index] = canonicaliseJSONIntegers(child, typ.Elem())
+		}
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return value
+		}
+
+		fieldTypes := jsonFieldTypes(typ)
+		for key, child := range object {
+			fieldType, ok := fieldTypes[key]
+			if !ok {
+				continue
+			}
+
+			object[key] = canonicaliseJSONIntegers(child, fieldType)
+		}
+	}
+
+	return value
+}
+
+func implementsJSONUnmarshaler(typ reflect.Type) bool {
+	unmarshaler := reflect.TypeFor[json.Unmarshaler]()
+	if typ.Implements(unmarshaler) {
+		return true
+	}
+
+	return typ.Kind() != reflect.Pointer && reflect.PointerTo(typ).Implements(unmarshaler)
+}
+
+func jsonFieldTypes(typ reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type)
+	collectJSONFieldTypes(fields, typ)
+
+	return fields
+}
+
+func collectJSONFieldTypes(fields map[string]reflect.Type, typ reflect.Type) {
+	for field := range typ.Fields() {
+		if !field.IsExported() {
+			continue
+		}
+
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" && field.Anonymous {
+			embedded := field.Type
+			for embedded.Kind() == reflect.Pointer {
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				collectJSONFieldTypes(fields, embedded)
+				continue
+			}
+		}
+		if name == "" {
+			name = field.Name
+		}
+
+		fields[name] = field.Type
+	}
+}
+
+func canonicalJSONInteger(value any) (json.Number, bool) {
+	number, ok := value.(json.Number)
+	if !ok {
+		return "", false
+	}
+
+	rational, ok := new(big.Rat).SetString(number.String())
+	if !ok || !rational.IsInt() {
+		return "", false
+	}
+
+	return json.Number(rational.Num().String()), true
+}
+
+func compileToolSchema(name string, schema map[string]any) (*validator.Schema, error) {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil, &ToolSchemaCompileError{Tool: name, Err: err}
+	}
+
+	document, err := validator.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		return nil, &ToolSchemaCompileError{Tool: name, Err: err}
+	}
+
+	compiler := validator.NewCompiler()
+	compiler.DefaultDraft(validator.Draft2020)
+	resource := "urn:modeloff:tool:" + toSnakeCase(name)
+	if err := compiler.AddResource(resource, document); err != nil {
+		return nil, &ToolSchemaCompileError{Tool: name, Err: err}
+	}
+
+	compiled, err := compiler.Compile(resource)
+	if err != nil {
+		return nil, &ToolSchemaCompileError{Tool: name, Err: err}
+	}
+
+	return compiled, nil
+}
+
+// providerToolSchema removes type-specific constraints rejected by
+// strict endpoints such as Azure OpenAI. The runtime validator keeps
+// the complete schema, and tool descriptions state the omitted bounds.
+func providerToolSchema(tool string, runtime map[string]any) (map[string]any, error) {
+	provider := cloneToolSchema(runtime)
+	translateProviderSchema(provider)
+	if keyword, location, ok := unsupportedProviderKeyword(provider, nil); ok {
+		return nil, &UnsupportedProviderSchemaKeywordError{
+			Tool:     tool,
+			Keyword:  keyword,
+			Location: location,
+		}
+	}
+	removeUnsupportedStrictKeywords(provider)
+
+	return provider, nil
+}
+
+func unsupportedProviderKeyword(schema map[string]any, location []string) (string, []string, bool) {
+	keys := make([]string, 0, len(schema))
+	for key := range schema {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if key == "additionalProperties" && schema[key] != false {
+			return key, appendSchemaLocation(location, key), true
+		}
+		if isUnsupportedProviderStructuralKeyword(key) {
+			return key, append(append([]string(nil), location...), key), true
+		}
+
+	}
+
+	var foundKeyword string
+	var foundLocation []string
+	visitSchemaChildren(schema, location, func(child map[string]any, childLocation []string) bool {
+		keyword, keywordLocation, ok := unsupportedProviderKeyword(child, childLocation)
+		if !ok {
+			return true
+		}
+
+		foundKeyword = keyword
+		foundLocation = keywordLocation
+
+		return false
+	})
+	if foundKeyword != "" {
+		return foundKeyword, foundLocation, true
+	}
+
+	return "", nil, false
+}
+
+func visitSchemaChildren(
+	schema map[string]any,
+	location []string,
+	visit func(map[string]any, []string) bool,
+) {
+	visitSchemaValues(schema, location, func(_ string, value any, childLocation []string) bool {
+		child, ok := value.(map[string]any)
+		if !ok {
+			return true
+		}
+
+		return visit(child, childLocation)
+	})
+}
+
+func visitSchemaValues(
+	schema map[string]any,
+	location []string,
+	visit func(string, any, []string) bool,
+) {
+	for _, keyword := range []string{"properties", "$defs", "definitions", "dependentSchemas"} {
+		children, ok := schema[keyword].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		names := make([]string, 0, len(children))
+		for name := range children {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			child := children[name]
+			switch child.(type) {
+			case bool, map[string]any:
+			default:
+				continue
+			}
+			childLocation := appendSchemaLocation(location, keyword, name)
+			if !visit(keyword, child, childLocation) {
+				return
+			}
+		}
+	}
+
+	for _, keyword := range []string{"items", "additionalProperties", "contains", "propertyNames", "not", "if", "then", "else"} {
+		child := schema[keyword]
+		switch child.(type) {
+		case bool, map[string]any:
+		default:
+			continue
+		}
+		if !visit(keyword, child, appendSchemaLocation(location, keyword)) {
+			return
+		}
+	}
+
+	for _, keyword := range []string{"anyOf", "allOf", "oneOf", "prefixItems"} {
+		children, ok := schema[keyword].([]any)
+		if !ok {
+			continue
+		}
+		for index, item := range children {
+			switch item.(type) {
+			case bool, map[string]any:
+			default:
+				continue
+			}
+			childLocation := appendSchemaLocation(location, keyword, fmt.Sprintf("%d", index))
+			if !visit(keyword, item, childLocation) {
+				return
+			}
+		}
+	}
+}
+
+func appendSchemaLocation(location []string, parts ...string) []string {
+	next := append([]string(nil), location...)
+	return append(next, parts...)
+}
+
+func isUnsupportedProviderStructuralKeyword(keyword string) bool {
+	switch keyword {
+	case "allOf", "dependentRequired", "dependentSchemas", "else", "if", "not", "prefixItems", "then":
+		return true
+	default:
+		return false
+	}
+}
+
+func translateProviderSchema(schema map[string]any) {
+	if constant, ok := schema["const"]; ok {
+		schema["enum"] = []any{constant}
+		delete(schema, "const")
+	}
+
+	if oneOf, ok := schema["oneOf"].([]any); ok {
+		anyOf, _ := schema["anyOf"].([]any)
+		schema["anyOf"] = append(anyOf, oneOf...)
+		delete(schema, "oneOf")
+	}
+
+	visitSchemaChildren(schema, nil, func(child map[string]any, _ []string) bool {
+		translateProviderSchema(child)
+		return true
+	})
+}
+
+func cloneToolSchema(schema map[string]any) map[string]any {
+	cloned := make(map[string]any, len(schema))
+	for key, value := range schema {
+		cloned[key] = cloneToolSchemaValue(value)
+	}
+
+	return cloned
+}
+
+func cloneToolSchemaValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneToolSchema(value)
+	case []any:
+		cloned := make([]any, len(value))
+		for index, item := range value {
+			cloned[index] = cloneToolSchemaValue(item)
+		}
+
+		return cloned
+	case []string:
+		return append([]string(nil), value...)
+	default:
+		return value
+	}
+}
+
+func removeUnsupportedStrictKeywords(schema map[string]any) {
+	for keyword := range schema {
+		if isUnsupportedStrictSchemaKeyword(keyword) {
+			delete(schema, keyword)
+		}
+	}
+
+	for _, keyword := range []string{"properties", "$defs", "definitions"} {
+		children, ok := schema[keyword].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, child := range children {
+			if childSchema, ok := child.(map[string]any); ok {
+				removeUnsupportedStrictKeywords(childSchema)
+			}
+		}
+	}
+
+	for _, keyword := range []string{"items", "additionalProperties", "not", "if", "then", "else"} {
+		if child, ok := schema[keyword].(map[string]any); ok {
+			removeUnsupportedStrictKeywords(child)
+		}
+	}
+
+	for _, keyword := range []string{"anyOf", "allOf", "oneOf", "prefixItems"} {
+		children, ok := schema[keyword].([]any)
+		if !ok {
+			continue
+		}
+		for _, child := range children {
+			if childSchema, ok := child.(map[string]any); ok {
+				removeUnsupportedStrictKeywords(childSchema)
+			}
+		}
+	}
+}
+
+func isUnsupportedStrictSchemaKeyword(keyword string) bool {
+	switch keyword {
+	case "contains", "format", "maxContains", "maxItems", "maxLength", "maxProperties", "maximum",
+		"minContains", "minItems", "minLength", "minProperties", "minimum", "multipleOf", "pattern",
+		"patternProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "uniqueItems":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolValidationError(tool string, err error) error {
+	validation, ok := err.(*validator.ValidationError)
+	if !ok {
+		return &ToolArgumentsValidationError{Tool: tool, Err: err}
+	}
+
+	return &ToolArgumentsValidationError{
+		Tool:       tool,
+		Violations: collectToolViolations(validation),
+		Err:        err,
+	}
+}
+
+func collectToolViolations(err *validator.ValidationError) []ToolArgumentViolation {
+	violations := []ToolArgumentViolation{{
+		InstanceLocation: append([]string(nil), err.InstanceLocation...),
+		KeywordLocation:  append([]string(nil), err.ErrorKind.KeywordPath()...),
+	}}
+
+	for _, cause := range err.Causes {
+		violations = append(violations, collectToolViolations(cause)...)
+	}
+
+	return violations
 }
 
 // AllFlags returns flags visible at this node, starting with
@@ -603,74 +1168,197 @@ func Merge[C KindProvider](sets ...Set[C]) Set[C] {
 	return merged
 }
 
-func toolSchemaForField(field fieldMeta) map[string]any {
+func toolSchemaForField(field fieldMeta) (map[string]any, error) {
 	typ := field.typ
-	schema := toolSchemaForType(typ)
+	schema, err := toolSchemaForType(typ)
+	if err != nil {
+		return nil, err
+	}
 
 	if field.optional {
-		schema["type"] = []any{schema["type"], "null"}
+		makeNullable(schema)
+	}
+	if field.maxItems != nil {
+		schema["maxItems"] = *field.maxItems
+	}
+	if field.typ.Kind() == reflect.Slice && !field.optional {
+		schema["minItems"] = 1
 	}
 
-	if field.help != "" {
-		schema["description"] = field.help
+	description := field.toolHelp
+	if description == "" {
+		description = field.help
+	}
+	if description != "" {
+		schema["description"] = description
 	}
 
-	return schema
+	return schema, nil
 }
 
-func toolSchemaForType(typ reflect.Type) map[string]any {
+type jsonSchemaProvider interface {
+	JSONSchema() *invjsonschema.Schema
+}
+
+var jsonSchemaProviderType = reflect.TypeFor[jsonSchemaProvider]()
+
+func toolSchemaForType(typ reflect.Type) (map[string]any, error) {
+	if schema, ok := schemaFromCustomType(typ); ok {
+		return schemaViaCustomType(schema)
+	}
+
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
 	switch typ.Kind() {
 	case reflect.Bool:
-		return map[string]any{"type": "boolean"}
+		return map[string]any{"type": "boolean"}, nil
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return map[string]any{"type": "integer"}
+		return map[string]any{"type": "integer"}, nil
 
 	case reflect.Float32, reflect.Float64:
-		return map[string]any{"type": "number"}
+		return map[string]any{"type": "number"}, nil
 
 	case reflect.Slice:
-		return map[string]any{
-			"type":  "array",
-			"items": toolSchemaForType(typ.Elem()),
+		if typ.Elem().Kind() == reflect.Uint8 {
+			return map[string]any{"type": "string"}, nil
 		}
 
+		items, err := toolSchemaForType(typ.Elem())
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{
+			"type":  "array",
+			"items": items,
+		}, nil
+
+	case reflect.Array:
+		items, err := toolSchemaForType(typ.Elem())
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{
+			"type":     "array",
+			"items":    items,
+			"minItems": typ.Len(),
+			"maxItems": typ.Len(),
+		}, nil
+
 	case reflect.Struct:
-		return structSchemaViaReflector(typ)
+		return schemaViaReflector(typ)
+
+	case reflect.String:
+		return map[string]any{"type": "string"}, nil
 
 	default:
-		return map[string]any{"type": "string"}
+		return nil, &UnsupportedToolSchemaTypeError{Type: typ}
 	}
 }
 
-// structSchemaViaReflector reflects a Go struct into a JSON-Schema
-// fragment via invopop/jsonschema. Used for tool-parameter fields
-// whose type is a nested struct (e.g. `[]protocol.ReplySpan`),
-// which the simple kind-switch above can't describe. The reflected
-// schema is hardened for OpenAI strict-mode function calling via
-// [makeStrictObjectSchema] before being returned.
-func structSchemaViaReflector(typ reflect.Type) map[string]any {
-	reflector := jsonschema.Reflector{DoNotReference: true}
-	schema := reflector.ReflectFromType(typ)
+func schemaFromCustomType(typ reflect.Type) (*invjsonschema.Schema, bool) {
+	for typ.Kind() == reflect.Pointer {
+		if typ.Implements(jsonSchemaProviderType) {
+			value := reflect.New(typ.Elem()).Interface().(jsonSchemaProvider)
+			return value.JSONSchema(), true
+		}
+		typ = typ.Elem()
+	}
 
-	data, err := json.Marshal(schema)
+	if typ.Implements(jsonSchemaProviderType) {
+		value := reflect.Zero(typ).Interface().(jsonSchemaProvider)
+		return value.JSONSchema(), true
+	}
+	if reflect.PointerTo(typ).Implements(jsonSchemaProviderType) {
+		value := reflect.New(typ).Interface().(jsonSchemaProvider)
+		return value.JSONSchema(), true
+	}
+
+	return nil, false
+}
+
+func schemaViaCustomType(schema *invjsonschema.Schema) (map[string]any, error) {
+	out, err := schemaToMap(schema)
 	if err != nil {
-		return map[string]any{"type": "object"}
+		return nil, err
 	}
-
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		return map[string]any{"type": "object"}
-	}
-
 	makeStrictObjectSchema(out)
 
-	return out
+	return out, nil
+}
+
+// schemaViaReflector reflects a Go type into a JSON-Schema fragment via
+// invopop/jsonschema, including any schema supplied by the type itself.
+func schemaViaReflector(typ reflect.Type) (map[string]any, error) {
+	reflector := invjsonschema.Reflector{
+		DoNotReference: true,
+		Mapper: func(typ reflect.Type) *invjsonschema.Schema {
+			schema, _ := schemaFromCustomType(typ)
+			return schema
+		},
+	}
+	schema := reflector.ReflectFromType(typ)
+	out, err := schemaToMap(schema)
+	if err != nil {
+		return nil, err
+	}
+	makeStrictObjectSchema(out)
+
+	return out, nil
+}
+
+func schemaToMap(schema *invjsonschema.Schema) (map[string]any, error) {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil, &ToolSchemaEncodingError{Err: err}
+	}
+
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, &ToolSchemaEncodingError{Err: err}
+	}
+
+	switch value := decoded.(type) {
+	case bool:
+		return nil, &UnsupportedBooleanToolSchemaError{Value: value}
+	case map[string]any:
+		if booleanValue, location, ok := booleanSchema(value, nil); ok {
+			return nil, &UnsupportedBooleanToolSchemaError{Value: booleanValue, Location: location}
+		}
+
+		return value, nil
+	default:
+		return nil, &ToolSchemaEncodingError{Err: fmt.Errorf("schema encoded as %T", decoded)}
+	}
+}
+
+func booleanSchema(schema map[string]any, location []string) (bool, []string, bool) {
+	var foundValue bool
+	var foundLocation []string
+	var found bool
+	visitSchemaValues(schema, location, func(keyword string, child any, childLocation []string) bool {
+		switch child := child.(type) {
+		case bool:
+			if keyword == "additionalProperties" && !child {
+				return true
+			}
+
+			foundValue = child
+			foundLocation = childLocation
+			found = true
+		case map[string]any:
+			foundValue, foundLocation, found = booleanSchema(child, childLocation)
+		}
+
+		return !found
+	})
+
+	return foundValue, foundLocation, found
 }
 
 // makeStrictObjectSchema walks a JSON-Schema fragment in place and
@@ -682,10 +1370,9 @@ func structSchemaViaReflector(typ reflect.Type) map[string]any {
 // and `$schema` metadata keys are stripped — they're invopop noise
 // that some strict providers reject.
 //
-// The walk recurses into `properties`, `items`, and the `oneOf` /
-// `anyOf` / `allOf` combinators. Original `required` ordering is
-// preserved; newly-added entries are appended in alphabetical order
-// so the output is deterministic.
+// The walk recurses into every schema-valued keyword. Original
+// `required` ordering is preserved; newly-added entries are appended
+// in alphabetical order so the output is deterministic.
 func makeStrictObjectSchema(schema map[string]any) {
 	delete(schema, "$id")
 	delete(schema, "$schema")
@@ -709,6 +1396,9 @@ func enforceStrictObject(schema map[string]any) {
 
 	props, ok := schema["properties"].(map[string]any)
 	if !ok || len(props) == 0 {
+		if _, exists := schema["additionalProperties"]; !exists {
+			schema["additionalProperties"] = false
+		}
 		return
 	}
 
@@ -760,34 +1450,12 @@ func collectRequired(schema map[string]any, capacity int) ([]string, map[string]
 	return required, originallyRequired
 }
 
-// recurseStrictChildren applies the strict walk to every nested schema
-// reachable from schema: its `properties`, its `items`, and the
-// `oneOf` / `anyOf` / `allOf` combinators.
+// recurseStrictChildren applies the strict walk to every nested schema.
 func recurseStrictChildren(schema map[string]any) {
-	if props, ok := schema["properties"].(map[string]any); ok {
-		for _, p := range props {
-			if sub, ok := p.(map[string]any); ok {
-				makeStrictObjectSchema(sub)
-			}
-		}
-	}
-
-	if items, ok := schema["items"].(map[string]any); ok {
-		makeStrictObjectSchema(items)
-	}
-
-	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
-		arr, ok := schema[key].([]any)
-		if !ok {
-			continue
-		}
-
-		for _, v := range arr {
-			if sub, ok := v.(map[string]any); ok {
-				makeStrictObjectSchema(sub)
-			}
-		}
-	}
+	visitSchemaChildren(schema, nil, func(child map[string]any, _ []string) bool {
+		makeStrictObjectSchema(child)
+		return true
+	})
 }
 
 // isObjectSchema reports whether schema has an `object` type. The
@@ -816,9 +1484,38 @@ func isObjectSchema(schema map[string]any) bool {
 // makeNullable widens a schema's `type` to include `"null"`,
 // turning a scalar type into a `[<type>, "null"]` union. Idempotent.
 func makeNullable(schema map[string]any) {
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		alternatives, ok := schema[keyword].([]any)
+		if !ok {
+			continue
+		}
+		for _, alternative := range alternatives {
+			if child, ok := alternative.(map[string]any); ok && schemaTypeIncludes(child, "null") {
+				return
+			}
+		}
+		schema[keyword] = append(alternatives, map[string]any{"type": "null"})
+		return
+	}
+
 	t, ok := schema["type"]
 	if !ok {
-		schema["type"] = []any{"null"}
+		if len(schema) == 0 {
+			return
+		}
+
+		original := maps.Clone(schema)
+		clear(schema)
+		schema["anyOf"] = []any{original, map[string]any{"type": "null"}}
+		return
+	}
+
+	_, hasEnum := schema["enum"]
+	_, hasConst := schema["const"]
+	if hasEnum || hasConst {
+		original := maps.Clone(schema)
+		clear(schema)
+		schema["anyOf"] = []any{original, map[string]any{"type": "null"}}
 		return
 	}
 
@@ -836,4 +1533,19 @@ func makeNullable(schema map[string]any) {
 		}
 		schema["type"] = append(v, "null")
 	}
+}
+
+func schemaTypeIncludes(schema map[string]any, expected string) bool {
+	switch value := schema["type"].(type) {
+	case string:
+		return value == expected
+	case []any:
+		for _, item := range value {
+			if item == expected {
+				return true
+			}
+		}
+	}
+
+	return false
 }

@@ -10,6 +10,8 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Command is the interface that parsed command structs must
@@ -62,6 +64,12 @@ type nodeState struct {
 	args            []string
 	positionalIndex int
 	variadic        bool
+	optionsEnded    bool
+}
+
+type invocationToken struct {
+	text  string
+	start int
 }
 
 // Selected returns the matched leaf node.
@@ -232,15 +240,13 @@ func (s Set[K]) ParseValue(input string) (any, error) {
 func (s Set[K]) ParseInvocation(input string) (Invocation[K], error) {
 	s.linkParents()
 
-	input = strings.TrimSpace(input)
-
-	if input == "" || input[0] != '/' {
+	tokens := scanInvocationTokens(input)
+	if len(tokens) == 0 || tokens[0].text == "" || tokens[0].text[0] != '/' {
 		return Invocation[K]{}, &NotACommandError{Input: input}
 	}
 
-	fields := strings.Fields(input)
-	name := strings.TrimPrefix(fields[0], "/")
-	args := fields[1:]
+	name := strings.TrimPrefix(tokens[0].text, "/")
+	args := tokens[1:]
 
 	node := s.Find(name)
 	if node == nil {
@@ -257,7 +263,7 @@ func (s Set[K]) ParseInvocation(input string) (Invocation[K], error) {
 		values[node] = node.factory()
 	}
 
-	current, err := parseInvocationArgs(args, node, &path, values, states)
+	current, err := parseInvocationArgs(input, args, node, &path, values, states)
 	if err != nil {
 		return Invocation[K]{}, err
 	}
@@ -282,7 +288,8 @@ func (s Set[K]) ParseInvocation(input string) (Invocation[K], error) {
 }
 
 func parseInvocationArgs[K KindProvider](
-	args []string,
+	raw string,
+	args []invocationToken,
 	root *Node[K],
 	path *[]*Node[K],
 	values map[*Node[K]]any,
@@ -291,7 +298,7 @@ func parseInvocationArgs[K KindProvider](
 	current := root
 
 	for i := 0; i < len(args); i++ {
-		next, nextIndex, done, err := consumeInvocationToken(args, i, current, path, values, states)
+		next, nextIndex, done, err := consumeInvocationToken(raw, args, i, current, path, values, states)
 		if err != nil {
 			return nil, err
 		}
@@ -308,7 +315,8 @@ func parseInvocationArgs[K KindProvider](
 }
 
 func consumeInvocationToken[K KindProvider](
-	args []string,
+	raw string,
+	args []invocationToken,
 	index int,
 	current *Node[K],
 	path *[]*Node[K],
@@ -316,26 +324,55 @@ func consumeInvocationToken[K KindProvider](
 	states map[*Node[K]]*nodeState,
 ) (*Node[K], int, bool, error) {
 	tok := args[index]
+	state := states[current]
+	optionKind := classifyOptionToken(tok.text)
+	flagName, _, hasAttachedValue := splitLongFlagToken(tok.text)
+	if !hasAttachedValue {
+		flagName = tok.text
+	}
 
-	if binding, ok := findFlagBinding(current, tok); ok {
-		nextIndex, done := consumeInvocationFlag(args, index, binding, states)
+	if pos := resolvePositional(current.Positionals, state.positionalIndex); pos != nil {
+		if pos.Passthrough == PassthroughModePartial && optionKind == optionTokenEnd {
+			state.args = append(state.args, raw[tok.start:])
+			state.optionsEnded = true
+
+			return current, len(args), true, nil
+		}
+
+		_, knownFlag := findFlagBinding(current, flagName)
+		startPassthrough := pos.Passthrough != PassthroughModeNone && !knownFlag
+		if pos.Passthrough == PassthroughModePartial && optionKind.isFlag() {
+			startPassthrough = false
+		}
+
+		if startPassthrough {
+			state.args = append(state.args, raw[tok.start:])
+			return current, len(args), true, nil
+		}
+	}
+
+	if binding, ok := findFlagBinding(current, flagName); ok {
+		nextIndex, done := consumeInvocationFlag(args, index, hasAttachedValue, binding, states)
 		return current, nextIndex, done, nil
 	}
 
-	state := states[current]
+	if optionKind == optionTokenEnd {
+		state.args = append(state.args, invocationTokenTexts(args[index:])...)
+		return current, index, true, nil
+	}
 
-	if strings.HasPrefix(tok, "--") {
-		state.args = append(state.args, args[index:]...)
+	if optionKind.isFlag() {
+		state.args = append(state.args, invocationTokenTexts(args[index:])...)
 		return current, index, true, nil
 	}
 
 	if state.variadic {
-		state.args = append(state.args, tok)
+		state.args = append(state.args, tok.text)
 		return current, index, false, nil
 	}
 
 	if pos := resolvePositional(current.Positionals, state.positionalIndex); pos != nil {
-		state.args = append(state.args, tok)
+		state.args = append(state.args, tok.text)
 		if pos.Variadic {
 			state.variadic = true
 			return current, index, false, nil
@@ -345,29 +382,74 @@ func consumeInvocationToken[K KindProvider](
 		return current, index, false, nil
 	}
 
-	if child := current.Find(tok); child != nil {
+	if child := current.Find(tok.text); child != nil {
 		appendInvocationNode(path, child, values, states)
 		return child, index, false, nil
 	}
 
 	if len(current.Children) > 0 {
-		return nil, index, false, &UnknownSubcommandError{Name: tok, Path: current.Path()}
+		return nil, index, false, &UnknownSubcommandError{Name: tok.text, Path: current.Path()}
 	}
 
-	state.args = append(state.args, tok)
+	state.args = append(state.args, tok.text)
 	return current, index, false, nil
 }
 
+type optionTokenKind uint8
+
+const (
+	optionTokenValue optionTokenKind = iota
+	optionTokenLoneDash
+	optionTokenEnd
+	optionTokenLong
+	optionTokenShort
+)
+
+func classifyOptionToken(value string) optionTokenKind {
+	switch {
+	case value == "-":
+		return optionTokenLoneDash
+	case value == "--":
+		return optionTokenEnd
+	case strings.HasPrefix(value, "--"):
+		return optionTokenLong
+	case len(value) > 1 && value[0] == '-' && value[1] >= '0' && value[1] <= '9':
+		return optionTokenValue
+	case strings.HasPrefix(value, "-"):
+		return optionTokenShort
+	default:
+		return optionTokenValue
+	}
+}
+
+func (k optionTokenKind) isFlag() bool {
+	return k == optionTokenLong || k == optionTokenShort
+}
+
+func splitLongFlagToken(value string) (string, string, bool) {
+	if !strings.HasPrefix(value, "--") {
+		return "", "", false
+	}
+
+	name, attached, ok := strings.Cut(value, "=")
+	if !ok || name == "--" {
+		return "", "", false
+	}
+
+	return name, attached, true
+}
+
 func consumeInvocationFlag[K KindProvider](
-	args []string,
+	args []invocationToken,
 	index int,
+	hasAttachedValue bool,
 	binding flagBinding[K],
 	states map[*Node[K]]*nodeState,
 ) (int, bool) {
 	state := states[binding.Owner]
-	state.args = append(state.args, args[index])
+	state.args = append(state.args, args[index].text)
 
-	if binding.Flag.Boolean {
+	if binding.Flag.Boolean || hasAttachedValue {
 		return index, false
 	}
 
@@ -376,12 +458,55 @@ func consumeInvocationFlag[K KindProvider](
 	}
 
 	if binding.Flag.Variadic {
-		state.args = append(state.args, args[index+1:]...)
+		state.args = append(state.args, invocationTokenTexts(args[index+1:])...)
 		return len(args), true
 	}
 
-	state.args = append(state.args, args[index+1])
+	state.args = append(state.args, args[index+1].text)
 	return index + 1, false
+}
+
+func invocationTokenTexts(tokens []invocationToken) []string {
+	values := make([]string, len(tokens))
+	for i, token := range tokens {
+		values[i] = token.text
+	}
+
+	return values
+}
+
+func scanInvocationTokens(input string) []invocationToken {
+	var tokens []invocationToken
+
+	for i := 0; i < len(input); {
+		for i < len(input) {
+			r, size := utf8.DecodeRuneInString(input[i:])
+			if !unicode.IsSpace(r) {
+				break
+			}
+			i += size
+		}
+
+		if i >= len(input) {
+			break
+		}
+
+		start := i
+		for i < len(input) {
+			r, size := utf8.DecodeRuneInString(input[i:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			i += size
+		}
+
+		tokens = append(tokens, invocationToken{
+			text:  input[start:i],
+			start: start,
+		})
+	}
+
+	return tokens
 }
 
 func appendInvocationNode[K KindProvider](path *[]*Node[K], node *Node[K], values map[*Node[K]]any, states map[*Node[K]]*nodeState) {
@@ -412,7 +537,8 @@ func buildInvocation[K KindProvider](path []*Node[K], values map[*Node[K]]any, s
 			continue
 		}
 
-		if err := ParseInto(value, states[pathNode].args); err != nil {
+		state := states[pathNode]
+		if err := parseInto(value, state.args, state.optionsEnded); err != nil {
 			return Invocation[K]{}, err
 		}
 

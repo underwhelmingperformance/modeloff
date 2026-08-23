@@ -42,6 +42,16 @@ type listModelsCountingClient struct {
 	infos []api.ModelInfo
 }
 
+type upstreamListModelsError struct{}
+
+func (*upstreamListModelsError) Error() string {
+	return "upstream unreachable"
+}
+
+func (*upstreamListModelsError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("kind", "upstream unavailable"))
+}
+
 func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo, error) {
 	c.calls.Add(1)
 
@@ -66,26 +76,24 @@ func (lb *logBuffer) Write(p []byte) (int, error) {
 	return lb.buf.Write(p)
 }
 
-func (lb *logBuffer) find(msg string) map[string]any {
+func (lb *logBuffer) records(t testing.TB) []map[string]any {
+	t.Helper()
+
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
+	var records []map[string]any
 	for line := range bytes.SplitSeq(lb.buf.Bytes(), []byte("\n")) {
 		if len(line) == 0 {
 			continue
 		}
 
 		var record map[string]any
-		if json.Unmarshal(line, &record) != nil {
-			continue
-		}
-
-		if record["msg"] == msg {
-			return record
-		}
+		require.NoError(t, json.Unmarshal(line, &record))
+		records = append(records, record)
 	}
 
-	return nil
+	return records
 }
 
 // errors returns every captured record logged at error level, as the
@@ -124,6 +132,18 @@ func installLogCapture(t *testing.T) *logBuffer {
 	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
 
 	return buf
+}
+
+func normaliseLogTime(t *testing.T, record map[string]any, startedAt, finishedAt time.Time) {
+	t.Helper()
+
+	raw, ok := record["time"].(string)
+	require.True(t, ok, "log time has type %T, not string", record["time"])
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	require.NoError(t, err)
+	require.False(t, at.Before(startedAt))
+	require.False(t, at.After(finishedAt))
+	delete(record, "time")
 }
 
 func testPersonas() []domain.Persona {
@@ -373,7 +393,7 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 
 		// Each model's own JOIN is delivered but raises no dispatch
 		// turn — neither has anything to say about its own arrival.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			domain.Join{
 				Target:     "#general",
 				Nick:       "fakenick",
@@ -397,12 +417,64 @@ func TestSession_AddModel_creates_new_instance_per_invocation(t *testing.T) {
 		instances, err := store.ListInstances(ctx)
 		require.NoError(t, err)
 
-		ids := make([]domain.InstanceID, len(instances))
-		for i, inst := range instances {
-			ids[i] = inst.ID()
+		type listedChannel struct {
+			Name     domain.ChannelName
+			JoinedAt time.Time
+		}
+		type listedInstance struct {
+			ID       domain.InstanceID
+			ModelID  domain.ModelID
+			Nick     domain.Nick
+			Persona  string
+			Channels []listedChannel
 		}
 
-		require.ElementsMatch(t, []domain.InstanceID{"", first.ID(), second.ID()}, ids,
+		got := make([]listedInstance, 0, len(instances))
+		for _, inst := range instances {
+			id := inst.ID()
+			switch id {
+			case first.ID():
+				id = "first"
+			case second.ID():
+				id = "second"
+			}
+
+			var channels []listedChannel
+			for pair := inst.Channels().Oldest(); pair != nil; pair = pair.Next() {
+				channels = append(channels, listedChannel{Name: pair.Key, JoinedAt: pair.Value})
+			}
+
+			got = append(got, listedInstance{
+				ID:       id,
+				ModelID:  inst.ModelID,
+				Nick:     inst.Nick(),
+				Persona:  inst.Persona(),
+				Channels: channels,
+			})
+		}
+
+		require.Equal(t, []listedInstance{
+			{
+				ID:       "first",
+				ModelID:  "test/model",
+				Nick:     "fakenick",
+				Persona:  "Helpful assistant",
+				Channels: []listedChannel{{Name: "#general", JoinedAt: emittedAt}},
+			},
+			{
+				ID:       "second",
+				ModelID:  "test/model",
+				Nick:     "fakenick1",
+				Channels: []listedChannel{{Name: "#random", JoinedAt: emittedAt}},
+			},
+			{
+				Nick: "testuser",
+				Channels: []listedChannel{
+					{Name: "#general", JoinedAt: emittedAt},
+					{Name: "#random", JoinedAt: emittedAt},
+				},
+			},
+		}, got,
 			"both models plus the connection record of the client that added them")
 	})
 }
@@ -492,7 +564,6 @@ func TestManager_DetachAll_joins_a_client_released_mid_session(t *testing.T) {
 func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		upstream := make(chan struct{})
-		t.Cleanup(func() { close(upstream) })
 
 		fake := &apitest.Fake{
 			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
@@ -502,6 +573,7 @@ func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T)
 		}
 
 		_, store, mgr, user := newTestSessionWithManager(t, fake, "")
+		t.Cleanup(func() { close(upstream) })
 		ctx := t.Context()
 
 		seedChannel(t, user, "#general")
@@ -545,8 +617,8 @@ func TestManager_DetachAll_abandons_a_turn_past_the_drain_deadline(t *testing.T)
 // `session.ErrSessionClosed` without a database round trip, and the
 // one path that would reach the database directly is a memory tool.
 // The model here calls one, so the closed store is genuinely touched;
-// the tool answers the model with the failure and the turn ends. The
-// operator's log stays as it was.
+// the resulting execution failure ends the tool loop. The operator's
+// log stays as it was.
 func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		logs := installLogCapture(t)
@@ -554,7 +626,7 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 		upstream := make(chan struct{})
 		memStore := storetest.NewMemoryStore(t)
 
-		var toolResults []api.ToolResult
+		var continuationCalled bool
 
 		fake := &apitest.Fake{
 			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
@@ -564,8 +636,8 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 
 				return writeMemoryToolCall(t, "still_here", "the drain gave up on me"), nil
 			},
-			ContinueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, results []api.ToolResult) (api.CompletionResult, error) {
-				toolResults = results
+			ContinueWithToolResultsFn: func(_ context.Context, _ *api.Conversation, _ []api.ToolResult) (api.CompletionResult, error) {
+				continuationCalled = true
 
 				return api.CompletionResult{}, nil
 			},
@@ -619,29 +691,14 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 		close(upstream)
 		synctest.Wait()
 
-		// The tool ran and met the closed database, which is what gives
-		// the quiet assertion below something to cover. The
-		// model has `write_memory` because this manager was given a
-		// memory store, so the only failure available to that call is
-		// the store it writes through, and the failure came back to
-		// the model as its tool result.
-		require.Len(t, toolResults, 1)
-
-		var payload struct {
-			OK    bool   `json:"ok"`
-			Error string `json:"error"`
-		}
-		require.NoError(t, json.Unmarshal([]byte(toolResults[0].Content), &payload))
-		require.False(t, payload.OK)
-		require.NotEmpty(t, payload.Error)
-
-		// The turn ran to its end after the close, which is both what
-		// makes the assertion below cover the whole of it and proof
-		// that the capture is live.
-		require.NotNil(t, logs.find("dispatch to instance"))
+		// The model has `write_memory` because this manager was given a
+		// memory store. The tool therefore reaches the closed store and
+		// returns an execution failure, which aborts the loop before an
+		// upstream continuation can receive tool results.
+		require.False(t, continuationCalled)
 
 		require.Empty(t, logs.errors(),
-			"an abandoned turn tells the operator nothing: the stopped command loop refuses its wire commands, and a failing tool answers the model")
+			"an abandoned turn tells the operator nothing: the stopped command loop refuses its wire commands, and a failing tool ends the tool loop")
 	})
 }
 
@@ -695,8 +752,6 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 			},
 		}, collectUserEvents(user))
 
-		require.NotEmpty(t, inst.Persona())
-
 		descriptions := make(map[string]bool)
 		for _, p := range testPersonas() {
 			descriptions[p.Description] = true
@@ -708,9 +763,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 }
 
 func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) {
-	logs := installLogCapture(t)
-
-	upstreamErr := fmt.Errorf("upstream unreachable")
+	upstreamErr := &upstreamListModelsError{}
 	client := &listModelsCountingClient{err: upstreamErr}
 
 	_, _, mgr, user := newTestSessionWithManager(t, client, "test-key")
@@ -718,29 +771,41 @@ func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) 
 
 	seedChannel(t, user, "#dev")
 
+	logs := installLogCapture(t)
+	startedAt := time.Now()
 	_, err := mgr.ListModels(ctx)
 	require.ErrorIs(t, err, upstreamErr)
 	require.Equal(t, modelmanager.ListStateFailed, mgr.ListState())
 
 	addErr := addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", "")
+	finishedAt := time.Now()
 	require.ErrorIs(t, addErr, modelclient.ErrModelListUnavailable)
 
 	require.Equal(t, int32(1), client.calls.Load(),
 		"AddModel must short-circuit on the cached failed state and not re-hit ListModels")
 
-	transition := logs.find("model list state transitioned")
-	require.NotNil(t, transition, "expected transition log record")
-	require.Equal(t, "WARN", transition["level"])
-	require.Equal(t, "modelmanager", transition["component"])
-	require.Equal(t, "none", transition["from"])
-	require.Equal(t, "failed", transition["to"])
-	require.Equal(t, upstreamErr.Error(), transition["error"])
-
-	shortCircuit := logs.find("add-model short-circuited: model list unavailable")
-	require.NotNil(t, shortCircuit, "expected short-circuit log record")
-	require.Equal(t, "INFO", shortCircuit["level"])
-	require.Equal(t, "modelmanager", shortCircuit["component"])
-	require.Equal(t, "anthropic/claude-3-haiku", shortCircuit["model_id"])
+	records := logs.records(t)
+	for _, record := range records {
+		normaliseLogTime(t, record, startedAt, finishedAt)
+	}
+	require.Equal(t, []map[string]any{
+		{
+			"level":     "WARN",
+			"msg":       "model list state transitioned",
+			"component": "modelmanager",
+			"from":      "none",
+			"to":        "failed",
+			"error": map[string]any{
+				"kind": "upstream unavailable",
+			},
+		},
+		{
+			"level":     "INFO",
+			"msg":       "add-model short-circuited: model list unavailable",
+			"component": "modelmanager",
+			"model_id":  "anthropic/claude-3-haiku",
+		},
+	}, records)
 }
 
 func TestSession_AddModel_lazy_loads_when_state_none(t *testing.T) {
@@ -811,14 +876,14 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 // time exactly the way a live channel would.
 func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.T) {
 	tests := []struct {
-		name       string
-		contextLen int
-		wantThird  []string
+		name              string
+		contextLen        int
+		wantHistoryLabels [][]string
 	}{
 		{
-			name:       "small ContextLen trims the transcript to the newest entry",
-			contextLen: 2000,
-			wantThird:  []string{"second"},
+			name:              "small ContextLen trims the transcript to the newest entry",
+			contextLen:        2000,
+			wantHistoryLabels: [][]string{{""}, {"first"}, {"second"}},
 		},
 		{
 			// The leading "" is the model's own JOIN, filed into
@@ -828,7 +893,11 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 			// both messages.
 			name:       "context length OpenRouter didn't report keeps every entry",
 			contextLen: 0,
-			wantThird:  []string{"", "first", "second"},
+			wantHistoryLabels: [][]string{
+				{""},
+				{"", "first"},
+				{"", "first", "second"},
+			},
 		},
 	}
 
@@ -849,6 +918,7 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 
 				_, _, mgr, user := newTestSessionWithManager(t, fake, "test-key")
 				ctx := t.Context()
+				eventAt := time.Now()
 
 				// Warm the catalogue cache up front so CachedContextLen
 				// has something to report from the model's very first
@@ -872,15 +942,36 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 					synctest.Wait()
 				}
 
-				require.Len(t, histories, 3)
-
-				var thirdTurnLabels []string
-				for _, msg := range histories[2] {
-					label, _, _ := strings.Cut(msg.Body, " ")
-					thirdTurnLabels = append(thirdTurnLabels, label)
+				join := protocol.IRCMessage{
+					Kind:   protocol.KindJoin,
+					From:   "testuser",
+					Target: "#dev",
+					At:     eventAt.UTC(),
+				}
+				messages := map[string]protocol.IRCMessage{}
+				for _, label := range []string{"first", "second", "third"} {
+					messages[label] = protocol.IRCMessage{
+						Kind:   protocol.KindPrivMsg,
+						From:   "testuser",
+						Target: "#dev",
+						Body:   label + " " + big,
+						At:     eventAt,
+					}
 				}
 
-				require.Equal(t, tc.wantThird, thirdTurnLabels)
+				wantHistories := make([][]protocol.IRCMessage, len(tc.wantHistoryLabels))
+				for turn, labels := range tc.wantHistoryLabels {
+					for _, label := range labels {
+						if label == "" {
+							wantHistories[turn] = append(wantHistories[turn], join)
+							continue
+						}
+
+						wantHistories[turn] = append(wantHistories[turn], messages[label])
+					}
+				}
+
+				require.Equal(t, wantHistories, histories)
 			})
 		})
 	}

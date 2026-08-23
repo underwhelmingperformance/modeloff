@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,9 +10,54 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
 )
+
+func TestCommandResult_classifies_refusals_and_execution_failures(t *testing.T) {
+	sentinel := errors.New("store unavailable")
+	refusal := domain.UnknownNickError{Nick: "missing", At: fixedTime}
+	validation := observability.ErrWithKind(errors.New("invalid target"), observability.ErrorKindValidation)
+
+	tests := []struct {
+		name     string
+		err      error
+		wantResp protocol.Response
+		wantErr  error
+	}{
+		{name: "success"},
+		{
+			name:     "protocol refusal",
+			err:      refusal,
+			wantResp: protocol.Response{Err: refusal},
+		},
+		{
+			name:     "tagged validation refusal",
+			err:      validation,
+			wantResp: protocol.Response{Err: validation},
+		},
+		{
+			name:    "infrastructure failure",
+			err:     sentinel,
+			wantErr: sentinel,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := commandResult(tt.err)
+
+			require.Equal(t, tt.wantResp, resp)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
 
 // closedProtocolEvents is a shared closed channel used as the
 // inert `Events()` return value for every [fakeClient]. Reusing
@@ -424,5 +470,75 @@ func TestSession_Handle_delegates(t *testing.T) {
 				c.verify(t, sess, store)
 			}
 		})
+	}
+}
+
+func TestSession_Handle_rejects_invalid_message_bodies_before_sending(t *testing.T) {
+	type commandCase struct {
+		name  string
+		build func(string) protocol.Command
+	}
+
+	commands := []commandCase{
+		{
+			name: "PRIVMSG",
+			build: func(body string) protocol.Command {
+				return protocol.PrivMsg{Target: protocol.ChannelTarget("#general"), Body: body}
+			},
+		},
+		{
+			name: "ACTION",
+			build: func(body string) protocol.Command {
+				return protocol.Action{Target: protocol.ChannelTarget("#general"), Body: body}
+			},
+		},
+	}
+
+	bodies := []struct {
+		name    string
+		body    string
+		wantErr func(string) error
+	}{
+		{
+			name: "empty",
+			wantErr: func(command string) error {
+				return domain.NoTextToSendError{Command: command, At: fixedTime}
+			},
+		},
+		{
+			name: "NUL",
+			body: "before\x00after",
+			wantErr: func(command string) error {
+				return domain.InvalidMessageBodyError{Command: command, At: fixedTime}
+			},
+		},
+		{
+			name: "carriage return",
+			body: "before\rafter",
+			wantErr: func(command string) error {
+				return domain.InvalidMessageBodyError{Command: command, At: fixedTime}
+			},
+		},
+		{
+			name: "newline",
+			body: "before\nafter",
+			wantErr: func(command string) error {
+				return domain.InvalidMessageBodyError{Command: command, At: fixedTime}
+			},
+		},
+	}
+
+	for _, command := range commands {
+		for _, body := range bodies {
+			t.Run(command.name+"/"+body.name, func(t *testing.T) {
+				sess, eventStore := newTestSession(t)
+				require.NoError(t, joinAs(t.Context(), sess, userInstance(t, sess), "#general", ""))
+
+				resp, err := sess.Handle(t.Context(), newPlainClient(protocol.UserClientID), command.build(body.body))
+				require.NoError(t, err)
+				require.Equal(t, protocol.Response{Err: body.wantErr(command.name)}, resp)
+				require.Equal(t, []string{"join"}, channelEventTypes(t, eventStore, "#general"))
+			})
+		}
 	}
 }

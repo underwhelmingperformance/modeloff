@@ -88,11 +88,9 @@ type EmbeddingProber interface {
 
 // InstanceDeleter is an optional capability a memory Store can
 // implement to remove state it owns for a single instance, keyed by
-// identity. An instance's `memories` rows are already removed when
-// its own row is deleted (see
-// [github.com/laney/modeloff/internal/store.SQLiteStore.DeleteInstanceByID]);
-// this exists for state the memory layer owns independently of that
-// row, such as an IndexedStore's chromem-go vector collection.
+// identity. This covers state the memory layer owns independently of
+// the backing store, such as an IndexedStore's chromem-go vector
+// collection.
 type InstanceDeleter interface {
 	DeleteInstance(ctx context.Context, id domain.InstanceID) error
 }

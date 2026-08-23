@@ -16,19 +16,14 @@ type plainString string
 
 type prefixed string
 
-func (p *prefixed) Decode(raw string) error {
+func (p *prefixed) UnmarshalText(text []byte) error {
+	raw := string(text)
 	if !strings.HasPrefix(raw, "#") {
 		raw = "#" + raw
 	}
 
 	*p = prefixed(raw)
 	return nil
-}
-
-type failingDecoder string
-
-func (f *failingDecoder) Decode(raw string) error {
-	return fmt.Errorf("always fails: %s", raw)
 }
 
 type myInt int
@@ -44,16 +39,20 @@ func (u *uppercaser) UnmarshalText(text []byte) error {
 
 type strictText string
 
+type emptyTextError struct{}
+
+func (*emptyTextError) Error() string { return "empty text not allowed" }
+
 func (s *strictText) UnmarshalText(text []byte) error {
 	if len(text) == 0 {
-		return fmt.Errorf("empty text not allowed")
+		return &emptyTextError{}
 	}
 
 	*s = strictText(text)
 	return nil
 }
 
-func TestRegistry_ForType_resolves_FieldDecoder_first(t *testing.T) {
+func TestRegistry_ForType_resolves_TextUnmarshaler(t *testing.T) {
 	r := NewRegistry().RegisterDefaults()
 
 	dec := r.ForType(reflect.TypeFor[prefixed]())
@@ -128,18 +127,6 @@ func TestRegistry_ForType_kind_fallback_for_aliases(t *testing.T) {
 			require.Equal(t, tt.want, target.Interface())
 		})
 	}
-}
-
-func TestRegistry_FieldDecoder_error_propagates(t *testing.T) {
-	r := NewRegistry().RegisterDefaults()
-
-	dec := r.ForType(reflect.TypeFor[failingDecoder]())
-	require.NotNil(t, dec)
-
-	target := reflect.New(reflect.TypeFor[failingDecoder]()).Elem()
-	err := dec.Decode("anything", target)
-
-	require.EqualError(t, err, "always fails: anything")
 }
 
 func TestRegistry_primitive_kinds(t *testing.T) {
@@ -228,18 +215,6 @@ func TestRegistry_resolution_precedence(t *testing.T) {
 		want  any
 	}{
 		{
-			name: "FieldDecoder beats registered type",
-			setup: func(r *Registry) {
-				r.RegisterType(reflect.TypeFor[prefixed](), DecoderFunc(func(_ string, target reflect.Value) error {
-					target.SetString("should-not-reach")
-					return nil
-				}))
-			},
-			typ:   reflect.TypeFor[prefixed](),
-			input: "general",
-			want:  prefixed("#general"),
-		},
-		{
 			name: "registered type beats kind",
 			setup: func(r *Registry) {
 				r.RegisterType(reflect.TypeFor[string](), DecoderFunc(func(raw string, target reflect.Value) error {
@@ -264,7 +239,7 @@ func TestRegistry_resolution_precedence(t *testing.T) {
 			want:  uppercaser("custom:hello"),
 		},
 		{
-			name:  "FieldDecoder beats TextUnmarshaler",
+			name:  "TextUnmarshaler beats kind",
 			setup: func(_ *Registry) {},
 			typ:   reflect.TypeFor[prefixed](),
 			input: "test",
@@ -359,7 +334,7 @@ func TestRegistry_TextUnmarshaler(t *testing.T) {
 	require.Equal(t, uppercaser("HELLO"), target.Interface())
 }
 
-func TestRegistry_TextUnmarshaler_error_wraps_as_DecodeError(t *testing.T) {
+func TestRegistry_TextUnmarshaler_preserves_typed_error(t *testing.T) {
 	r := NewRegistry().RegisterDefaults()
 
 	dec := r.ForType(reflect.TypeFor[strictText]())
@@ -368,10 +343,9 @@ func TestRegistry_TextUnmarshaler_error_wraps_as_DecodeError(t *testing.T) {
 	target := reflect.New(reflect.TypeFor[strictText]()).Elem()
 	err := dec.Decode("", target)
 
-	var de *DecodeError
-	require.ErrorAs(t, err, &de)
-	require.Equal(t, "", de.Value)
-	require.Equal(t, "text", de.Expected)
+	var empty *emptyTextError
+	require.ErrorAs(t, err, &empty)
+	require.Equal(t, &emptyTextError{}, empty)
 }
 
 func TestRegistry_duration_via_registered_type(t *testing.T) {

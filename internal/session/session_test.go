@@ -105,7 +105,7 @@ func normaliseInstance(inst *domain.Instance) comparableInstance {
 func userClient(t testing.TB, sess *Session) protocol.Client {
 	t.Helper()
 
-	c := sess.LookupClient(protocol.UserClientID)
+	c := sess.registeredClientHandle(protocol.UserClientID)
 	require.NotNil(t, c, "user-client must be attached for this test")
 
 	return c
@@ -2364,7 +2364,7 @@ func TestSession_Dispatch_multiple_instances_each_reply_once(t *testing.T) {
 	})
 }
 
-func TestSession_Dispatch_ignores_empty_reply_body(t *testing.T) {
+func TestSession_Dispatch_sends_whitespace_reply_body(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
 			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
@@ -2386,6 +2386,7 @@ func TestSession_Dispatch_ignores_empty_reply_body(t *testing.T) {
 		msgs := channelMessages(t, s, "#general")
 		require.Equal(t, []domain.Message{
 			{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
+			{Target: "#general", From: "botty", InstanceID: "inst-botty", Body: "   ", At: fixedTime},
 		}, msgs)
 	})
 }
@@ -3605,7 +3606,7 @@ func TestSession_Dispatch_delete_memory_then_pass(t *testing.T) {
 	})
 }
 
-func TestSession_Dispatch_memory_write_error_returns_error_to_model(t *testing.T) {
+func TestSession_Dispatch_memory_write_failure_aborts_the_tool_loop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var continueResults []api.ToolResult
 		fake := &apitest.Fake{
@@ -3637,13 +3638,10 @@ func TestSession_Dispatch_memory_write_error_returns_error_to_model(t *testing.T
 
 		dispatchUserMessage(ctx, t, sess, "#general", "hello")
 
-		require.Equal(t, []api.ToolResult{
-			{ToolCallID: "call_1", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: false, Error: "disk full"})},
-		}, continueResults)
+		require.Equal(t, []api.ToolResult(nil), continueResults)
 
 		require.Equal(t, []domain.Message{
 			{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
-			{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "ok anyway", At: fixedTime},
 		}, channelMessages(t, s, "#general"))
 	})
 }
@@ -4021,7 +4019,7 @@ func TestSession_Dispatch_encodes_msg_tool_spans(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
 			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-				fg := uint8(4)
+				fg := protocol.ReplyPaletteIndex(4)
 				return msgSpansToolCall(t, domain.ChannelName(events[0].Target), []protocol.ReplySpan{
 					{Text: "hello "},
 					{Text: "world", Style: &protocol.ReplyStyle{Bold: true, FG: &fg}},
@@ -4070,9 +4068,26 @@ func TestSession_Dispatch_msg_tool_error_lets_model_retry(t *testing.T) {
 
 		dispatchUserMessage(ctx, t, sess, "#general", "hello")
 
-		require.Equal(t, []api.ToolResult{
-			{ToolCallID: "call_msg_spans_0", Content: mustToolResultContent(t, modelclient.ToolResultPayload{OK: false, Error: "span 0 is empty"})},
-		}, rejected)
+		type rejectedResult struct {
+			ToolCallID string
+			OK         bool
+		}
+
+		gotRejected := make([]rejectedResult, len(rejected))
+		for i, result := range rejected {
+			var payload modelclient.ToolResultPayload
+			require.NoError(t, json.Unmarshal([]byte(result.Content), &payload))
+
+			gotRejected[i] = rejectedResult{
+				ToolCallID: result.ToolCallID,
+				OK:         payload.OK,
+			}
+		}
+
+		require.Equal(t, []rejectedResult{{
+			ToolCallID: "call_msg_spans_0",
+			OK:         false,
+		}}, gotRejected)
 		require.Equal(t, []domain.Message{
 			{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
 			{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "clean reply", At: fixedTime},

@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/store"
 )
 
 // channelState holds the session's live channel records. A running
@@ -19,14 +21,12 @@ import (
 // reach the record the next command will read.
 //
 // One mutex covers the whole map, and it is held across the store
-// calls that fill and destroy an entry. That is deliberate and is
-// the mechanism, not an accident of coarseness: a fill is the only
-// way a name enters the map and a destroy is the only way one
-// leaves, so a fill that could interleave with a destroy would read
-// the row the destroy is about to delete and reinstate the channel
-// the command loop had just destroyed. Both spans hold the lock, so
-// neither can see the other half-done. The cost is that filling one
-// cold channel briefly blocks readers of every channel.
+// calls that fill, reload and destroy an entry. A fill that could
+// interleave with a destroy would read the row the destroy is about
+// to delete and reinstate the channel the command loop had just
+// destroyed. Holding the lock across these operations prevents that
+// half-written state. The cost is that filling one cold channel
+// briefly blocks readers of every channel.
 //
 // Entries arrive on demand, so the map holds the channels this
 // session has touched. Answering a question about one named channel
@@ -82,6 +82,31 @@ func (s *Session) installChannelWindow(w *domain.ChannelWindow) {
 	defer s.channels.mu.Unlock()
 
 	s.channels.windows[domain.KeyForChannel(w.Name())] = w.Clone()
+}
+
+// reloadChannelWindow replaces cached state with the durable row for
+// the channel's casemapping class. Transactional instance deletion can
+// remove one legacy spelling while preserving another, so the old
+// handle cannot describe which row now represents the live channel.
+func (s *Session) reloadChannelWindow(ctx context.Context, name domain.ChannelName) error {
+	s.channels.mu.Lock()
+	defer s.channels.mu.Unlock()
+
+	key := domain.KeyForChannel(name)
+	delete(s.channels.windows, key)
+
+	cw, err := s.loadChannelWindowFromStore(ctx, name)
+	if errors.Is(err, store.ErrNoSuchChannel) {
+		s.channelFlood.forget(name)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	s.channels.windows[domain.KeyForChannel(cw.Name())] = cw
+
+	return nil
 }
 
 // destroyChannel ends a channel (RFC 2811 §2): the live record and

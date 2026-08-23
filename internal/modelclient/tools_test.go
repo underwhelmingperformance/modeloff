@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -130,6 +131,10 @@ func TestToolResultPayload_JSON_round_trip(t *testing.T) {
 type fakeMemoryExecutor struct {
 	written map[string]string
 	deleted []string
+
+	writeErr  error
+	deleteErr error
+	searchErr error
 }
 
 func newFakeMemoryExecutor() *fakeMemoryExecutor {
@@ -137,16 +142,28 @@ func newFakeMemoryExecutor() *fakeMemoryExecutor {
 }
 
 func (f *fakeMemoryExecutor) WriteMemory(_ context.Context, key, content string) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+
 	f.written[key] = content
 	return nil
 }
 
 func (f *fakeMemoryExecutor) DeleteMemory(_ context.Context, key string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+
 	f.deleted = append(f.deleted, key)
 	return nil
 }
 
 func (f *fakeMemoryExecutor) SearchMemory(_ context.Context, _ string, _ int) ([]memory.SearchResult, error) {
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+
 	return []memory.SearchResult{{Entry: memory.Entry{Key: "found", Content: "value"}, Similarity: 0.9}}, nil
 }
 
@@ -230,6 +247,53 @@ func TestMemoryToolRegistry_search_executes(t *testing.T) {
 	payload, err := spec.Execute(t.Context(), ToolContext{}, args)
 	require.NoError(t, err)
 	require.True(t, payload.OK)
+}
+
+func TestMemoryToolRegistry_store_failures_are_execution_errors(t *testing.T) {
+	sentinel := errors.New("store unavailable")
+	tests := []struct {
+		name       string
+		tool       string
+		args       json.RawMessage
+		executor   *fakeMemoryExecutor
+		withSearch bool
+	}{
+		{
+			name:     "write",
+			tool:     "write_memory",
+			args:     json.RawMessage(`{"key":"mood","content":"happy"}`),
+			executor: &fakeMemoryExecutor{written: make(map[string]string), writeErr: sentinel},
+		},
+		{
+			name:     "delete",
+			tool:     "delete_memory",
+			args:     json.RawMessage(`{"key":"mood"}`),
+			executor: &fakeMemoryExecutor{written: make(map[string]string), deleteErr: sentinel},
+		},
+		{
+			name:       "search",
+			tool:       "search_memory",
+			args:       json.RawMessage(`{"query":"mood","limit":5}`),
+			executor:   &fakeMemoryExecutor{written: make(map[string]string), searchErr: sentinel},
+			withSearch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := memoryToolRegistry(tt.executor, tt.withSearch)
+			spec, ok := registry.Find(tt.tool)
+			require.True(t, ok)
+
+			payload, err := spec.Execute(t.Context(), ToolContext{}, tt.args)
+			require.Equal(t, ToolResultPayload{}, payload)
+			require.ErrorIs(t, err, sentinel)
+
+			var executionError *ToolExecutionError
+			require.ErrorAs(t, err, &executionError)
+			require.Equal(t, &ToolExecutionError{Tool: tt.tool, Err: sentinel}, executionError)
+		})
+	}
 }
 
 func loadGolden(t *testing.T, name string) string {

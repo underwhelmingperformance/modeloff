@@ -865,7 +865,8 @@ func TestChatScreen_msg_command_requires_body(t *testing.T) {
 	waitForChannelAndModelSeedDrain(tm)
 
 	tm.Submit("/msg fakenick")
-	tm.WaitFor("message body is required")
+	tm.WaitForViewContains("✗")
+	requireOpenDMWindows(t, h)
 }
 
 // TestChatScreen_query_command_opens_dm exercises the

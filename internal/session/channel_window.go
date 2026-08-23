@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -79,25 +80,43 @@ func (s *Session) commitChannel(ctx context.Context, window *domain.ChannelWindo
 
 // removeMember is the single membership-decrement primitive
 // shared by every action that drops an actor from a channel
-// (PART, KICK, QUIT). It mutates `window.Members`, drops the
+// while its instance row remains (PART and KICK). It mutates
+// `window.Members`, drops the
 // channel from `actor.Channels()`, writes the actor's instance
 // row, and commits the window: persisting the updated state, or
 // deleting the row when the channel is now empty (RFC 2811 §2).
+// The instance and channel writes are both attempted. A failed
+// instance write must not leave the departed member in the session's
+// live channel state.
 //
 // Callers own the broadcast event that announces the departure
-// (PART, KICK, QUIT) and any caller-specific bookkeeping.
+// and any caller-specific bookkeeping.
 func (s *Session) removeMember(ctx context.Context, window *domain.ChannelWindow, actor *domain.Instance) error {
-	ch := window.Name()
+	s.removeMemberFromWindow(window, actor)
 
-	if m, ok := window.Members.GetByInstance(actor); ok {
-		window.Members.Remove(m)
+	instanceErr := s.store.SaveInstance(ctx, actor)
+	channelErr := s.commitChannel(ctx, window)
+
+	if instanceErr != nil {
+		instanceErr = fmt.Errorf("save instance: %w", instanceErr)
+	}
+	if channelErr != nil {
+		channelErr = fmt.Errorf("commit channel: %w", channelErr)
 	}
 
-	actor.LeaveChannels(ch)
+	return errors.Join(instanceErr, channelErr)
+}
 
-	if err := s.store.SaveInstance(ctx, actor); err != nil {
-		return fmt.Errorf("save instance: %w", err)
-	}
+func (s *Session) removeDeletedMember(ctx context.Context, window *domain.ChannelWindow, actor *domain.Instance) error {
+	s.removeMemberFromWindow(window, actor)
 
 	return s.commitChannel(ctx, window)
+}
+
+func (s *Session) removeMemberFromWindow(window *domain.ChannelWindow, actor *domain.Instance) {
+	if member, ok := window.Members.GetByInstance(actor); ok {
+		window.Members.Remove(member)
+	}
+
+	actor.LeaveChannels(window.Name())
 }

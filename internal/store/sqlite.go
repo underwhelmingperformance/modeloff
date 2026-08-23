@@ -423,7 +423,8 @@ func (s *SQLiteStore) loadInstancesByID(ctx context.Context, ids []domain.Instan
 
 	fresh, err := queryRows(ctx, s.db, `
 		SELECT data FROM instances
-		WHERE instance_id IN (SELECT value FROM json_each(?))
+		WHERE pending_deletion = 0
+		  AND instance_id IN (SELECT value FROM json_each(?))
 	`, []any{string(idsJSON)}, jsonColumn[domain.Instance])
 	if err != nil {
 		return fmt.Errorf("load instances: %w", err)
@@ -939,7 +940,7 @@ func (s *SQLiteStore) ListInstances(ctx context.Context) ([]*domain.Instance, er
 	var instances []*domain.Instance
 	err := s.inSpan(ctx, "store.sqlite.list_instances", nil, func(ctx context.Context, _ trace.Span) error {
 		fresh, err := queryRows(ctx, s.db,
-			`SELECT data FROM instances ORDER BY nick`, nil,
+			`SELECT data FROM instances WHERE pending_deletion = 0 ORDER BY nick`, nil,
 			jsonColumn[domain.Instance])
 		if err != nil {
 			return err
@@ -965,7 +966,7 @@ func (s *SQLiteStore) GetInstanceByID(ctx context.Context, id domain.InstanceID)
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
 			fresh, err := queryRow(ctx, s.db,
-				`SELECT data FROM instances WHERE instance_id = ?`,
+				`SELECT data FROM instances WHERE instance_id = ? AND pending_deletion = 0`,
 				[]any{string(id)}, nil,
 				jsonColumn[domain.Instance])
 			if err != nil {
@@ -1003,7 +1004,9 @@ func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domai
 		[]attribute.KeyValue{attribute.String(observability.AttrNick, string(nick))},
 		func(ctx context.Context, _ trace.Span) error {
 			fresh, err := queryRow(ctx, s.db,
-				`SELECT data FROM instances WHERE nick = ? COLLATE NOCASE ORDER BY nick LIMIT 1`,
+				`SELECT data FROM instances
+				 WHERE nick = ? COLLATE NOCASE AND pending_deletion = 0
+				 ORDER BY nick LIMIT 1`,
 				[]any{nick},
 				fmt.Errorf("resolve nick %q: %w", nick, ErrNoSuchNick),
 				jsonColumn[domain.Instance])
@@ -1067,14 +1070,9 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 }
 
 // DeleteInstanceByID implements Store. Evicts the instance row and
-// its `memories` rows from SQLite in the same transaction — instance
-// ids are never reused, so a memories row left behind after its
-// owning instance is gone would never be reachable again — and the
-// handle from the canonical registry. The chromem-go vector
-// collection a memory.IndexedStore may hold for this instance lives
-// outside SQLite entirely; a caller that also uses the memory
-// package's indexed store is responsible for calling its
-// DeleteInstance alongside this method.
+// its `memories` rows from SQLite in the same transaction, records
+// the indexed-memory deletion still due, and removes the handle from
+// the canonical registry.
 func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error {
 	return s.inSpan(ctx, "store.sqlite.delete_instance_by_id",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
@@ -1086,8 +1084,22 @@ func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.Instance
 
 			defer func() { _ = tx.Rollback() }()
 
+			// The empty instance id belongs to the user, which never has
+			// a model memory collection.
+			if id != "" {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT OR IGNORE INTO pending_memory_deletions (instance_id) VALUES (?)`,
+					string(id),
+				); err != nil {
+					return fmt.Errorf("record pending memory deletion: %w", err)
+				}
+			}
+
 			if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE instance_id = ?`, string(id)); err != nil {
 				return fmt.Errorf("delete memories: %w", err)
+			}
+			if err := deleteInstanceChannelMemberships(ctx, tx, id); err != nil {
+				return err
 			}
 
 			if _, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE instance_id = ?`, string(id)); err != nil {
@@ -1101,6 +1113,156 @@ func (s *SQLiteStore) DeleteInstanceByID(ctx context.Context, id domain.Instance
 			s.forgetInstance(id)
 			return nil
 		})
+}
+
+// deleteInstanceChannelMemberships removes an instance from every
+// persisted channel in the same transaction that deletes the instance.
+// It treats casing-equivalent rows as one channel when deciding whether
+// any members remain.
+func deleteInstanceChannelMemberships(ctx context.Context, tx *sql.Tx, id domain.InstanceID) error {
+	rows, err := queryRows(ctx, tx,
+		`SELECT data FROM channels WHERE json_extract(data, '$.Kind') = ?`,
+		[]any{domain.KindChannel}, jsonColumn[channelRow])
+	if err != nil {
+		return fmt.Errorf("list channel memberships: %w", err)
+	}
+
+	for _, group := range channelMembershipGroups(rows, id) {
+		if err := applyChannelMembershipGroup(ctx, tx, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type channelMembershipUpdate struct {
+	row     *channelRow
+	changed bool
+}
+
+func channelMembershipGroups(
+	rows []channelRow,
+	id domain.InstanceID,
+) map[domain.ChannelKey][]channelMembershipUpdate {
+	groups := make(map[domain.ChannelKey][]channelMembershipUpdate)
+	for index := range rows {
+		row := &rows[index]
+		changed := false
+		for member := range row.Members.All() {
+			if member.Instance.ID() != id {
+				continue
+			}
+
+			row.Members.Remove(member)
+			changed = true
+			break
+		}
+
+		key := domain.KeyForChannel(row.Name)
+		groups[key] = append(groups[key], channelMembershipUpdate{row: row, changed: changed})
+	}
+
+	return groups
+}
+
+func applyChannelMembershipGroup(
+	ctx context.Context,
+	tx *sql.Tx,
+	group []channelMembershipUpdate,
+) error {
+	groupChanged := false
+	membersRemain := false
+	for _, update := range group {
+		groupChanged = groupChanged || update.changed
+		if update.row.Members.Len() > 0 {
+			membersRemain = true
+		}
+	}
+
+	if !groupChanged {
+		return nil
+	}
+
+	if !membersRemain {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM channels WHERE name = ? COLLATE NOCASE`, group[0].row.Name,
+		); err != nil {
+			return fmt.Errorf("delete empty channel %q: %w", group[0].row.Name, err)
+		}
+		return nil
+	}
+
+	for _, update := range group {
+		if update.row.Members.Len() == 0 {
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM channels WHERE name = ? COLLATE BINARY`, update.row.Name,
+			); err != nil {
+				return fmt.Errorf("delete empty channel row %q: %w", update.row.Name, err)
+			}
+			continue
+		}
+		if !update.changed {
+			continue
+		}
+
+		data, err := json.Marshal(update.row)
+		if err != nil {
+			return fmt.Errorf("marshal channel %q: %w", update.row.Name, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE channels SET data = ? WHERE name = ? COLLATE BINARY`, string(data), update.row.Name,
+		); err != nil {
+			return fmt.Errorf("update channel %q: %w", update.row.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// MarkInstancePendingDeletion removes an instance from every lookup
+// while retaining its row for a later deletion retry.
+func (s *SQLiteStore) MarkInstancePendingDeletion(ctx context.Context, id domain.InstanceID) error {
+	err := s.inSpan(ctx, "store.sqlite.mark_instance_pending_deletion",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db,
+				`UPDATE instances SET pending_deletion = 1 WHERE instance_id = ?`,
+				string(id))
+		})
+	if err != nil {
+		return err
+	}
+
+	s.forgetInstance(id)
+
+	return nil
+}
+
+// ListPendingInstanceDeletions returns the instance ids whose rows
+// must be deleted before model clients are restored at startup.
+func (s *SQLiteStore) ListPendingInstanceDeletions(ctx context.Context) ([]domain.InstanceID, error) {
+	return queryRows(ctx, s.db,
+		`SELECT instance_id FROM instances WHERE pending_deletion = 1 ORDER BY instance_id`,
+		nil,
+		scalarColumn[domain.InstanceID]())
+}
+
+// ListPendingMemoryDeletions returns the instance ids whose indexed
+// memory collections still need deletion.
+func (s *SQLiteStore) ListPendingMemoryDeletions(ctx context.Context) ([]domain.InstanceID, error) {
+	return queryRows(ctx, s.db,
+		`SELECT instance_id FROM pending_memory_deletions ORDER BY instance_id`,
+		nil,
+		scalarColumn[domain.InstanceID]())
+}
+
+// DeletePendingMemoryDeletion clears an indexed-memory deletion
+// after the external collection has been removed.
+func (s *SQLiteStore) DeletePendingMemoryDeletion(ctx context.Context, id domain.InstanceID) error {
+	return execMutation(ctx, s.db,
+		`DELETE FROM pending_memory_deletions WHERE instance_id = ?`,
+		string(id))
 }
 
 // GetLastWindow implements the chat screen's UI state store. A
@@ -1311,6 +1473,7 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 			`DELETE FROM events`,
 			`DELETE FROM dm_windows`,
 			`DELETE FROM instance_replies`,
+			`DELETE FROM pending_memory_deletions`,
 			`DELETE FROM instances`,
 			`DELETE FROM memories`,
 			`DELETE FROM personas`,

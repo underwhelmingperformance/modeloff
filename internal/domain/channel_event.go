@@ -24,12 +24,14 @@ import (
 // rename; renderers that want the live nick should resolve via
 // `InstanceID` where present.
 //
-// The same struct flows through both persistence and live emission:
-// a `Join` is appended to the channel event log AND emitted
-// on the session's event channel. Live consumers populate the
-// `Instance *Instance` field (excluded from JSON via `json:"-"`) so
-// they can mutate state by pointer identity; replay paths leave
-// `Instance` nil and rely on the snapshot fields plus a registry
+// The same struct normally flows through both persistence and live
+// emission: a `Join` is appended to the channel event log and emitted
+// on the session's event channel. A QUIT in an anonymous channel is the
+// exception: the channel records the masked PART its members receive,
+// so replay does not disclose the departing actor. Live consumers
+// populate the `Instance *Instance` field (excluded from JSON via
+// `json:"-"`) so they can mutate state by pointer identity; replay paths
+// leave `Instance` nil and rely on the snapshot fields plus a registry
 // lookup if a live handle is later needed.
 type PersistableEvent interface {
 	Event

@@ -268,39 +268,51 @@ func noActiveChannel() modelclient.ToolResultPayload {
 
 // sendToolCommand routes a migrated command through the model's
 // protocol client and assembles the [modelclient.ToolResultPayload]
-// the LLM tool-result protocol expects. Errors at any of the three
-// failure points (translation, transport, dispatcher) collapse to
-// `OK: false` with the error string. A failure folded into
-// `Response.Events` as a [domain.SystemNotice], where `Response.Err`
-// is nil — the shape `inviteAs` uses for an unknown target nick —
-// also collapses to `OK: false`, carrying the notice text so the
-// model sees what went wrong. Success returns `OK: true`
+// the LLM tool-result protocol expects. Translation and dispatcher
+// refusals become `OK: false` results the model can correct. A
+// transport or session execution failure aborts the tool loop. A
+// [domain.SystemNotice] in `Response.Events`, where `Response.Err` is
+// nil, also becomes `OK: false`. This is the shape `inviteAs` uses for
+// an unknown target nick, and the notice text tells the model what
+// went wrong. Success returns `OK: true`
 // with the caller-supplied summary so the model sees a stable
 // confirmation line.
 //
 // Typed errors are flattened to strings; the LLM tool-result
 // protocol carries strings only, so callers cannot `errors.As` over
 // the result.
-func sendToolCommand(ctx context.Context, tc modelclient.ToolContext, c protocolCommand, summary string) modelclient.ToolResultPayload {
+func toolResult(payload modelclient.ToolResultPayload) modelclient.ToolOutcome {
+	return modelclient.ToolOutcome{Payload: payload}
+}
+
+func toolRefusal(err error) modelclient.ToolOutcome {
+	return toolResult(modelclient.ToolResultPayload{OK: false, Error: err.Error()})
+}
+
+func toolExecutionFailure(err error) modelclient.ToolOutcome {
+	return modelclient.ToolOutcome{ExecutionError: err}
+}
+
+func sendToolCommand(ctx context.Context, tc modelclient.ToolContext, c protocolCommand, summary string) modelclient.ToolOutcome {
 	cmd, err := c.ToCommand(toolContext(tc))
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolRefusal(err)
 	}
 
 	resp, err := tc.Client.Send(ctx, cmd)
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolExecutionFailure(err)
 	}
 
 	if resp.Err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+		return toolRefusal(resp.Err)
 	}
 
 	if notice, ok := replyFailureNotice(resp.Events); ok {
-		return modelclient.ToolResultPayload{OK: false, Error: notice.Text}
+		return toolResult(modelclient.ToolResultPayload{OK: false, Error: notice.Text})
 	}
 
-	return modelclient.ToolResultPayload{OK: true, Summary: summary}
+	return toolResult(modelclient.ToolResultPayload{OK: true, Summary: summary})
 }
 
 // replyFailureNotice reports whether the dispatcher folded a
@@ -348,7 +360,7 @@ func renderReplyPart(part protocol.ReplyPart) (string, error) {
 		return "", err
 	}
 
-	if strings.TrimSpace(part.Body) != "" {
+	if part.Body != "" {
 		return part.Body, nil
 	}
 
@@ -364,6 +376,50 @@ func renderReplyPart(part protocol.ReplyPart) (string, error) {
 	return ircfmt.Encode(richtext.NewDocumentFromLines([]richtext.Line{{Spans: spans}})), nil
 }
 
+type renderedMessage struct {
+	body       string
+	pacingText string
+}
+
+// renderReplyMessages validates the complete body-or-spans batch
+// before rendering any message. Plain body elements remain separate;
+// spans describe one styled message.
+func renderReplyMessages(kind protocol.ReplyKind, bodies []string, spans protocol.ReplySpans) ([]renderedMessage, error) {
+	hasBodies := len(bodies) > 0
+	hasSpans := len(spans) > 0
+	if hasBodies == hasSpans {
+		return nil, protocol.ReplyPartShapeError{HasBody: hasBodies, HasSpans: hasSpans}
+	}
+
+	if hasBodies {
+		if err := validateMessageBodies(kind, bodies); err != nil {
+			return nil, err
+		}
+
+		messages := make([]renderedMessage, len(bodies))
+		for index, body := range bodies {
+			messages[index] = renderedMessage{body: body, pacingText: body}
+		}
+
+		return messages, nil
+	}
+	if len(spans) > maxToolReplySpans {
+		return nil, &command.TooManyValuesError{Name: "spans", Maximum: maxToolReplySpans, Actual: len(spans)}
+	}
+
+	body, err := renderReplyPart(protocol.ReplyPart{Kind: kind, Spans: spans})
+	if err != nil {
+		return nil, err
+	}
+
+	var pacingText strings.Builder
+	for _, span := range spans {
+		pacingText.WriteString(span.Text)
+	}
+
+	return []renderedMessage{{body: body, pacingText: pacingText.String()}}, nil
+}
+
 func replyStyleToAttrs(style protocol.ReplyStyle) richtext.Attrs {
 	return richtext.Attrs{
 		Bold:      style.Bold,
@@ -376,10 +432,10 @@ func replyStyleToAttrs(style protocol.ReplyStyle) richtext.Attrs {
 	}
 }
 
-func cloneReplyColour(colour *uint8) *uint8 {
+func cloneReplyColour(colour *protocol.ReplyPaletteIndex) *uint8 {
 	if colour == nil {
 		return nil
 	}
-	value := *colour
+	value := uint8(*colour)
 	return &value
 }

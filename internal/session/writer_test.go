@@ -30,6 +30,21 @@ type gatedStore struct {
 	gate <-chan struct{}
 }
 
+type blockingSaveStore struct {
+	Store
+
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSaveStore) SaveWindow(ctx context.Context, window domain.Window) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+
+	return s.Store.SaveWindow(ctx, window)
+}
+
 func (g *gatedStore) GetWindow(ctx context.Context, name domain.ChannelName) (domain.Window, error) {
 	<-g.gate
 
@@ -438,6 +453,68 @@ func TestSession_commands_after_shutdown_are_refused(t *testing.T) {
 
 		_, err = sess.loadChannelWindow(ctx, "#late")
 		require.ErrorIs(t, err, storemod.ErrNoSuchChannel)
+	})
+}
+
+func TestSession_Shutdown_waits_for_an_accepted_writer_job(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		blocking := &blockingSaveStore{
+			Store:   backing,
+			started: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		factory := newTestModelClientFactory(t, &apitest.Fake{})
+		sess := New(t.Context, blocking, factory, nil)
+		attachTestUserClient(t, sess, "testuser")
+
+		joinDone := make(chan error, 1)
+		go func() {
+			resp, err := userClient(t, sess).Send(t.Context(), protocol.Join{
+				Channels: []domain.ChannelName{"#dev"},
+			})
+			joinDone <- errors.Join(err, resp.Err)
+		}()
+		<-blocking.started
+
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- sess.Shutdown(t.Context()) }()
+		synctest.Wait()
+
+		var shutdownErr error
+		returnedEarly := false
+		select {
+		case shutdownErr = <-shutdownDone:
+			returnedEarly = true
+		default:
+		}
+
+		close(blocking.release)
+		joinErr := <-joinDone
+		if !returnedEarly {
+			shutdownErr = <-shutdownDone
+		}
+
+		window, loadErr := sess.loadChannelWindowFromStore(t.Context(), "#dev")
+		require.NoError(t, loadErr)
+		require.Equal(t, struct {
+			returnedEarly bool
+			shutdownErr   error
+			joinErr       error
+			members       []domain.Nick
+		}{
+			members: []domain.Nick{"testuser"},
+		}, struct {
+			returnedEarly bool
+			shutdownErr   error
+			joinErr       error
+			members       []domain.Nick
+		}{
+			returnedEarly: returnedEarly,
+			shutdownErr:   shutdownErr,
+			joinErr:       joinErr,
+			members:       memberNicks(window),
+		})
 	})
 }
 

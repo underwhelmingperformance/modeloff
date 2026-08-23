@@ -11,9 +11,14 @@ type joinCmd struct {
 	Channel channel `arg:"channel" help:"Channel to join"`
 }
 
+type optionalJoinCmd struct {
+	Channel *channel `arg:"channel" optional:"" help:"Channel to join"`
+}
+
 type channel string
 
-func (c *channel) Decode(raw string) error {
+func (c *channel) UnmarshalText(text []byte) error {
+	raw := string(text)
 	if !strings.HasPrefix(raw, "#") {
 		raw = "#" + raw
 	}
@@ -28,7 +33,7 @@ type kickCmd struct {
 
 type msgCmd struct {
 	Nick string   `arg:"" help:"Nick to message"`
-	Body []string `arg:"" nargs:"1" help:"Message text"`
+	Body []string `arg:"" help:"Message text"`
 }
 
 type topicCmd struct {
@@ -86,6 +91,16 @@ func TestParseInto_positional_with_custom_decoder(t *testing.T) {
 	}
 }
 
+func TestParseInto_decodes_present_optional_custom_type(t *testing.T) {
+	cmd := &optionalJoinCmd{}
+
+	err := ParseInto(cmd, []string{"general"})
+
+	wantChannel := channel("#general")
+	require.NoError(t, err)
+	require.Equal(t, optionalJoinCmd{Channel: &wantChannel}, *cmd)
+}
+
 func TestParseInto_variadic_positional(t *testing.T) {
 	cmd := &msgCmd{}
 
@@ -95,7 +110,7 @@ func TestParseInto_variadic_positional(t *testing.T) {
 	require.Equal(t, msgCmd{Nick: "alice", Body: []string{"hello", "world"}}, *cmd)
 }
 
-func TestParseInto_variadic_with_nargs_satisfied(t *testing.T) {
+func TestParseInto_required_variadic_present(t *testing.T) {
 	cmd := &msgCmd{}
 
 	err := ParseInto(cmd, []string{"alice", "hi"})
@@ -104,7 +119,7 @@ func TestParseInto_variadic_with_nargs_satisfied(t *testing.T) {
 	require.Equal(t, msgCmd{Nick: "alice", Body: []string{"hi"}}, *cmd)
 }
 
-func TestParseInto_variadic_with_nargs_violated(t *testing.T) {
+func TestParseInto_required_variadic_absent(t *testing.T) {
 	cmd := &msgCmd{}
 
 	err := ParseInto(cmd, []string{"alice"})
@@ -249,14 +264,13 @@ func TestParseInto_variadic_flag_consumes_remaining(t *testing.T) {
 	require.Equal(t, varFlagCmd{Model: "model-a", Tags: []string{"x", "y", "z"}}, *cmd)
 }
 
-func TestParseInto_empty_string_is_rejected_for_required_field(t *testing.T) {
+func TestParseInto_supplied_empty_string_is_present(t *testing.T) {
 	cmd := &kickCmd{}
 
 	err := ParseInto(cmd, []string{""})
 
-	var me *MissingArgError
-	require.ErrorAs(t, err, &me)
-	require.Equal(t, "nick", me.Name)
+	require.NoError(t, err)
+	require.Equal(t, kickCmd{Nick: ""}, *cmd)
 }
 
 func TestParseInto_extra_args_after_positionals(t *testing.T) {
@@ -267,6 +281,41 @@ func TestParseInto_extra_args_after_positionals(t *testing.T) {
 	var ee *ExtraArgsError
 	require.ErrorAs(t, err, &ee)
 	require.Equal(t, []string{"extra"}, ee.Args)
+}
+
+func TestParseInto_enforces_max_on_a_named_slice(t *testing.T) {
+	type bodies []string
+	cmd := &struct {
+		Body bodies `arg:"" max:"2"`
+	}{}
+
+	err := ParseInto(cmd, []string{"one", "two", "three"})
+
+	var maximum *TooManyValuesError
+	require.ErrorAs(t, err, &maximum)
+	require.Equal(t, &TooManyValuesError{Name: "body", Maximum: 2, Actual: 3}, maximum)
+}
+
+func TestParseInto_validates_xor_from_input_presence(t *testing.T) {
+	type xorCommand struct {
+		Body  string `arg:"" optional:"" xor:"content"`
+		Spans string `optional:"" xor:"content"`
+	}
+
+	t.Run("one member", func(t *testing.T) {
+		cmd := &xorCommand{}
+		require.NoError(t, ParseInto(cmd, []string{"hello"}))
+		require.Equal(t, xorCommand{Body: "hello"}, *cmd)
+	})
+
+	t.Run("both members", func(t *testing.T) {
+		cmd := &xorCommand{}
+		err := ParseInto(cmd, []string{"hello", "--spans", "styled"})
+
+		var conflict *XORConflictError
+		require.ErrorAs(t, err, &conflict)
+		require.Equal(t, &XORConflictError{Group: "content", Fields: []string{"body", "spans"}}, conflict)
+	})
 }
 
 func TestParseInto_variadic_slice_flag(t *testing.T) {

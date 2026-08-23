@@ -1,183 +1,206 @@
 package chatcmd
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 )
 
-func TestModeCommand_ToCommand(t *testing.T) {
+func TestModeChanges_UnmarshalText(t *testing.T) {
 	tests := []struct {
 		name    string
-		flags   string
-		args    []string
-		want    []protocol.ChannelModeChange
+		raw     string
+		want    ModeChanges
 		wantErr any
 	}{
 		{
-			name:  "single +o",
-			flags: "+o",
-			args:  []string{"alice"},
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeOperator, Add: true, Target: "alice"}},
+			name: "single operator grant",
+			raw:  "+o alice",
+			want: ModeChanges{{Change: Add, Mode: ModeOperator{Target: "alice"}}},
 		},
 		{
-			name:  "single -o",
-			flags: "-o",
-			args:  []string{"alice"},
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeOperator, Add: false, Target: "alice"}},
+			name: "single operator revoke",
+			raw:  "-o alice",
+			want: ModeChanges{{Change: Remove, Mode: ModeOperator{Target: "alice"}}},
 		},
 		{
-			name:  "boolean toggle +t",
-			flags: "+t",
-			args:  nil,
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeTopicLock, Add: true}},
-		},
-		{
-			name:  "boolean toggle -i",
-			flags: "-i",
-			args:  nil,
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeInviteOnly, Add: false}},
-		},
-		{
-			name:  "parametric +l add",
-			flags: "+l",
-			args:  []string{"10"},
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeUserLimit, Add: true, Param: "10"}},
-		},
-		{
-			name:  "parametric -l remove takes no param",
-			flags: "-l",
-			args:  nil,
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeUserLimit, Add: false}},
-		},
-		{
-			name:  "parametric +k with key",
-			flags: "+k",
-			args:  []string{"secret"},
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeKey, Add: true, Param: "secret"}},
-		},
-		{
-			name:  "parametric +f add",
-			flags: "+f",
-			args:  []string{"30"},
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeFloodLimit, Add: true, Param: "30"}},
-		},
-		{
-			name:  "parametric -f remove takes no param",
-			flags: "-f",
-			args:  nil,
-			want:  []protocol.ChannelModeChange{{Flag: domain.ModeFloodLimit, Add: false}},
-		},
-		{
-			name:  "compound +ov on two nicks",
-			flags: "+ov",
-			args:  []string{"alice", "bob"},
-			want: []protocol.ChannelModeChange{
-				{Flag: domain.ModeOperator, Add: true, Target: "alice"},
-				{Flag: domain.ModeChannelVoice, Add: true, Target: "bob"},
+			name: "boolean changes",
+			raw:  "+tn-i",
+			want: ModeChanges{
+				{Change: Add, Mode: ModeTopicLock{}},
+				{Change: Add, Mode: ModeNoExternal{}},
+				{Change: Remove, Mode: ModeInviteOnly{}},
 			},
 		},
 		{
-			name:  "compound sign flip +o-v",
-			flags: "+o-v",
-			args:  []string{"alice", "bob"},
-			want: []protocol.ChannelModeChange{
-				{Flag: domain.ModeOperator, Add: true, Target: "alice"},
-				{Flag: domain.ModeChannelVoice, Add: false, Target: "bob"},
+			name: "parametric changes",
+			raw:  "+lkf 10 secret 30",
+			want: ModeChanges{
+				{Change: Add, Mode: ModeUserLimit{Limit: 10}},
+				{Change: Add, Mode: ModeKey{Key: "secret"}},
+				{Change: Add, Mode: ModeFloodLimit{Limit: 30}},
 			},
 		},
 		{
-			name:  "compound booleans only",
-			flags: "+tn",
-			args:  nil,
-			want: []protocol.ChannelModeChange{
-				{Flag: domain.ModeTopicLock, Add: true},
-				{Flag: domain.ModeNoExternal, Add: true},
+			name: "mixed directions and parameters",
+			raw:  "+ov-i+l alice bob 5",
+			want: ModeChanges{
+				{Change: Add, Mode: ModeOperator{Target: "alice"}},
+				{Change: Add, Mode: ModeVoice{Target: "bob"}},
+				{Change: Remove, Mode: ModeInviteOnly{}},
+				{Change: Add, Mode: ModeUserLimit{Limit: 5}},
 			},
 		},
 		{
-			name:  "compound mixed parametric and member",
-			flags: "+ovk",
-			args:  []string{"alice", "bob", "s3cret"},
-			want: []protocol.ChannelModeChange{
-				{Flag: domain.ModeOperator, Add: true, Target: "alice"},
-				{Flag: domain.ModeChannelVoice, Add: true, Target: "bob"},
-				{Flag: domain.ModeKey, Add: true, Param: "s3cret"},
-			},
+			name:    "empty",
+			raw:     "",
+			wantErr: &EmptyModeChangesError{},
 		},
 		{
-			name:  "compound with revoke and add",
-			flags: "+t-i+l",
-			args:  []string{"5"},
-			want: []protocol.ChannelModeChange{
-				{Flag: domain.ModeTopicLock, Add: true},
-				{Flag: domain.ModeInviteOnly, Add: false},
-				{Flag: domain.ModeUserLimit, Add: true, Param: "5"},
-			},
+			name:    "sign only",
+			raw:     "+",
+			wantErr: &EmptyModeChangesError{},
 		},
 		{
-			name:    "empty flag string rejected",
-			flags:   "",
-			args:    nil,
-			wantErr: "mode: empty flag string",
+			name:    "unknown flag",
+			raw:     "+x",
+			wantErr: domain.UnknownModeFlagError{},
 		},
 		{
-			name:    "unknown flag rejected",
-			flags:   "+x",
-			args:    nil,
-			wantErr: "", // parseChannelModeString doesn't reject unknowns; they pass through and the dispatcher rejects them. covered by dispatcher test
-			want:    []protocol.ChannelModeChange{{Flag: domain.Mode('x'), Add: true}},
+			name:    "missing member",
+			raw:     "+o",
+			wantErr: domain.MissingModeParamError{},
 		},
 		{
-			name:    "missing nick on +o",
-			flags:   "+o",
-			args:    nil,
-			wantErr: &domain.MissingModeParamError{},
+			name:    "missing value",
+			raw:     "+k",
+			wantErr: domain.MissingModeParamError{},
 		},
 		{
-			name:    "missing key on +k add",
-			flags:   "+k",
-			args:    nil,
-			wantErr: &domain.MissingModeParamError{},
+			name:    "invalid count",
+			raw:     "+l zero",
+			wantErr: &InvalidPositiveIntError{},
 		},
 		{
-			name:    "surplus arg rejected",
-			flags:   "+o",
-			args:    []string{"alice", "leftover"},
-			wantErr: "surplus",
+			name:    "surplus argument",
+			raw:     "+o alice leftover",
+			wantErr: &SurplusModeArgumentsError{},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := ModeCommand{Flags: tt.flags, Args: tt.args}
-			got, err := cmd.ToCommand(Context{Active: domain.WindowKey("#chan")})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var got ModeChanges
+			err := got.UnmarshalText([]byte(test.raw))
 
-			switch want := tt.wantErr.(type) {
-			case nil:
-				require.NoError(t, err)
-				cm, ok := got.(protocol.ChannelMode)
-				require.True(t, ok, "expected protocol.ChannelMode, got %T", got)
-				require.Equal(t, domain.ChannelName("#chan"), cm.Channel)
-				require.Equal(t, tt.want, cm.Changes)
-			case string:
-				if want == "" {
-					require.NoError(t, err)
-					cm, ok := got.(protocol.ChannelMode)
-					require.True(t, ok)
-					require.Equal(t, tt.want, cm.Changes)
-
-					return
-				}
+			if test.wantErr != nil {
 				require.Error(t, err)
-				require.ErrorContains(t, err, want)
-			default:
-				require.Error(t, err)
-				require.ErrorAs(t, err, tt.wantErr)
+				requireErrorAsType(t, err, test.wantErr)
+				return
 			}
+
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
 		})
 	}
+}
+
+func TestModeCommand_CLI_preserves_typed_mode_error(t *testing.T) {
+	_, err := testParser.Parse("/mode +x")
+
+	require.Equal(t, domain.UnknownModeFlagError{Flag: 'x'}, err)
+}
+
+func TestModeCommand_ToCommand(t *testing.T) {
+	changes := ModeChanges{
+		{Change: Remove, Mode: ModeInviteOnly{}},
+		{Change: Add, Mode: ModeUserLimit{Limit: 10}},
+	}
+
+	got, err := (ModeCommand{Changes: changes}).ToCommand(Context{Active: domain.WindowKey("#chan")})
+
+	require.NoError(t, err)
+	require.Equal(t, protocol.ChannelMode{
+		Channel: "#chan",
+		Changes: []protocol.ChannelModeChange{
+			{Flag: domain.ModeInviteOnly, Add: false},
+			{Flag: domain.ModeUserLimit, Add: true, Param: "10"},
+		},
+	}, got)
+}
+
+func TestModeChanges_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		changes ModeChanges
+		wantErr any
+	}{
+		{
+			name:    "empty batch",
+			changes: ModeChanges{},
+			wantErr: &EmptyModeChangesError{},
+		},
+		{
+			name:    "unknown operation",
+			changes: ModeChanges{{Change: "toggle", Mode: ModeQuiet{}}},
+			wantErr: &UnknownModeOperationError{},
+		},
+		{
+			name:    "missing mode",
+			changes: ModeChanges{{Change: Add}},
+			wantErr: &MissingModeError{},
+		},
+		{
+			name:    "member mode requires target",
+			changes: ModeChanges{{Change: Add, Mode: ModeOperator{}}},
+			wantErr: domain.MissingModeParamError{},
+		},
+		{
+			name:    "remove rejects value",
+			changes: ModeChanges{{Change: Remove, Mode: ModeKey{Key: "unused"}}},
+			wantErr: &UnexpectedModeParameterError{},
+		},
+		{
+			name: "batch bound",
+			changes: func() ModeChanges {
+				changes := make(ModeChanges, maxModeChanges+1)
+				for index := range changes {
+					changes[index] = ModeChange{Change: Add, Mode: ModeQuiet{}}
+				}
+				return changes
+			}(),
+			wantErr: &command.TooManyValuesError{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.changes.Validate()
+
+			require.Error(t, err)
+			requireErrorAsType(t, err, test.wantErr)
+		})
+	}
+}
+
+func TestModeChange_UnmarshalJSON_rejects_unknown_mode(t *testing.T) {
+	var change ModeChange
+	err := json.Unmarshal([]byte(`{"change":"add","mode":"ban"}`), &change)
+
+	var unknown *UnknownModeError
+	require.ErrorAs(t, err, &unknown)
+	require.Equal(t, &UnknownModeError{Mode: "ban"}, unknown)
+}
+
+func requireErrorAsType(t *testing.T, err error, errorType any) {
+	t.Helper()
+
+	target := reflect.New(reflect.TypeOf(errorType)).Interface()
+	require.ErrorAs(t, err, target)
 }

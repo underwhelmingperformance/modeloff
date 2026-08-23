@@ -29,7 +29,37 @@ type testKickCommand struct {
 
 type testMsgCommand struct {
 	Nick string   `arg:"" help:"Nick to message"`
-	Body []string `arg:"" optional:"" nargs:"1" help:"Message text"`
+	Body []string `arg:"" optional:"" help:"Message text"`
+}
+
+type testMappedMessages []string
+
+func (m *testMappedMessages) UnmarshalText(text []byte) error {
+	*m = append(*m, string(text))
+
+	return nil
+}
+
+type testRawMsgCommand struct {
+	Nick string             `arg:"" help:"Nick to message"`
+	Body testMappedMessages `arg:"" optional:"" passthrough:"all" help:"Message text"`
+	Flag string             `optional:"" help:"Test flag"`
+}
+
+type testPartialCommand struct {
+	Body testMappedMessages `arg:"" optional:"" passthrough:"partial" help:"Passthrough values"`
+	Flag string             `optional:"" help:"Test flag"`
+}
+
+type testBooleanPassthroughCommand struct {
+	Body  testMappedMessages `arg:"" optional:"" passthrough:"all" help:"Message text"`
+	Reset bool               `optional:"" help:"Test boolean flag"`
+}
+
+type testPassthroughGrammar struct {
+	All     testRawMsgCommand             `cmd:"" help:"All passthrough."`
+	Partial testPartialCommand            `cmd:"" help:"Partial passthrough."`
+	Boolean testBooleanPassthroughCommand `cmd:"" help:"Boolean passthrough."`
 }
 
 type testNickCommand struct {
@@ -61,12 +91,164 @@ type testGrammar struct {
 	Invite   testInviteCommand   `cmd:"" help:"Invite a model."`
 	Kick     testKickCommand     `cmd:"" help:"Kick."`
 	Msg      testMsgCommand      `cmd:"" help:"Message."`
+	RawMsg   testRawMsgCommand   `cmd:"" help:"Raw message."`
 	Nick     testNickCommand     `cmd:"" help:"Change nick."`
 	Topic    testTopicCommand    `cmd:"" help:"Set topic."`
 	Whois    testWhoisCommand    `cmd:"" help:"Whois."`
 	Config   testConfigCommand   `cmd:"" help:"Config."`
 	Help     testHelpCommand     `cmd:"" help:"Help."`
 	Quit     testQuitCommand     `cmd:"" aliases:"q" help:"Quit."`
+}
+
+func TestParseValue_passthrough_maps_the_raw_remainder_once(t *testing.T) {
+	cmds := allCommands(t)
+
+	tests := []struct {
+		name  string
+		input string
+		want  testRawMsgCommand
+	}{
+		{
+			name:  "several words",
+			input: "/raw-msg claud3 hello there",
+			want:  testRawMsgCommand{Nick: "claud3", Body: testMappedMessages{"hello there"}},
+		},
+		{
+			name:  "internal and trailing whitespace",
+			input: "/raw-msg claud3   hello   there  ",
+			want:  testRawMsgCommand{Nick: "claud3", Body: testMappedMessages{"hello   there  "}},
+		},
+		{
+			name:  "flag-looking text",
+			input: "/raw-msg claud3 --literal value",
+			want:  testRawMsgCommand{Nick: "claud3", Body: testMappedMessages{"--literal value"}},
+		},
+		{
+			name:  "recognised flag before body",
+			input: "/raw-msg claud3 --flag value hello there",
+			want:  testRawMsgCommand{Nick: "claud3", Body: testMappedMessages{"hello there"}, Flag: "value"},
+		},
+		{
+			name:  "recognised flag with attached value before body",
+			input: "/raw-msg claud3 --flag=value hello there",
+			want:  testRawMsgCommand{Nick: "claud3", Body: testMappedMessages{"hello there"}, Flag: "value"},
+		},
+		{
+			name:  "recognised flag before target",
+			input: "/raw-msg --flag value claud3 hello there",
+			want:  testRawMsgCommand{Nick: "claud3", Body: testMappedMessages{"hello there"}, Flag: "value"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cmds.ParseValue(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseValue_passthrough_modes_match_Kong(t *testing.T) {
+	set, err := Build[testCtx](&testPassthroughGrammar{})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		input string
+		want  any
+	}{
+		{
+			name:  "all passes an unknown flag",
+			input: "/all target --unknown value",
+			want:  testRawMsgCommand{Nick: "target", Body: testMappedMessages{"--unknown value"}},
+		},
+		{
+			name:  "all passes an unknown short flag",
+			input: "/all target -x value",
+			want:  testRawMsgCommand{Nick: "target", Body: testMappedMessages{"-x value"}},
+		},
+		{
+			name:  "all retains the end-of-options marker",
+			input: "/all target -- -x value",
+			want:  testRawMsgCommand{Nick: "target", Body: testMappedMessages{"-- -x value"}},
+		},
+		{
+			name:  "partial parses a recognised flag before its first value",
+			input: "/partial --flag value body --literal",
+			want:  testPartialCommand{Body: testMappedMessages{"body --literal"}, Flag: "value"},
+		},
+		{
+			name:  "partial parses a recognised flag with an attached value",
+			input: "/partial --flag=value body --literal",
+			want:  testPartialCommand{Body: testMappedMessages{"body --literal"}, Flag: "value"},
+		},
+		{
+			name:  "partial passes flags after its first value",
+			input: "/partial body --flag value",
+			want:  testPartialCommand{Body: testMappedMessages{"body --flag value"}},
+		},
+		{
+			name:  "partial retains the end-of-options marker",
+			input: "/partial -- -x value",
+			want:  testPartialCommand{Body: testMappedMessages{"-- -x value"}},
+		},
+		{
+			name:  "partial accepts a lone end-of-options marker",
+			input: "/partial --",
+			want:  testPartialCommand{Body: testMappedMessages{"--"}},
+		},
+		{
+			name:  "all parses a boolean flag with an attached value",
+			input: "/boolean --reset=true hello there",
+			want:  testBooleanPassthroughCommand{Body: testMappedMessages{"hello there"}, Reset: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := set.ParseValue(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+
+	_, err = set.ParseValue("/partial --unknown value")
+	var flagErr *UnknownFlagError
+	require.ErrorAs(t, err, &flagErr)
+	require.Equal(t, &UnknownFlagError{Flag: "--unknown"}, flagErr)
+
+	_, err = set.ParseValue("/partial -x value")
+	require.ErrorAs(t, err, &flagErr)
+	require.Equal(t, &UnknownFlagError{Flag: "-x"}, flagErr)
+}
+
+func TestParseValue_end_of_options_makes_hyphenated_tokens_positional(t *testing.T) {
+	set := allCommands(t)
+
+	value, err := set.ParseValue("/msg target -- -literal")
+	require.NoError(t, err)
+	require.Equal(t, testMsgCommand{Nick: "target", Body: []string{"-literal"}}, value)
+}
+
+func TestParseValue_accepts_a_lone_dash_and_negative_positional(t *testing.T) {
+	set := allCommands(t)
+
+	tests := []struct {
+		input string
+		want  testKickCommand
+	}{
+		{input: "/kick -", want: testKickCommand{Nick: "-"}},
+		{input: "/kick -5m", want: testKickCommand{Nick: "-5m"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			value, err := set.ParseValue(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, value)
+		})
+	}
 }
 
 func allCommands(t *testing.T) Set[testCtx] {

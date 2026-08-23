@@ -61,8 +61,8 @@ type Session interface {
 }
 
 // Store is the persistence surface a [UserClient] needs. It is the
-// subset of the session store's surface used by autojoin,
-// mark-read and quit bookkeeping.
+// subset of the session store's surface used by autojoin and
+// mark-read bookkeeping.
 type Store interface {
 	// Autojoin list. The channels this client rejoins on the next
 	// connection. It is client state: the client rewrites it as its
@@ -70,14 +70,6 @@ type Store interface {
 	// writes it, the same arrangement `dm_windows` has.
 	ListAutojoinChannels(ctx context.Context) ([]domain.ChannelName, error)
 	SetAutojoinChannels(ctx context.Context, channels []domain.ChannelName) error
-
-	// ClearSessionActive drops the marker that says a connection is
-	// open. [UserClient.Quit] writes it, so the next start reads a
-	// QUIT-terminated run as a clean one. The session sets the marker
-	// during its connect handshake and reads it to classify the
-	// previous run; ending it belongs to the client whose connection
-	// it describes.
-	ClearSessionActive(ctx context.Context) error
 
 	// SaveInstance writes this client's connection record. It is
 	// written at attach, under the empty [domain.InstanceID] the
@@ -481,35 +473,11 @@ func (uc *UserClient) ChangeNick(ctx context.Context, newNick domain.Nick) error
 	return firstErr(err, resp.Err)
 }
 
-// Quit issues a wire QUIT as the user-actor and records that this
-// connection ended cleanly.
-//
-// The session-active marker says a connection is open. Clearing it
-// once the QUIT has gone through is what makes the next start read
-// this exit as a clean one, so the memberships the QUIT has just
-// dropped are not reconciled a second time. A run that ends without
-// a QUIT leaves the marker in place, which is the state the next
-// connect classifies as unclean.
+// Quit issues a wire QUIT as the user-actor. The session records a
+// clean disconnect only after the teardown is durable.
 func (uc *UserClient) Quit(ctx context.Context, reason string) error {
 	resp, err := uc.Send(ctx, protocol.Quit{Reason: reason})
-	if err := firstErr(err, resp.Err); err != nil {
-		return err
-	}
-
-	return uc.Disconnected(ctx)
-}
-
-// Disconnected records that this client's connection has ended. It
-// is the bookkeeping half of [UserClient.Quit], and is called on its
-// own when the server ended the connection without being asked. That
-// is a KILL naming this client, which runs the same teardown a QUIT
-// does and leaves the same nothing behind to reconcile.
-func (uc *UserClient) Disconnected(ctx context.Context) error {
-	if err := uc.store.ClearSessionActive(ctx); err != nil {
-		return fmt.Errorf("clear session active: %w", err)
-	}
-
-	return nil
+	return firstErr(err, resp.Err)
 }
 
 // Channels returns the user's current channel set. Returns nil

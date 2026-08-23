@@ -16,9 +16,10 @@ const sendQExceededReason = "Max SendQ exceeded"
 // carrying `reason` is broadcast to the channels the client was in,
 // its model-client is released, and its subscription is reaped. It
 // is the same teardown a client's own QUIT runs, with the server
-// supplying the message (RFC 2812 §3.1.7) — so a connection the
-// server closes reads in the channel exactly like one the client
-// closed, and no window is left showing a member who is not there.
+// supplying the message (RFC 2812 §3.1.7). A server-forced disconnect
+// always releases the connection, including when durable cleanup
+// fails: an overflowed queue has already dropped a delivery, and a
+// panicked dispatch goroutine has no reader left.
 //
 // It is undefined for a client whose lifetime is the session's, and
 // refuses one. There is no connection there to close: that client
@@ -35,14 +36,21 @@ func (s *Session) Disconnect(ctx context.Context, id protocol.ClientID, reason s
 	if id == protocol.UserClientID {
 		return
 	}
+	if !s.externalHandlers.enter() {
+		return
+	}
+	defer s.externalHandlers.leave()
 
 	sc := s.lookupClientHandle(id)
 	if sc == nil {
 		return
 	}
 
+	var outcome quitOutcome
 	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
-		return commandResult(s.quitAs(ctx, sc.instance, reason))
+		outcome = s.quit(ctx, sc.instance, reason, quitForced)
+
+		return commandResult(outcome.err)
 	})
 
 	if err == nil {
@@ -58,7 +66,11 @@ func (s *Session) Disconnect(ctx context.Context, id protocol.ClientID, reason s
 		)
 	}
 
-	s.releaseClient(id)
+	if outcome.instanceDeleted {
+		s.releaseAndForgetClient(id)
+	} else {
+		s.releaseClient(id)
+	}
 	sc.Unsubscribe()
 }
 
@@ -100,4 +112,12 @@ func (s *Session) releaseClient(id protocol.ClientID) {
 	}
 
 	s.modelClientFactory.Detach(id)
+}
+
+func (s *Session) releaseAndForgetClient(id protocol.ClientID) {
+	if id == protocol.UserClientID {
+		return
+	}
+
+	s.modelClientFactory.DetachAndForget(id)
 }

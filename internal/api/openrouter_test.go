@@ -491,6 +491,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/chat/completions", r.URL.Path)
 		require.Equal(t, string(selfID), r.Header.Get("x-session-id"))
+		require.Equal(t, "structured-outputs-2025-11-13", r.Header.Get("x-anthropic-beta"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -514,10 +515,33 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		"System prompt",
 		history,
 		events,
+		ToolDefinition{
+			Name: "pass",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, string(selfID), receivedBody["prompt_cache_key"])
-	require.Equal(t, map[string]any{"type": "ephemeral"}, receivedBody["cache_control"])
+	require.Equal(t, struct {
+		promptCacheKey any
+		cacheControl   any
+		provider       any
+	}{
+		promptCacheKey: string(selfID),
+		cacheControl:   map[string]any{"type": "ephemeral"},
+		provider:       map[string]any{"require_parameters": true},
+	}, struct {
+		promptCacheKey any
+		cacheControl   any
+		provider       any
+	}{
+		promptCacheKey: receivedBody["prompt_cache_key"],
+		cacheControl:   receivedBody["cache_control"],
+		provider:       receivedBody["provider"],
+	})
 
 	historyJSON, err := json.Marshal(history[0])
 	require.NoError(t, err)
@@ -1190,7 +1214,23 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 		var body map[string]any
 		require.Equal(t, string(selfID), r.Header.Get("x-session-id"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		require.Equal(t, string(selfID), body["prompt_cache_key"])
+		require.Equal(t, struct {
+			promptCacheKey    any
+			parallelToolCalls any
+			provider          any
+		}{
+			promptCacheKey:    string(selfID),
+			parallelToolCalls: false,
+			provider:          map[string]any{"require_parameters": true},
+		}, struct {
+			promptCacheKey    any
+			parallelToolCalls any
+			provider          any
+		}{
+			promptCacheKey:    body["prompt_cache_key"],
+			parallelToolCalls: body["parallel_tool_calls"],
+			provider:          body["provider"],
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 

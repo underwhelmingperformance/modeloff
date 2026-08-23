@@ -2,6 +2,7 @@ package chatcmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,18 +58,20 @@ type DMClosedMsg struct {
 }
 
 // ChannelArg is a command-layer wrapper around domain.ChannelName
-// that implements FieldDecoder to ensure the # prefix is present. It
-// also accepts RFC 2812 §3.2.1's own JOIN syntax, a comma-separated
-// channel list ("#a,#b,#c"): Decode splits on commas, drops any
-// empty entry, and prefixes every surviving one; [ChannelArg.Channels]
-// splits the decoded argument back into its individual names.
+// that implements UnmarshalText to ensure the # prefix is
+// present. It also accepts RFC 2812 §3.2.1's own JOIN syntax, a
+// comma-separated channel list ("#a,#b,#c"): UnmarshalText splits on
+// commas, drops any empty entry, and prefixes every surviving one;
+// [ChannelArg.Channels] splits the decoded argument back into its
+// individual names.
 type ChannelArg string
 
-// Decode implements command.FieldDecoder. A trailing or doubled
+// UnmarshalText decodes a channel argument. A trailing or doubled
 // comma must not manufacture a bare "#" channel: an entry that is
 // empty once trimmed is dropped, never prefixed, and an argument
 // that decodes to no channel at all (",", ",,", "") is refused.
-func (c *ChannelArg) Decode(raw string) error {
+func (c *ChannelArg) UnmarshalText(text []byte) error {
+	raw := string(text)
 	parts := strings.Split(raw, ",")
 	channels := make([]string, 0, len(parts))
 
@@ -104,6 +107,97 @@ func (c ChannelArg) Channels() []domain.ChannelName {
 		channels[i] = domain.ChannelName(part)
 	}
 	return channels
+}
+
+// CommandText stores one free-text value from a slash command or tool call.
+type CommandText string
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (t *CommandText) UnmarshalText(text []byte) error {
+	*t = CommandText(text)
+
+	return nil
+}
+
+// String returns the command's single text value.
+func (t CommandText) String() string {
+	return string(t)
+}
+
+// MessageBodies contains the independently emitted plain messages
+// in one msg or me tool call. Slash commands map their raw remainder
+// into one element.
+type MessageBodies []string
+
+const (
+	maxToolMessages   = 4
+	maxToolReplySpans = 32
+)
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (b *MessageBodies) UnmarshalText(text []byte) error {
+	*b = append(*b, string(text))
+
+	return nil
+}
+
+// UnmarshalJSON retains the structured array accepted by tool calls.
+func (b *MessageBodies) UnmarshalJSON(data []byte) error {
+	return unmarshalStringArray(data, (*[]string)(b))
+}
+
+// Validate enforces the per-call bound and IRC body rules for msg.
+func (b MessageBodies) Validate() error {
+	return validateMessageBodies(protocol.ReplyMessage, []string(b))
+}
+
+// ActionBodies is the plain-text representation accepted by me.
+type ActionBodies []string
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (b *ActionBodies) UnmarshalText(text []byte) error {
+	*b = append(*b, string(text))
+
+	return nil
+}
+
+// UnmarshalJSON retains the structured array accepted by tool calls.
+func (b *ActionBodies) UnmarshalJSON(data []byte) error {
+	return unmarshalStringArray(data, (*[]string)(b))
+}
+
+func unmarshalStringArray(data []byte, target *[]string) error {
+	var values []string
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+
+	*target = values
+	return nil
+}
+
+// Validate enforces the per-call bound and IRC body rules for me.
+func (b ActionBodies) Validate() error {
+	return validateMessageBodies(protocol.ReplyAction, []string(b))
+}
+
+func validateMessageBodies(kind protocol.ReplyKind, bodies []string) error {
+	if len(bodies) > maxToolMessages {
+		name := "body"
+		if kind == protocol.ReplyAction {
+			name = "action"
+		}
+
+		return &command.TooManyValuesError{Name: name, Maximum: maxToolMessages, Actual: len(bodies)}
+	}
+
+	for _, body := range bodies {
+		if err := protocol.ValidateMessageBody(kind.CommandName(), body, time.Time{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // JoinCommand represents `/join <channel>[,<channel>...] [key]`.
@@ -189,30 +283,30 @@ func (c JoinCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // success: OK reflects whether anything joined at all, and Summary
 // names every channel's outcome, giving the model the per-channel
 // detail behind a single verdict.
-func (c JoinCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c JoinCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	cmd, err := c.ToCommand(toolContext(tc))
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolRefusal(err)
 	}
 
 	resp, err := tc.Client.Send(ctx, cmd)
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolExecutionFailure(err)
 	}
 
 	if len(resp.Events) == 0 {
 		if resp.Err != nil {
-			return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+			return toolRefusal(resp.Err)
 		}
-		return modelclient.ToolResultPayload{OK: false, Error: "no channel was joined"}
+		return toolResult(modelclient.ToolResultPayload{OK: false, Error: "no channel was joined"})
 	}
 
 	outcome := newJoinOutcome(resp.Events)
 	if len(outcome.Joined) == 0 {
-		return modelclient.ToolResultPayload{OK: false, Error: outcome.Text()}
+		return toolResult(modelclient.ToolResultPayload{OK: false, Error: outcome.Text()})
 	}
 
-	return modelclient.ToolResultPayload{OK: true, Summary: outcome.Text()}
+	return toolResult(modelclient.ToolResultPayload{OK: true, Summary: outcome.Text()})
 }
 
 // joinOutcome partitions a JOIN's Response.Events into which
@@ -272,7 +366,7 @@ func (o joinOutcome) Text() string {
 
 // PartCommand represents `/part [message]`.
 type PartCommand struct {
-	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`
+	Message CommandText `arg:"" optional:"" passthrough:"all" help:"Optional farewell message"`
 }
 
 // ToCommand builds the wire-protocol command for `/part`.
@@ -281,7 +375,7 @@ func (c PartCommand) ToCommand(rc Context) (protocol.Command, error) {
 
 	return protocol.Part{
 		Channel: channel,
-		Reason:  strings.TrimSpace(strings.Join(c.Message, " ")),
+		Reason:  strings.TrimSpace(c.Message.String()),
 	}, nil
 }
 
@@ -297,10 +391,10 @@ func (c PartCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c PartCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c PartCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	ch, ok := toolChannel(tc)
 	if !ok {
-		return noActiveChannel()
+		return toolResult(noActiveChannel())
 	}
 
 	return sendToolCommand(ctx, tc, c, "parted "+string(ch))
@@ -330,37 +424,25 @@ func (c ListCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // the dispatcher serves records the reply in the model's private
 // reply log — its own memory of the lookup — and the same data
 // rides back in `ToolResultPayload.Data` for the immediate turn.
-func (c ListCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	entries, err := c.fetch(ctx, tc.Client)
+func (ListCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
+	resp, err := tc.Client.Send(ctx, protocol.List{})
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolExecutionFailure(err)
+	}
+	if resp.Err != nil {
+		return toolRefusal(resp.Err)
 	}
 
-	return modelclient.ToolResultPayload{
+	return toolResult(modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "listed known channels",
-		Data:    entries,
-	}
+		Data:    listEntries(resp.Events),
+	})
 }
 
-// fetch issues the wire `LIST` and assembles the directory
-// entries from the per-channel `domain.ListReply` events the
-// dispatcher returns. The closing `domain.ListEnd` is consumed
-// but ignored — its presence in `Response.Events` is the
-// dispatcher's signal that the list is complete; callers don't
-// need to forward it.
-func (ListCommand) fetch(ctx context.Context, client protocol.Client) ([]domain.ChannelDirectoryEntry, error) {
-	resp, err := client.Send(ctx, protocol.List{})
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.Err != nil {
-		return nil, resp.Err
-	}
-
-	entries := make([]domain.ChannelDirectoryEntry, 0, len(resp.Events))
-	for _, evt := range resp.Events {
+func listEntries(events []protocol.Event) []domain.ChannelDirectoryEntry {
+	entries := make([]domain.ChannelDirectoryEntry, 0, len(events))
+	for _, evt := range events {
 		reply, ok := evt.(domain.ListReply)
 		if !ok {
 			continue
@@ -373,7 +455,7 @@ func (ListCommand) fetch(ctx context.Context, client protocol.Client) ([]domain.
 		})
 	}
 
-	return entries, nil
+	return entries
 }
 
 // AddModelCommand represents `/add-model [model] [--persona text]`.
@@ -417,14 +499,14 @@ func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c AddModelCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c AddModelCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	ch, ok := toolChannel(tc)
 	if !ok {
-		return noActiveChannel()
+		return toolResult(noActiveChannel())
 	}
 
 	if c.Model == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "model is required"}
+		return toolResult(modelclient.ToolResultPayload{OK: false, Error: "model is required"})
 	}
 
 	return sendToolCommand(ctx, tc, c, "added "+c.Model+" to "+string(ch))
@@ -467,14 +549,14 @@ func (c InviteCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c InviteCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c InviteCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	ch, ok := toolChannel(tc)
 	if !ok && c.Channel == "" {
-		return noActiveChannel()
+		return toolResult(noActiveChannel())
 	}
 
 	if strings.TrimSpace(c.Nick) == "" {
-		return modelclient.ToolResultPayload{OK: false, Error: "target nick is required"}
+		return toolResult(modelclient.ToolResultPayload{OK: false, Error: "target nick is required"})
 	}
 
 	if c.Channel != "" {
@@ -486,8 +568,8 @@ func (c InviteCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) 
 
 // KillCommand represents `/kill <nick> [reason]`.
 type KillCommand struct {
-	Nick   string   `arg:"" help:"Nick to disconnect"`
-	Reason []string `arg:"" optional:"" help:"Optional reason; defaults to 'No reason given'."`
+	Nick   string      `arg:"" help:"Nick to disconnect"`
+	Reason CommandText `arg:"" optional:"" passthrough:"all" help:"Optional reason; defaults to 'No reason given'."`
 }
 
 // Sources implements command.Completer.
@@ -503,7 +585,7 @@ func (c KillCommand) ToCommand(_ Context) (protocol.Command, error) {
 const defaultKillReason = "No reason given"
 
 func (c KillCommand) killReason() string {
-	r := strings.TrimSpace(strings.Join(c.Reason, " "))
+	r := strings.TrimSpace(c.Reason.String())
 	if r == "" {
 		return defaultKillReason
 	}
@@ -519,7 +601,7 @@ func (c KillCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c KillCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c KillCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	return sendToolCommand(ctx, tc, c, "killed "+c.Nick)
 }
 
@@ -552,10 +634,10 @@ func (c KickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	ch, ok := toolChannel(tc)
 	if !ok {
-		return noActiveChannel()
+		return toolResult(noActiveChannel())
 	}
 
 	return sendToolCommand(ctx, tc, c, "kicked "+c.Nick+" from "+string(ch))
@@ -572,9 +654,9 @@ func (c KickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 // focusing) when a send goes to a nick the user has no open
 // window for.
 type MsgCommand struct {
-	Target string               `arg:"" help:"#channel or nick to message"`
-	Body   []string             `arg:"" optional:"" nargs:"1" help:"Plain message text. Provide either body or spans, not both."`
-	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either body or spans, not both."`
+	Target string              `arg:"" help:"#channel or nick to message"`
+	Body   MessageBodies       `arg:"" passthrough:"all" xor:"content" max:"4" tool:"One to 4 non-empty plain messages to send in order. Each array element becomes a separate IRC message." help:"Plain message text"`
+	Spans  protocol.ReplySpans `cli:"-" xor:"content" max:"32" tool:"One to 32 styled spans for one IRC message. Each span has non-empty text and optional style (bold, italic, underline, reverse, strike, fg, bg); fg and bg use palette values 0..15." help:"Styled IRC message spans"`
 }
 
 // Sources implements command.Completer.
@@ -602,7 +684,10 @@ func msgTargetSource(ctx CompletionContext, st command.InvocationState[Completio
 // channel the actor is not in is refused here so the chat-screen can
 // surface a typed error without going over the wire.
 func (c MsgCommand) ToCommand(rc Context) (protocol.Command, error) {
-	body := strings.TrimSpace(strings.Join(c.Body, " "))
+	body, err := c.cliBody()
+	if err != nil {
+		return nil, err
+	}
 	target := protocol.ParseMsgTarget(c.Target)
 
 	if ch, ok := target.(protocol.ChannelTarget); ok && !c.actorInChannel(rc.Actor, domain.ChannelName(ch)) {
@@ -621,9 +706,9 @@ func (c MsgCommand) ToCommand(rc Context) (protocol.Command, error) {
 // No focus switch in either case.
 func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		body := strings.TrimSpace(strings.Join(c.Body, " "))
-		if body == "" {
-			return rc.errorEvent("msg", fmt.Errorf("message body is required"))
+		body, err := c.cliBody()
+		if err != nil {
+			return rc.errorEvent("msg", err)
 		}
 
 		target := domain.ChannelName(c.Target)
@@ -656,6 +741,19 @@ func (c MsgCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 			At:          time.Now(),
 		}
 	}
+}
+
+func (c MsgCommand) cliBody() (string, error) {
+	if len(c.Body) == 0 {
+		return "", domain.NoTextToSendError{Command: protocol.PrivMsg{}.Name()}
+	}
+
+	body := c.Body[0]
+	if err := protocol.ValidateMessageBody(protocol.PrivMsg{}.Name(), body, time.Time{}); err != nil {
+		return "", err
+	}
+
+	return body, nil
 }
 
 // actorInChannel reports whether `actor` is a member of `target`.
@@ -694,8 +792,8 @@ func notInChannelError(target domain.ChannelName) error {
 // by inserting the DM into its sidebar cache, focus-switching,
 // and (when `Body` is non-empty) sending the body to it.
 type QueryCommand struct {
-	Nick string   `arg:"" help:"Nick to open a direct message with"`
-	Body []string `arg:"" optional:"" nargs:"-1" help:"Optional message text"`
+	Nick string      `arg:"" help:"Nick to open a direct message with"`
+	Body CommandText `arg:"" optional:"" passthrough:"all" help:"Optional message text"`
 }
 
 // Sources implements command.Completer.
@@ -719,7 +817,7 @@ func (c QueryCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 
 		return DMOpenedMsg{
 			Counterpart: resolved,
-			Body:        strings.TrimSpace(strings.Join(c.Body, " ")),
+			Body:        strings.TrimSpace(c.Body.String()),
 			Focus:       true,
 			At:          time.Now(),
 		}
@@ -765,44 +863,116 @@ func (c CloseCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // and no "open DM" step — DMs are stateless on the server side,
 // and the conversation lives in the events log.
 //
-// The tool accepts either a plain `body` or styled `spans`;
-// `renderReplyPart` validates the structural shape (exactly one of
-// body/spans, no embedded newlines, spans are non-empty, colour
-// values in range) and renders spans into IRC wire control
-// characters via `ircfmt`. Validation failure returns an error
-// tool-result so the model can self-correct on its next call.
-func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
-	body, err := renderReplyPart(protocol.ReplyPart{
-		Kind:  protocol.ReplyMessage,
-		Body:  strings.TrimSpace(strings.Join(c.Body, " ")),
-		Spans: c.Spans,
-	})
+// The tool accepts either a plain `body` or styled `spans`. The
+// whole body array is validated before the first send. Each
+// element then becomes its own PRIVMSG in array order; spans render
+// as one styled message.
+func (c MsgCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
+	messages, err := renderReplyMessages(protocol.ReplyMessage, c.Body, c.Spans)
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolRefusal(err)
 	}
 
-	resp, sendErr := tc.Client.Send(ctx, protocol.PrivMsg{
-		Target: protocol.ParseMsgTarget(c.Target),
-		Body:   body,
-	})
+	target := protocol.ParseMsgTarget(c.Target)
+	return sendToolMessages(ctx, tc, protocol.ReplyMessage, messages, func(body string) (protocol.Response, error) {
+		return tc.Client.Send(ctx, protocol.PrivMsg{Target: target, Body: body})
+	}, func(resp protocol.Response) error {
+		if _, isNick := target.(protocol.NickTarget); !isNick {
+			return nil
+		}
 
-	return resolveSendResult(resp, sendErr, "messaged "+c.Target)
+		message, ok := responseMessage(resp)
+		if !ok {
+			return &MissingMessageResponseError{Tool: "msg"}
+		}
+
+		target = protocol.ClientTarget(message.Target)
+
+		return nil
+	}, "messaged "+c.Target, "messages to "+c.Target)
 }
 
-// resolveSendResult flattens a `caller.Send` outcome into the
-// tool-result envelope the model sees. Send-level errors and gate
-// rejections both surface as `OK: false`; a successful send returns
-// the caller-supplied summary.
-func resolveSendResult(resp protocol.Response, err error, summary string) modelclient.ToolResultPayload {
-	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+func responseMessage(resp protocol.Response) (domain.Message, bool) {
+	for _, event := range resp.Events {
+		if message, ok := event.(domain.Message); ok {
+			return message, true
+		}
 	}
 
-	if resp.Err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: resp.Err.Error()}
+	return domain.Message{}, false
+}
+
+// MissingMessageResponseError reports a successful message send whose
+// response did not identify the persisted message.
+type MissingMessageResponseError struct {
+	Tool string
+}
+
+func (e *MissingMessageResponseError) Error() string {
+	return e.Tool + " response did not contain the persisted message"
+}
+
+func sendToolMessages(
+	ctx context.Context,
+	tc modelclient.ToolContext,
+	kind protocol.ReplyKind,
+	messages []renderedMessage,
+	send func(string) (protocol.Response, error),
+	afterSend func(protocol.Response) error,
+	singleSummary string,
+	multipleSummary string,
+) modelclient.ToolOutcome {
+	for index, message := range messages {
+		if err := tc.PaceMessage(ctx, message.pacingText); err != nil {
+			return toolExecutionFailure(&ToolBatchError{Kind: kind, Sent: index, Total: len(messages), Err: err})
+		}
+
+		resp, err := send(message.body)
+		if err != nil {
+			return toolExecutionFailure(&ToolBatchError{Kind: kind, Sent: index, Total: len(messages), Err: err})
+		}
+		if resp.Err != nil {
+			failure := &ToolBatchError{Kind: kind, Sent: index, Total: len(messages), Err: resp.Err}
+			return toolRefusal(failure)
+		}
+		if afterSend != nil {
+			if err := afterSend(resp); err != nil {
+				return toolExecutionFailure(&ToolBatchError{Kind: kind, Sent: index + 1, Total: len(messages), Err: err})
+			}
+		}
 	}
 
-	return modelclient.ToolResultPayload{OK: true, Summary: summary}
+	if len(messages) == 1 {
+		return toolResult(modelclient.ToolResultPayload{OK: true, Summary: singleSummary})
+	}
+
+	return toolResult(modelclient.ToolResultPayload{OK: true, Summary: fmt.Sprintf("sent %d %s", len(messages), multipleSummary)})
+}
+
+// ToolBatchError reports a failure after zero or more messages from a
+// tool batch have already been sent.
+type ToolBatchError struct {
+	Kind  protocol.ReplyKind
+	Sent  int
+	Total int
+	Err   error
+}
+
+func (e *ToolBatchError) Error() string {
+	if e.Sent == 0 {
+		return e.Err.Error()
+	}
+
+	noun := "messages"
+	if e.Kind == protocol.ReplyAction {
+		noun = "actions"
+	}
+
+	return fmt.Sprintf("sent %d of %d %s before failure: %s", e.Sent, e.Total, noun, e.Err)
+}
+
+func (e *ToolBatchError) Unwrap() error {
+	return e.Err
 }
 
 // NickCommand represents `/nick <new_nick>`.
@@ -834,26 +1004,20 @@ func (c NickCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c NickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c NickCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	return sendToolCommand(ctx, tc, c, "changed nick to "+c.Nick)
 }
 
-// ModeCommand represents `/mode <flags> [args...]`. Carries one
-// or more channel-mode changes in RFC 2812 §3.2.3 compound form;
-// flags toggle direction with `+` / `-` prefixes and parametric
-// flags consume their argument from the args list left-to-right.
+// ModeCommand carries one or more channel-mode changes. The slash command
+// accepts RFC 2812's compound form and UnmarshalText converts it into the same
+// declarative representation that the model tool receives.
 type ModeCommand struct {
-	Flags string   `arg:"" help:"Mode flag string, e.g. +ov-i or +k"`
-	Args  []string `arg:"" optional:"" help:"Parameters for parametric flags, in flag-string order"`
+	Changes ModeChanges `arg:"" passthrough:"all" max:"16" tool:"One to 16 ordered channel-mode changes." help:"Mode flags and parameters, e.g. +ov-i alice bob"`
 }
 
-// ToCommand builds the wire-protocol command for `/mode`, parsing
-// the compound flag string into a sequence of changes. Shape
-// errors (unknown flag, missing parameter, surplus parameter)
-// reject before any wire send so the dispatcher and the chatcmd
-// surface agree on what's well-formed.
+// ToCommand builds the wire-protocol command for `/mode`.
 func (c ModeCommand) ToCommand(rc Context) (protocol.Command, error) {
-	changes, err := parseChannelModeString(c.Flags, c.Args)
+	changes, err := c.Changes.protocolChanges()
 	if err != nil {
 		return nil, err
 	}
@@ -875,104 +1039,18 @@ func (c ModeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c ModeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c ModeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	ch, ok := toolChannel(tc)
 	if !ok {
-		return noActiveChannel()
+		return toolResult(noActiveChannel())
 	}
 
 	return sendToolCommand(ctx, tc, c, "mode change on "+string(ch))
 }
 
-// parseChannelModeString walks `flags` left-to-right, tracking
-// sign, and emits one [protocol.ChannelModeChange] per flag rune.
-// Parametric flags (`+o`, `+v`, `+l` on add, `+k` on add) consume
-// their argument from `args` in order. The function rejects
-// unknown flags, missing arguments, and surplus arguments — RFC
-// 2812 doesn't pin behaviour on extra trailing args, but the
-// stricter rejection makes a typo surface immediately rather than
-// silently dropping a half-meant change.
-func parseChannelModeString(flags string, args []string) ([]protocol.ChannelModeChange, error) {
-	if flags == "" {
-		return nil, fmt.Errorf("mode: empty flag string")
-	}
-
-	add := true
-	argIdx := 0
-
-	var changes []protocol.ChannelModeChange
-
-	for _, r := range flags {
-		switch r {
-		case '+':
-			add = true
-			continue
-		case '-':
-			add = false
-			continue
-		}
-
-		flag := domain.Mode(r)
-		change := protocol.ChannelModeChange{Flag: flag, Add: add}
-
-		needsParam, paramKind := channelModeParamShape(flag, add)
-		if needsParam {
-			if argIdx >= len(args) {
-				return nil, domain.MissingModeParamError{Flag: flag}
-			}
-
-			switch paramKind {
-			case modeParamTarget:
-				change.Target = domain.Nick(args[argIdx])
-			case modeParamValue:
-				change.Param = args[argIdx]
-			}
-			argIdx++
-		}
-
-		changes = append(changes, change)
-	}
-
-	if argIdx < len(args) {
-		return nil, fmt.Errorf("mode: %d surplus argument(s)", len(args)-argIdx)
-	}
-
-	return changes, nil
-}
-
-type modeParamKind int
-
-const (
-	modeParamNone modeParamKind = iota
-	modeParamTarget
-	modeParamValue
-)
-
-// channelModeParamShape reports whether a flag in the given
-// direction consumes an argument and, if so, whether the argument
-// is a nick (a per-member grant) or a free value (a count or a
-// key). It reads [domain.ModeArgumentFor], so the set of flags that
-// take an argument is the one the dispatcher validates against.
-//
-// An unknown flag consumes nothing here. The dispatcher is what
-// rejects it, with [domain.UnknownModeFlagError], and consuming an
-// argument for it would turn that into a confusing surplus-argument
-// complaint about the next flag along.
-func channelModeParamShape(flag domain.Mode, add bool) (bool, modeParamKind) {
-	switch domain.ModeArgumentFor(flag) {
-	case domain.ModeArgNick:
-		return true, modeParamTarget
-	case domain.ModeArgCount, domain.ModeArgText:
-		if add {
-			return true, modeParamValue
-		}
-	}
-	return false, modeParamNone
-}
-
 // TopicCommand represents `/topic [text]`. An empty topic clears it.
 type TopicCommand struct {
-	Topic []string `arg:"" optional:"" help:"Topic text"`
+	Topic *CommandText `arg:"" optional:"" passthrough:"all" help:"Topic text"`
 }
 
 // ToCommand builds the wire-protocol command for `/topic <body>`.
@@ -981,8 +1059,12 @@ type TopicCommand struct {
 // [TopicInfoResult].
 func (c TopicCommand) ToCommand(rc Context) (protocol.Command, error) {
 	channel, _ := rc.ActiveName()
+	body := ""
+	if c.Topic != nil {
+		body = c.Topic.String()
+	}
 
-	return protocol.Topic{Channel: channel, Body: strings.Join(c.Topic, " ")}, nil
+	return protocol.Topic{Channel: channel, Body: body}, nil
 }
 
 // Run implements Command.
@@ -991,7 +1073,7 @@ func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 		return noChannelCmd("topic")
 	}
 
-	if len(c.Topic) == 0 {
+	if c.Topic == nil {
 		return func() tea.Msg {
 			channel := rc.Active.Name()
 			w, err := rc.Session.GetWindow(ctx, channel)
@@ -1014,28 +1096,28 @@ func (c TopicCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 }
 
 // RunTool implements ToolCommand.
-func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	ch, ok := toolChannel(tc)
 	if !ok {
-		return noActiveChannel()
+		return toolResult(noActiveChannel())
 	}
 
-	if len(c.Topic) == 0 {
+	if c.Topic == nil {
 		w, err := tc.Session.GetWindow(ctx, ch)
 		if err != nil {
-			return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+			return toolExecutionFailure(err)
 		}
 
 		cw, isChannel := w.(*domain.ChannelWindow)
 		if !isChannel {
-			return modelclient.ToolResultPayload{OK: false, Error: fmt.Errorf("%s is not a channel", ch).Error()}
+			return toolResult(modelclient.ToolResultPayload{OK: false, Error: fmt.Sprintf("%s is not a channel", ch)})
 		}
 
-		return modelclient.ToolResultPayload{
+		return toolResult(modelclient.ToolResultPayload{
 			OK:      true,
 			Summary: "returned current topic",
 			Data:    cw,
-		}
+		})
 	}
 
 	return sendToolCommand(ctx, tc, c, "updated topic for "+string(ch))
@@ -1043,17 +1125,22 @@ func (c TopicCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) m
 
 // MeCommand represents `/me <action>`.
 type MeCommand struct {
-	Action []string             `arg:"" optional:"" nargs:"1" help:"Plain action text. Provide either action or spans, not both."`
-	Spans  []protocol.ReplySpan `optional:"" help:"Styled spans for IRC formatting. Each span has text and optional style (bold, italic, underline, reverse, strike, fg, bg as palette 0..15). Provide either action or spans, not both."`
+	Action ActionBodies        `arg:"" passthrough:"all" xor:"content" max:"4" tool:"One to 4 non-empty plain actions to send in order. Each array element becomes a separate IRC action." help:"Plain action text"`
+	Spans  protocol.ReplySpans `cli:"-" xor:"content" max:"32" tool:"One to 32 styled spans for one IRC action. Each span has non-empty text and optional style (bold, italic, underline, reverse, strike, fg, bg); fg and bg use palette values 0..15." help:"Styled IRC action spans"`
 }
 
 // ToCommand builds the wire-protocol command for `/me`. The action
 // goes to the window the user is in, which
 // [protocol.TargetForWindow] turns into a channel or a counterpart.
 func (c MeCommand) ToCommand(rc Context) (protocol.Command, error) {
+	body, err := c.cliBody()
+	if err != nil {
+		return nil, err
+	}
+
 	return protocol.Action{
 		Target: protocol.TargetForWindow(rc.Active),
-		Body:   strings.TrimSpace(strings.Join(c.Action, " ")),
+		Body:   body,
 	}, nil
 }
 
@@ -1063,14 +1150,31 @@ func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 		return noChannelCmd("me")
 	}
 
-	body := strings.TrimSpace(strings.Join(c.Action, " "))
-	if body == "" {
-		return usageCmd("me", "/me <action>")
+	if _, err := c.cliBody(); err != nil {
+		var noText domain.NoTextToSendError
+		if errors.As(err, &noText) {
+			return usageCmd("me", "/me <action>")
+		}
+
+		return func() tea.Msg { return rc.errorEvent("me", err) }
 	}
 
 	return func() tea.Msg {
 		return sendCommand(ctx, rc, c, "me")
 	}
+}
+
+func (c MeCommand) cliBody() (string, error) {
+	if len(c.Action) == 0 {
+		return "", domain.NoTextToSendError{Command: protocol.Action{}.Name()}
+	}
+
+	body := c.Action[0]
+	if err := protocol.ValidateMessageBody(protocol.Action{}.Name(), body, time.Time{}); err != nil {
+		return "", err
+	}
+
+	return body, nil
 }
 
 // RunTool implements ToolCommand. The action body goes through the
@@ -1083,26 +1187,19 @@ func (c MeCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // Any window will do, so this asks only that there be one. A caller
 // with no window carries a nil Target, which is a different value
 // from every window a client can hold.
-func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c MeCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	if tc.Target == nil {
-		return modelclient.ToolResultPayload{OK: false, Error: "no active window"}
+		return toolResult(modelclient.ToolResultPayload{OK: false, Error: "no active window"})
 	}
 
-	body, err := renderReplyPart(protocol.ReplyPart{
-		Kind:  protocol.ReplyAction,
-		Body:  strings.TrimSpace(strings.Join(c.Action, " ")),
-		Spans: c.Spans,
-	})
+	messages, err := renderReplyMessages(protocol.ReplyAction, c.Action, c.Spans)
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolRefusal(err)
 	}
 
-	resp, sendErr := tc.Client.Send(ctx, protocol.Action{
-		Target: tc.Target,
-		Body:   body,
-	})
-
-	return resolveSendResult(resp, sendErr, "sent action to "+tc.Target.String())
+	return sendToolMessages(ctx, tc, protocol.ReplyAction, messages, func(body string) (protocol.Response, error) {
+		return tc.Client.Send(ctx, protocol.Action{Target: tc.Target, Body: body})
+	}, nil, "sent action to "+tc.Target.String(), "actions to "+tc.Target.String())
 }
 
 // WhoisCommand represents `/whois <nick>`.
@@ -1137,43 +1234,47 @@ func (c WhoisCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 // RunTool implements ToolCommand. The reply is stamped with the
 // window the lookup was issued from, so it renders where the model
 // asked; a DM window is named by its counterpart's id.
-func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c WhoisCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	window, _ := protocol.WindowName(tc.Target)
 
-	whois, err := c.fetch(ctx, tc.Client, domain.Nick(c.Nick), window)
+	resp, err := tc.Client.Send(ctx, protocol.Whois{Nick: domain.Nick(c.Nick), Channel: window})
 	if err != nil {
-		return modelclient.ToolResultPayload{OK: false, Error: err.Error()}
+		return toolExecutionFailure(err)
+	}
+	if resp.Err != nil {
+		return toolRefusal(resp.Err)
 	}
 
-	return modelclient.ToolResultPayload{
+	whois, ok := responseWhois(resp.Events)
+	if !ok {
+		return toolExecutionFailure(&MissingWhoisResponseError{Nick: domain.Nick(c.Nick)})
+	}
+
+	return toolResult(modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "returned details for " + c.Nick,
 		Data:    whois,
-	}
+	})
 }
 
-// fetch issues the wire `WHOIS` from `channel` and extracts the
-// dispatcher's `domain.Whois` snapshot from `Response.Events`. The
-// snapshot freezes the instance's identity surface at the moment of
-// query — `Nick`, `Persona`, `Channels` — so later renames or
-// channel changes don't retro-edit historical renderings.
-func (WhoisCommand) fetch(ctx context.Context, client protocol.Client, nick domain.Nick, channel domain.ChannelName) (domain.Whois, error) {
-	resp, err := client.Send(ctx, protocol.Whois{Nick: nick, Channel: channel})
-	if err != nil {
-		return domain.Whois{}, err
-	}
-
-	if resp.Err != nil {
-		return domain.Whois{}, resp.Err
-	}
-
-	for _, evt := range resp.Events {
+func responseWhois(events []protocol.Event) (domain.Whois, bool) {
+	for _, evt := range events {
 		if whois, ok := evt.(domain.Whois); ok {
-			return whois, nil
+			return whois, true
 		}
 	}
 
-	return domain.Whois{}, fmt.Errorf("dispatcher returned no Whois event")
+	return domain.Whois{}, false
+}
+
+// MissingWhoisResponseError reports a successful WHOIS command whose
+// response did not contain the requested snapshot.
+type MissingWhoisResponseError struct {
+	Nick domain.Nick
+}
+
+func (e *MissingWhoisResponseError) Error() string {
+	return "WHOIS response did not contain details for " + string(e.Nick)
 }
 
 // HelpCommand represents `/help`.
@@ -1187,11 +1288,11 @@ func (HelpCommand) Run(_ context.Context, _ Context) tea.Cmd {
 // RunTool implements ToolCommand. The command list is a UI
 // affordance with no memory value, so it is returned to the model
 // for the immediate turn and never persisted.
-func (HelpCommand) RunTool(_ context.Context, _ modelclient.ToolContext) modelclient.ToolResultPayload {
-	return modelclient.ToolResultPayload{
+func (HelpCommand) RunTool(_ context.Context, _ modelclient.ToolContext) modelclient.ToolOutcome {
+	return toolResult(modelclient.ToolResultPayload{
 		OK:      true,
 		Summary: "available command tools include join, part, list, invite, kick, msg, nick, topic, me, whois, help, and quit",
-	}
+	})
 }
 
 // ClearCommand represents `/clear`.
@@ -1214,7 +1315,7 @@ func (PokeCommand) Run(_ context.Context, _ Context) tea.Cmd {
 
 // QuitCommand represents `/quit [message]`.
 type QuitCommand struct {
-	Message []string `arg:"" optional:"" nargs:"1" help:"Optional farewell message"`
+	Message CommandText `arg:"" optional:"" passthrough:"all" help:"Optional farewell message"`
 }
 
 // ToCommand builds the wire-protocol command for `/quit`.
@@ -1241,7 +1342,7 @@ func (c QuitCommand) Run(_ context.Context, _ Context) tea.Cmd {
 const defaultQuitMessage = "leaving"
 
 func (c QuitCommand) quitMessage() string {
-	msg := strings.TrimSpace(strings.Join(c.Message, " "))
+	msg := strings.TrimSpace(c.Message.String())
 	if msg == "" {
 		return defaultQuitMessage
 	}
@@ -1250,7 +1351,7 @@ func (c QuitCommand) quitMessage() string {
 }
 
 // RunTool implements ToolCommand.
-func (c QuitCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c QuitCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) modelclient.ToolOutcome {
 	return sendToolCommand(ctx, tc, c, "shut down and left all channels")
 }
 
@@ -1294,7 +1395,7 @@ type PassCommand struct {
 
 // RunTool records the pass reason on the surrounding execute_tool
 // span and returns a stable confirmation summary.
-func (c PassCommand) RunTool(ctx context.Context, _ modelclient.ToolContext) modelclient.ToolResultPayload {
+func (c PassCommand) RunTool(ctx context.Context, _ modelclient.ToolContext) modelclient.ToolOutcome {
 	reason := strings.TrimSpace(c.Reason)
 	if reason == "" {
 		reason = "no reason given"
@@ -1302,5 +1403,5 @@ func (c PassCommand) RunTool(ctx context.Context, _ modelclient.ToolContext) mod
 
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String("pass.reason", reason))
 
-	return modelclient.ToolResultPayload{OK: true, Summary: "passed: " + reason}
+	return toolResult(modelclient.ToolResultPayload{OK: true, Summary: "passed: " + reason})
 }

@@ -24,57 +24,155 @@ func resolveFieldMetas(cmd any) ([]fieldMeta, error) {
 	var metas []fieldMeta
 
 	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-
-		if _, ok := f.Tag.Lookup("cmd"); ok {
-			continue
+		meta, include, err := resolveFieldMeta(t.Field(i), i)
+		if err != nil {
+			return nil, err
 		}
-
-		if !hasTag(f) {
-			continue
+		if include {
+			metas = append(metas, meta)
 		}
+	}
 
-		m := fieldMeta{index: i, typ: f.Type}
-
-		if argName, ok := f.Tag.Lookup("arg"); ok {
-			m.isFlag = false
-			if argName != "" {
-				m.name = argName
-			} else {
-				m.name = toKebabCase(f.Name)
-			}
-		} else {
-			m.isFlag = true
-			m.boolFlag = f.Type.Kind() == reflect.Bool
-			m.name = toKebabCase(f.Name)
-			m.flagName = "--" + m.name
-		}
-
-		m.help, _ = f.Tag.Lookup("help")
-
-		if _, ok := f.Tag.Lookup("optional"); ok {
-			m.optional = true
-		}
-
-		m.variadic = f.Type.Kind() == reflect.Slice
-
-		if nargsStr, ok := f.Tag.Lookup("nargs"); ok {
-			n, err := strconv.Atoi(nargsStr)
-			if err == nil {
-				m.nargs = &n
-			}
-		}
-
-		dec := defaultRegistry.ForType(f.Type)
-		if dec == nil {
-			return nil, &NoDecoderError{Type: f.Type}
-		}
-
-		m.decoder = dec
-		metas = append(metas, m)
+	cliFields := visibleFields(metas, func(field fieldMeta) bool { return !field.cliHidden })
+	if err := validatePassthroughPosition(t, cliFields); err != nil {
+		return nil, err
 	}
 
 	return metas, nil
+}
+
+func resolveCLIFieldMetas(cmd any) ([]fieldMeta, error) {
+	fields, err := resolveFieldMetas(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	return visibleFields(fields, func(field fieldMeta) bool { return !field.cliHidden }), nil
+}
+
+func visibleFields(fields []fieldMeta, include func(fieldMeta) bool) []fieldMeta {
+	visible := make([]fieldMeta, 0, len(fields))
+	for _, field := range fields {
+		if include(field) {
+			visible = append(visible, field)
+		}
+	}
+
+	return visible
+}
+
+func resolveFieldMeta(field reflect.StructField, index int) (fieldMeta, bool, error) {
+	if _, ok := field.Tag.Lookup("cmd"); ok || !hasTag(field) {
+		return fieldMeta{}, false, nil
+	}
+
+	meta := fieldMeta{
+		index:      index,
+		typ:        field.Type,
+		help:       field.Tag.Get("help"),
+		toolHelp:   field.Tag.Get("tool"),
+		optional:   hasFieldTag(field, "optional"),
+		variadic:   field.Type.Kind() == reflect.Slice,
+		cliHidden:  field.Tag.Get("cli") == "-",
+		toolHidden: field.Tag.Get("tool") == "-",
+		xorGroups:  splitTagValues(field.Tag.Get("xor")),
+	}
+
+	if cli, ok := field.Tag.Lookup("cli"); ok && cli != "-" {
+		return fieldMeta{}, false, &UnsupportedCLIScopeError{Field: field.Name, Value: cli}
+	}
+	if _, ok := field.Tag.Lookup("nargs"); ok {
+		return fieldMeta{}, false, &UnsupportedNargsTagError{Field: field.Name}
+	}
+
+	maximum, err := maximumFor(field)
+	if err != nil {
+		return fieldMeta{}, false, err
+	}
+	meta.maxItems = maximum
+
+	if argName, ok := field.Tag.Lookup("arg"); ok {
+		meta.name = argName
+		if meta.name == "" {
+			meta.name = toKebabCase(field.Name)
+		}
+	} else {
+		meta.isFlag = true
+		meta.boolFlag = field.Type.Kind() == reflect.Bool
+		meta.name = toKebabCase(field.Name)
+		meta.flagName = "--" + meta.name
+	}
+
+	passthrough, err := passthroughModeFor(field, meta.isFlag)
+	if err != nil {
+		return fieldMeta{}, false, err
+	}
+	meta.passthrough = passthrough
+
+	if !meta.cliHidden {
+		meta.decoder = defaultRegistry.ForType(field.Type)
+		if meta.decoder == nil {
+			return fieldMeta{}, false, &NoDecoderError{Type: field.Type}
+		}
+	}
+
+	return meta, true, nil
+}
+
+func maximumFor(field reflect.StructField) (*int, error) {
+	raw, ok := field.Tag.Lookup("max")
+	if !ok {
+		return nil, nil
+	}
+	if field.Type.Kind() != reflect.Slice {
+		return nil, &MaxOnNonSliceError{Field: field.Name, Type: field.Type}
+	}
+
+	maximum, err := strconv.Atoi(raw)
+	if err != nil || maximum <= 0 {
+		return nil, &InvalidMaxTagError{Field: field.Name, Value: raw}
+	}
+
+	return &maximum, nil
+}
+
+func splitTagValues(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+}
+
+func passthroughModeFor(field reflect.StructField, flag bool) (PassthroughMode, error) {
+	mode, ok := field.Tag.Lookup("passthrough")
+	if !ok {
+		return PassthroughModeNone, nil
+	}
+	if flag {
+		return PassthroughModeNone, &PassthroughOnFlagError{Field: field.Name}
+	}
+
+	switch mode {
+	case "", "all":
+		return PassthroughModeAll, nil
+	case "partial":
+		return PassthroughModePartial, nil
+	default:
+		return PassthroughModeNone, &UnsupportedPassthroughModeError{Field: field.Name, Mode: mode}
+	}
+}
+
+func validatePassthroughPosition(structType reflect.Type, metas []fieldMeta) error {
+	for index, meta := range metas {
+		if meta.passthrough == PassthroughModeNone {
+			continue
+		}
+
+		for _, following := range metas[index+1:] {
+			if !following.isFlag {
+				return &PassthroughNotFinalError{Field: structType.Field(meta.index).Name}
+			}
+		}
+	}
+
+	return nil
 }
 
 // buildPositionals converts positional fieldMetas into Positional
@@ -88,11 +186,11 @@ func buildPositionals[C KindProvider](fields []fieldMeta, sources map[string]Sug
 		}
 
 		p := Positional[C]{
-			Name:     f.name,
-			Help:     f.help,
-			Optional: f.optional,
-			Variadic: f.variadic,
-			Nargs:    f.nargs,
+			Name:        f.name,
+			Help:        f.help,
+			Optional:    f.optional,
+			Variadic:    f.variadic,
+			Passthrough: f.passthrough,
 		}
 
 		if sources != nil {
@@ -187,10 +285,12 @@ func buildNode[C KindProvider](ft reflect.StructField, fieldVal reflect.Value) (
 
 	fieldType := ft.Type
 
-	fields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
+	allFields, err := resolveFieldMetas(reflect.New(fieldType).Elem().Interface())
 	if err != nil {
 		return nil, err
 	}
+	fields := visibleFields(allFields, func(field fieldMeta) bool { return !field.cliHidden })
+	toolFields := visibleFields(allFields, func(field fieldMeta) bool { return !field.toolHidden })
 
 	var sources map[string]SuggestionSource[C]
 
@@ -210,9 +310,35 @@ func buildNode[C KindProvider](ft reflect.StructField, fieldVal reflect.Value) (
 		Positionals:          buildPositionals[C](fields, sources),
 		Flags:                buildFlags[C](fields, sources),
 		fields:               fields,
+		toolFields:           toolFields,
 		factory: func() any {
 			return reflect.New(fieldType).Interface()
 		},
+	}
+
+	if node.Tool {
+		runtimeSchema, groups, err := buildToolParameters(toolFields)
+		if err != nil {
+			return nil, err
+		}
+		toolSchema, err := providerToolSchema(name, runtimeSchema)
+		if err != nil {
+			return nil, err
+		}
+
+		toolValidator, err := compileToolSchema(name, toolSchema)
+		if err != nil {
+			return nil, err
+		}
+		runtimeValidator, err := compileToolSchema(name, runtimeSchema)
+		if err != nil {
+			return nil, err
+		}
+
+		node.toolSchema = toolSchema
+		node.toolValidator = toolValidator
+		node.runtimeValidator = runtimeValidator
+		node.toolXORGroups = groups
 	}
 
 	if hasCmdChildren(fieldType) {
@@ -292,13 +418,19 @@ func build[C KindProvider](grammar any) ([]*Node[C], error) {
 // hasTag returns true if the struct field has at least one recognised
 // command tag.
 func hasTag(f reflect.StructField) bool {
-	for _, key := range []string{"arg", "help", "optional", "nargs"} {
+	for _, key := range []string{"arg", "help", "optional", "nargs", "passthrough", "tool", "cli", "xor", "max"} {
 		if _, ok := f.Tag.Lookup(key); ok {
 			return true
 		}
 	}
 
 	return false
+}
+
+func hasFieldTag(field reflect.StructField, name string) bool {
+	_, ok := field.Tag.Lookup(name)
+
+	return ok
 }
 
 func hasToolTag(f reflect.StructField) bool {

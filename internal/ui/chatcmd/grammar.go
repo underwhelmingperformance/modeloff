@@ -15,13 +15,13 @@ type Grammar struct {
 	Invite             InviteCommand             `cmd:"" tool:"" kind:"channel" help:"Invite a nick to a channel."`
 	Kick               KickCommand               `cmd:"" tool:"" kind:"channel" help:"Remove a nick from the current channel."`
 	Kill               KillCommand               `cmd:"" caps:"operator" tool:"Forcibly disconnect a model instance from the server with a reason." help:"Disconnect a model instance from the server."`
-	Msg                MsgCommand                `cmd:"" tool:"Send a message addressed to either a #channel you are in, or a user (by nick). The recipient sees the message and may reply." help:"Send a message to a #channel or to a user by nick."`
+	Msg                MsgCommand                `cmd:"" tool:"Send one or more messages addressed to either a #channel you are in, or a user by nick. Each body array element is delivered as a separate IRC message in order." help:"Send a message to a #channel or to a user by nick."`
 	Query              QueryCommand              `cmd:"" aliases:"q" help:"Open (or focus) a direct-message window with a nick. Optional trailing body is sent as the first message."`
 	Close              CloseCommand              `cmd:"" aliases:"wc,unquery" help:"Close the current window, parting the channel if it is one."`
 	Nick               NickCommand               `cmd:"" tool:"" help:"Change your nickname."`
 	Topic              TopicCommand              `cmd:"" tool:"" kind:"channel" help:"Set or clear the current channel topic."`
-	Mode               ModeCommand               `cmd:"" kind:"channel" tool:"Set or clear one or more channel modes. Syntax: <modes> [args]. Examples: +o nick, +tn, -i+l 10, +k secret, +ov-i alice bob." help:"Set or clear channel modes."`
-	Me                 MeCommand                 `cmd:"" tool:"" help:"Send an action message (e.g. /me waves)."`
+	Mode               ModeCommand               `cmd:"" kind:"channel" tool:"Set or clear one or more channel modes. Supply each change as an object; the mode descriptions explain their effects and parameters." help:"Set or clear channel modes."`
+	Me                 MeCommand                 `cmd:"" tool:"Send one or more /me actions to the current window. Each action array element is delivered separately in order." help:"Send an action message (e.g. /me waves)."`
 	Whois              WhoisCommand              `cmd:"" tool:"" help:"Show details about a model instance."`
 	Config             ConfigCommand             `cmd:"" help:"Update runtime configuration."`
 	Personas           PersonasCommand           `cmd:"" help:"List all defined personas."`

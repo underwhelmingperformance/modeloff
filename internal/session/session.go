@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -103,6 +104,7 @@ type Store interface {
 	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 	SaveInstance(ctx context.Context, inst *domain.Instance) error
 	DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error
+	MarkInstancePendingDeletion(ctx context.Context, id domain.InstanceID) error
 
 	// ResolveNick returns the canonical `*domain.Instance` whose
 	// current display nick matches the argument. This is the
@@ -113,12 +115,11 @@ type Store interface {
 
 	// Session-active marker. Set on `Connect`; a non-empty value
 	// on the next `Connect` signals an unclean prior shutdown so
-	// the user's stale membership state can be reconciled.
-	// Clearing it belongs to the client whose connection it
-	// describes, which writes it through its own store surface
-	// (`userclient.Store.ClearSessionActive`).
+	// the user's stale membership state can be reconciled. The
+	// session clears it only after the user's teardown is durable.
 	GetSessionActive(ctx context.Context) (string, error)
 	SetSessionActive(ctx context.Context, value string) error
+	ClearSessionActive(ctx context.Context) error
 
 	// Last-read tracking. The event id high-watermark per
 	// channel that the chat-screen has rendered. Where the
@@ -168,8 +169,9 @@ type Session struct {
 	// writerStopped closes when that loop exits. The handoff is
 	// unbuffered so a command accepted onto the queue is a command
 	// the loop has committed to running. See [Session.onWriter].
-	writerQ       chan writerJob
-	writerStopped chan struct{}
+	writerQ          chan writerJob
+	writerStopped    chan struct{}
+	externalHandlers handlerGate
 
 	// channels is the session's live channel state — the member
 	// lists, topics, modes and invitation sets every command reads
@@ -314,6 +316,7 @@ func New(
 		pokeWake:            make(chan struct{}, 1),
 		writerQ:             make(chan writerJob),
 		writerStopped:       make(chan struct{}),
+		externalHandlers:    newHandlerGate(),
 		channels:            newChannelState(),
 		flood:               rfcFloodPolicy,
 		channelFlood:        newChannelFlood(),
@@ -376,7 +379,7 @@ func (s *Session) WithTracerProvider(tp trace.TracerProvider) *Session {
 // drive the session directly without a user-client encounter this
 // path and rely on the consumer treating nil as "no user".
 func (s *Session) userInstance() *domain.Instance {
-	sc := s.lookupClientHandle(protocol.UserClientID)
+	sc := s.registeredClientHandle(protocol.UserClientID)
 	if sc == nil {
 		return nil
 	}
@@ -384,13 +387,33 @@ func (s *Session) userInstance() *domain.Instance {
 	return sc.instance
 }
 
-// lookupClientHandle returns the cached handle for `id` under the
-// read lock, or nil if none has been allocated yet.
-func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
+// registeredClientHandle returns the cached handle for `id` under
+// the read lock, including a connection whose QUIT has committed but
+// whose resources remain registered.
+func (s *Session) registeredClientHandle(id protocol.ClientID) *serverClient {
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
 
 	return s.clientHandles[id]
+}
+
+// lookupClientHandle returns the active handle for `id`, or nil if
+// the identity is not registered or its closable connection has
+// retired.
+func (s *Session) lookupClientHandle(id protocol.ClientID) *serverClient {
+	sc := s.registeredClientHandle(id)
+	if sc == nil || sc.retired.Load() {
+		return nil
+	}
+
+	return sc
+}
+
+func (s *Session) retireClient(id protocol.ClientID) {
+	sc := s.registeredClientHandle(id)
+	if sc != nil {
+		sc.retired.Store(true)
+	}
 }
 
 // lookupClientByNick returns the connected client currently holding
@@ -410,6 +433,9 @@ func (s *Session) lookupClientByNick(nick domain.Nick) *serverClient {
 	defer s.subsMu.RUnlock()
 
 	for _, sc := range s.clientHandles {
+		if sc.retired.Load() {
+			continue
+		}
 		if domain.EqualNick(sc.instance.Nick(), nick) {
 			return sc
 		}
@@ -556,26 +582,30 @@ func (s *Session) ConnectedAt() time.Time {
 	return s.connectedAt
 }
 
-// Shutdown closes the session's shutdown gate so that any further
-// [Session.Subscribe] call declines to register a fresh
-// subscription and the command loop stops taking commands. The
+// Shutdown stops accepting external handlers and closes the
+// session's shutdown gate so that any further [Session.Subscribe]
+// call declines to register a fresh subscription and the command
+// loop stops taking commands. The
 // shape mirrors [net/http.Server.Shutdown]: new work is refused at
 // the registration point, and dispatch goroutines belong to the
 // model-clients holding subscriptions — they exit when their
 // lifetime ctx (derived from the `baseContext` supplier passed to
 // [New]) is cancelled.
 //
-// Closing the gate also stops every subscription's outbound pump,
-// which Shutdown then joins so no delivery goroutine outlives the
-// call.
+// Closing the shutdown gate also stops every subscription's outbound
+// pump. Shutdown waits for the writer's accepted job and handlers
+// that were admitted before the close, then joins the pumps, so none
+// can outlive the call.
 //
 // Shutdown returns `ctx.Err()` if `ctx` is cancelled before the
-// gate close and the pump join complete; otherwise nil. Safe to
-// call more than once via `sync.Once` on the gate.
+// handler drain, gate close and pump join complete; otherwise nil.
+// Safe to call more than once via `sync.Once` on the shutdown gate.
 func (s *Session) Shutdown(ctx context.Context) error {
 	return observability.SpanRunner{
 		Tracer: s.tracerProvider.Tracer("github.com/laney/modeloff/internal/session"),
 	}.Run(ctx, "session.shutdown", nil, func(ctx context.Context, _ trace.Span) error {
+		handlersDone := s.externalHandlers.stop()
+
 		s.subsMu.Lock()
 		s.shuttingDownOnce.Do(func() { close(s.shuttingDown) })
 		s.subsMu.Unlock()
@@ -584,7 +614,19 @@ func (s *Session) Shutdown(ctx context.Context) error {
 			return err
 		}
 
-		for _, sub := range s.subscriberSnapshot() {
+		select {
+		case <-s.writerStopped:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		select {
+		case <-handlersDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		for _, sub := range s.registeredSubscriberSnapshot() {
 			select {
 			case <-sub.pumpDone:
 			case <-ctx.Done():
@@ -596,8 +638,9 @@ func (s *Session) Shutdown(ctx context.Context) error {
 	})
 }
 
-// Connect performs the backend-side connection handshake. It must be
-// called once per session, at startup, before JoinAutojoinChannels.
+// Connect performs the backend-side connection handshake. It is
+// called at startup before JoinAutojoinChannels, and can reactivate
+// the session-lifetime user after its previous connection quit.
 //
 // Behaviour:
 //
@@ -619,7 +662,12 @@ func (s *Session) Shutdown(ctx context.Context) error {
 // the emitted events into it; the connection screen subscribes to
 // the same bus during its boot-time pane.
 func (s *Session) Connect(ctx context.Context) error {
+	userHandle := s.registeredClientHandle(protocol.UserClientID)
 	if !s.connectedAt.IsZero() {
+		if userHandle != nil && userHandle.retired.Load() {
+			return s.reactivateUser(ctx, userHandle)
+		}
+
 		// No span is recorded for a no-op call: it is not a real
 		// connect attempt and would otherwise inflate
 		// session.connect operation counts.
@@ -627,7 +675,7 @@ func (s *Session) Connect(ctx context.Context) error {
 	}
 
 	return s.inSpan(ctx, "session.connect", nil, func(ctx context.Context, _ trace.Span) error {
-		s.connectedAt = s.now()
+		connectedAt := s.now()
 
 		prev, err := s.store.GetSessionActive(ctx)
 		if err != nil {
@@ -641,11 +689,16 @@ func (s *Session) Connect(ctx context.Context) error {
 			}
 		}
 
-		if err := s.store.SetSessionActive(ctx, s.connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		user := s.userInstance()
+
+		if err := s.store.SetSessionActive(ctx, connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("set session active: %w", err)
 		}
 
-		user := s.userInstance()
+		if userHandle != nil {
+			userHandle.retired.Store(false)
+		}
+		s.connectedAt = connectedAt
 
 		welcomeNick := domain.Nick("")
 		if user != nil {
@@ -659,17 +712,63 @@ func (s *Session) Connect(ctx context.Context) error {
 			s.deliverToClient(ctx, user.ID(), domain.Welcome{
 				ServerName: domain.StatusServerName,
 				Nick:       welcomeNick,
-				At:         s.connectedAt,
+				At:         connectedAt,
 			})
 
 			if unclean {
-				s.deliverToClient(ctx, user.ID(), domain.Reconnected{At: s.connectedAt})
+				s.deliverToClient(ctx, user.ID(), domain.Reconnected{At: connectedAt})
 			}
 		}
 
 		s.connectedOnce.Do(func() { close(s.connectedC) })
 
 		return nil
+	})
+}
+
+func (s *Session) reactivateUser(ctx context.Context, userHandle *serverClient) error {
+	return s.inSpan(ctx, "session.connect", nil, func(ctx context.Context, _ trace.Span) error {
+		connectedAt := s.now()
+		user := userHandle.instance
+
+		_, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+			if err := s.requireNickAvailable(ctx, user.Nick(), user); err != nil {
+				return protocol.Response{}, err
+			}
+			if err := s.store.DeleteInstanceByID(ctx, user.ID()); err != nil {
+				return protocol.Response{}, fmt.Errorf("remove retired user client: %w", err)
+			}
+			if err := s.store.SaveInstance(ctx, user); err != nil {
+				return protocol.Response{}, fmt.Errorf("restore user client: %w", err)
+			}
+
+			return protocol.Response{}, nil
+		})
+		if err != nil {
+			return err
+		}
+
+		if err := s.cleanupUncleanShutdown(ctx); err != nil {
+			return fmt.Errorf("reconcile user client: %w", err)
+		}
+
+		_, err = s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+			if err := s.store.SetSessionActive(ctx, connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+				return protocol.Response{}, fmt.Errorf("set session active: %w", err)
+			}
+
+			userHandle.retired.Store(false)
+			s.connectedAt = connectedAt
+			s.deliverToClient(ctx, user.ID(), domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       user.Nick(),
+				At:         connectedAt,
+			})
+
+			return protocol.Response{}, nil
+		})
+
+		return err
 	})
 }
 
@@ -735,9 +834,10 @@ func (s *Session) cleanupUncleanShutdown(ctx context.Context) error {
 // pairs an `Attach` call with each instance-attach (JOIN /
 // ADDMODEL / INVITE) and a `Detach` call with each model-actor
 // reap (QUIT / KILL) so the model-client's dispatch goroutine
-// joins deterministically. The interface lives in the session
-// package so the session does not depend on `internal/modelmanager`
-// or `internal/modelclient`.
+// joins deterministically. `Forget` removes model-owned state only
+// after the instance row has been deleted. The interface lives in
+// the session package so the session does not depend on
+// `internal/modelmanager` or `internal/modelclient`.
 //
 // `Attach` and `PrepareInstance` receive the owning [Session] as
 // a parameter so the factory does not hold a back-reference; the
@@ -770,6 +870,12 @@ type ModelClientFactory interface {
 	// itself. Joining belongs to whoever owns the client's
 	// lifetime. Idempotent on an unknown id.
 	Detach(id protocol.ClientID)
+
+	// DetachAndForget releases the model-client, waits for its dispatch
+	// goroutine off the caller's path, then deletes model-owned state
+	// that shares the lifetime of the instance row. Idempotent on an
+	// unknown id.
+	DetachAndForget(id protocol.ClientID)
 }
 
 // PreparedInstance is what [ModelClientFactory.PrepareInstance]
@@ -1168,20 +1274,29 @@ func (s *Session) persistAndEmit(ctx context.Context, ch domain.ChannelName, evt
 //     broadcast instead, so the departing client is still on the
 //     channel when the event goes out and the membership filter
 //     carries it its own QUIT.
+//   - `maskedChannels` lists channels whose modes could not be read
+//     during forced teardown. Fan-out treats them as anonymous so a
+//     store failure cannot disclose the departing actor's nick.
 type actorEventConfig struct {
-	mutate func(*domain.ChannelWindow)
-	build  func() broadcastEvent
+	mutate         func(*domain.ChannelWindow)
+	build          func() broadcastEvent
+	maskedChannels []domain.ChannelName
 }
 
-// propagateActorEvent fans an actor-scoped event into the per-
-// channel event log (one row per channel the actor was in, all
-// carrying the same consolidated payload) and emits the event
-// once on `s.events`. The channel list is snapshotted up front
-// so post-loop work that mutates `actor.Channels()` does not
-// race.
+// propagateActorEvent records an actor-scoped event in every channel
+// the actor was in, then emits it once on `s.events`. An anonymous
+// channel records the same masked PART its members receive in place
+// of a QUIT, so replay cannot disclose the departing nick. The channel
+// list is snapshotted before later membership changes.
 func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instance, cfg actorEventConfig) {
 	channels := s.instanceChannelNames(actor)
 	evt := cfg.build()
+	anonymous := s.anonymousChannels(ctx, channels)
+	for _, ch := range cfg.maskedChannels {
+		if !slices.Contains(anonymous, ch) {
+			anonymous = append(anonymous, ch)
+		}
+	}
 
 	for _, name := range channels {
 		if cfg.mutate != nil {
@@ -1205,11 +1320,29 @@ func (s *Session) propagateActorEvent(ctx context.Context, actor *domain.Instanc
 			}
 		}
 
-		s.appendEvent(ctx, name, evt)
+		s.appendEvent(ctx, name, actorEventForChannel(evt, name, anonymous))
 	}
 
 	if len(channels) > 0 {
-		s.emit(ctx, evt)
+		s.fanOutProtocolWithMask(ctx, evt, cfg.maskedChannels)
+	}
+}
+
+func actorEventForChannel(
+	evt broadcastEvent,
+	channel domain.ChannelName,
+	anonymous []domain.ChannelName,
+) broadcastEvent {
+	quit, ok := evt.(domain.Quit)
+	if !ok || !slices.Contains(anonymous, channel) {
+		return evt
+	}
+
+	return domain.Part{
+		Target:  channel,
+		Nick:    domain.AnonymousNick,
+		Message: quit.Message,
+		At:      quit.At,
 	}
 }
 

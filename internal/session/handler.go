@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -174,7 +175,9 @@ func (s *Session) handleOper(ctx context.Context, c protocol.Client, cmd protoco
 // directory row. `Response.Err` carries every refusal joined
 // together with [errors.Join], so a caller that only checks success
 // or failure still gets one answer, while a caller that wants to
-// know which channels joined and which did not reads `Events`.
+// know which channels joined and which did not reads `Events`. Store
+// and internal failures use the handler's second return and do not
+// masquerade as per-target IRC refusals.
 func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protocol.Join) (protocol.Response, error) {
 	return s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
 		actor, err := s.resolveClientActor(c)
@@ -190,15 +193,23 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 			})
 		}
 
-		var failures []error
-		var events []protocol.Event
+		var (
+			refusals          []error
+			executionFailures []error
+			events            []protocol.Event
+		)
 
 		for _, ch := range cmd.Channels {
 			joined, joinErr := s.joinAs(ctx, actor, clientJoin, ch, cmd.Key)
 			if joinErr != nil {
-				failures = append(failures, joinErr)
-				if ev, ok := joinErr.(protocol.Event); ok {
-					events = append(events, ev)
+				if commandRefusal(joinErr) {
+					refusals = append(refusals, joinErr)
+					var ev protocol.Event
+					if errors.As(joinErr, &ev) {
+						events = append(events, ev)
+					}
+				} else {
+					executionFailures = append(executionFailures, joinErr)
 				}
 				continue
 			}
@@ -206,7 +217,7 @@ func (s *Session) handleJoin(ctx context.Context, c protocol.Client, cmd protoco
 			events = append(events, domain.JoinedChannel{Channel: joined})
 		}
 
-		return protocol.Response{Events: events, Err: errors.Join(failures...)}, nil
+		return protocol.Response{Events: events, Err: errors.Join(refusals...)}, errors.Join(executionFailures...)
 	})
 }
 
@@ -228,6 +239,10 @@ func (s *Session) handlePrivMsg(ctx context.Context, c protocol.Client, cmd prot
 			return protocol.Response{}, err
 		}
 
+		if err := protocol.ValidateMessageBody(cmd.Name(), cmd.Body, s.now()); err != nil {
+			return commandResult(err)
+		}
+
 		target, err := s.resolveMsgTarget(cmd.Target)
 		if err != nil {
 			return commandResult(err)
@@ -247,6 +262,10 @@ func (s *Session) handleAction(ctx context.Context, c protocol.Client, cmd proto
 		actor, err := s.resolveClientActor(c)
 		if err != nil {
 			return protocol.Response{}, err
+		}
+
+		if err := protocol.ValidateMessageBody(cmd.Name(), cmd.Body, s.now()); err != nil {
+			return commandResult(err)
 		}
 
 		target, err := s.resolveMsgTarget(cmd.Target)
@@ -539,23 +558,33 @@ func (s *Session) handleList(ctx context.Context, c protocol.Client) (protocol.R
 // the phase that tolerates it — it cancels and unsubscribes without
 // waiting — and it runs after the loop has let the QUIT go, because
 // the dispatch goroutine it ends may be queued behind that loop.
+// Once the QUIT has been broadcast, a later persistence failure does
+// not keep the connection alive. The handler still returns that
+// failure after releasing the client.
 func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protocol.Quit) (protocol.Response, error) {
+	if !s.externalHandlers.enter() {
+		return protocol.Response{}, ErrSessionClosed
+	}
+	defer s.externalHandlers.leave()
+
+	committed := false
 	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
 		actor, resolveErr := s.resolveClientActor(c)
 		if resolveErr != nil {
 			return protocol.Response{}, resolveErr
 		}
 
-		return commandResult(s.quitAs(ctx, actor, cmd.Reason))
+		quitErr := s.quitAs(ctx, actor, cmd.Reason)
+		committed = quitErr == nil || quitWasCommitted(quitErr)
+
+		return commandResult(quitErr)
 	})
 
-	if err != nil || resp.Err != nil {
-		return resp, err
+	if committed {
+		s.releaseAndForgetClient(c.Identity())
 	}
 
-	s.releaseClient(c.Identity())
-
-	return resp, nil
+	return resp, err
 }
 
 // handleAddModel brings a new model instance into a channel. It runs
@@ -599,6 +628,11 @@ func (s *Session) handleQuit(ctx context.Context, c protocol.Client, cmd protoco
 // somebody, and a registration that stopped short of connecting
 // would put a nick there that nothing can reach.
 func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd protocol.AddModel) (protocol.Response, error) {
+	if !s.externalHandlers.enter() {
+		return protocol.Response{}, ErrSessionClosed
+	}
+	defer s.externalHandlers.leave()
+
 	if !s.idHasServerOper(c.Identity()) {
 		return protocol.Response{Err: domain.NotOperatorError{Command: "ADDMODEL", At: s.now()}}, nil
 	}
@@ -645,7 +679,8 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 		return resp, err
 	}
 
-	if _, attachErr := s.modelClientFactory.Attach(ctx, s, inst); attachErr != nil {
+	attachedClient, attachErr := s.modelClientFactory.Attach(ctx, s, inst)
+	if attachErr != nil {
 		s.discardModel(ctx, inst)
 
 		return commandResult(observability.ErrWithKind(
@@ -655,8 +690,17 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, cmd pro
 	}
 
 	admitted, admitErr := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+		if attachedClient != nil {
+			id := protocol.ClientID(inst.ID())
+			sc := s.lookupClientHandle(id)
+			if sc == nil || sc.instance != inst {
+				return commandResult(&ClientDisconnectedError{ID: id})
+			}
+		}
+
 		resp, err := commandResult(s.admitModelAs(ctx, actor, inst, cmd.Channel))
 		if err != nil || resp.Err != nil {
+			s.retireClient(protocol.ClientID(inst.ID()))
 			return resp, err
 		}
 
@@ -706,16 +750,60 @@ func (s *Session) preparationNotices(
 	return events
 }
 
-// discardModel unwinds a registration whose JOIN did not land. The
-// release runs off the command loop for the same reason QUIT's does
-// — it ends a dispatch goroutine that may be queued behind the loop
-// — and the instance is deleted so its nick returns to the pool.
-// Best-effort: the ADDMODEL has already failed, and the caller's
-// refusal is the answer the client gets either way.
-func (s *Session) discardModel(ctx context.Context, inst *domain.Instance) {
-	s.releaseClient(protocol.ClientID(inst.ID()))
+const discardModelTimeout = 5 * time.Second
 
-	if err := s.store.DeleteInstanceByID(ctx, inst.ID()); err != nil {
+// discardModel unwinds a registration whose JOIN did not land. It
+// removes any membership that the failed join installed in live
+// state, then attempts to delete the instance. The client is always
+// released because an ADDMODEL failure must not leave a subscribed
+// dispatch goroutine behind. Indexed memory is retained when the
+// instance deletion fails.
+func (s *Session) discardModel(_ context.Context, inst *domain.Instance) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.baseContext()), discardModelTimeout)
+	defer cancel()
+
+	s.retireClient(protocol.ClientID(inst.ID()))
+	markErr := s.store.MarkInstancePendingDeletion(ctx, inst.ID())
+	deleted := false
+	_, cleanupErr := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
+		var cleanupErrors []error
+
+		for _, ch := range s.instanceChannelNames(inst) {
+			window, err := s.loadChannelWindow(ctx, ch)
+			if err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("load channel %q: %w", ch, err))
+				continue
+			}
+
+			if err := s.removeDeletedMember(ctx, window, inst); err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("leave channel %q: %w", ch, err))
+			}
+		}
+
+		if err := s.store.DeleteInstanceByID(ctx, inst.ID()); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("delete instance: %w", err))
+		} else {
+			deleted = true
+		}
+
+		return protocol.Response{}, errors.Join(cleanupErrors...)
+	})
+
+	if !deleted && markErr != nil {
+		if retryErr := s.store.MarkInstancePendingDeletion(ctx, inst.ID()); retryErr != nil {
+			markErr = errors.Join(markErr, fmt.Errorf("retry mark instance pending deletion: %w", retryErr))
+		} else {
+			markErr = nil
+		}
+	}
+
+	if deleted {
+		s.releaseAndForgetClient(protocol.ClientID(inst.ID()))
+	} else {
+		s.releaseClient(protocol.ClientID(inst.ID()))
+	}
+
+	if err := errors.Join(markErr, cleanupErr); err != nil {
 		slog.Default().ErrorContext(ctx, "discard model after failed add",
 			"component", "session",
 			"instance_id", inst.ID(),
@@ -730,7 +818,15 @@ func (s *Session) discardModel(ctx context.Context, inst *domain.Instance) {
 // go. The operator gate is checked on the loop alongside the act
 // it authorises.
 func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protocol.Kill) (protocol.Response, error) {
-	var killed *domain.Instance
+	if !s.externalHandlers.enter() {
+		return protocol.Response{}, ErrSessionClosed
+	}
+	defer s.externalHandlers.leave()
+
+	var (
+		killed       *domain.Instance
+		forgetKilled bool
+	)
 
 	resp, err := s.onWriter(ctx, func(ctx context.Context) (protocol.Response, error) {
 		if !s.idHasServerOper(c.Identity()) {
@@ -747,30 +843,66 @@ func (s *Session) handleKill(ctx context.Context, c protocol.Client, cmd protoco
 			return commandResult(targetErr)
 		}
 
-		if killErr := s.killAs(ctx, oper, target, cmd.Reason); killErr != nil {
-			return commandResult(killErr)
-		}
-
+		outcome := s.killAs(ctx, oper, target, cmd.Reason)
 		killed = target
+		forgetKilled = outcome.instanceDeleted
 
-		return protocol.Response{}, nil
+		return commandResult(outcome.err)
 	})
 
 	if killed == nil {
 		return resp, err
 	}
 
-	s.releaseClient(protocol.ClientID(killed.ID()))
+	id := protocol.ClientID(killed.ID())
+	if forgetKilled {
+		s.releaseAndForgetClient(id)
+	} else {
+		s.releaseClient(id)
+	}
 
 	return resp, err
 }
 
-// commandResult turns a delegation-call error into the canonical
-// protocol shape: command failures live on [protocol.Response.Err]
-// so synchronous callers can branch on them with `errors.As`. A nil
-// `err` produces the empty success response.
+// commandResult separates a client-correctable command refusal from
+// an execution failure. Refusals live on [protocol.Response.Err] so
+// synchronous callers can branch on their domain type. Store,
+// transport and internal failures use the function's second return.
 func commandResult(err error) (protocol.Response, error) {
-	return protocol.Response{Err: err}, nil
+	if err == nil {
+		return protocol.Response{}, nil
+	}
+	if commandRefusal(err) {
+		return protocol.Response{Err: err}, nil
+	}
+
+	return protocol.Response{}, err
+}
+
+func commandRefusal(err error) bool {
+	if observability.ErrorKindOf(err) == observability.ErrorKindValidation {
+		return true
+	}
+
+	var event protocol.Event
+
+	return errors.As(err, &event)
+}
+
+func quitWasCommitted(err error) bool {
+	var committed *quitCommittedError
+
+	return errors.As(err, &committed)
+}
+
+// ClientDisconnectedError reports a command issued after a closable
+// client's QUIT committed but before its resources were reaped.
+type ClientDisconnectedError struct {
+	ID protocol.ClientID
+}
+
+func (e *ClientDisconnectedError) Error() string {
+	return fmt.Sprintf("client %q is disconnected", e.ID)
 }
 
 // resolveClientActor turns a [protocol.Client] handle into the
@@ -780,9 +912,13 @@ func commandResult(err error) (protocol.Response, error) {
 // round-trip. An unregistered client is a structural bug — the
 // dispatcher only sees handles the session issued.
 func (s *Session) resolveClientActor(c protocol.Client) (*domain.Instance, error) {
-	sc := s.lookupClientHandle(c.Identity())
+	sc := s.registeredClientHandle(c.Identity())
 	if sc == nil {
 		return nil, fmt.Errorf("client %q not registered with this session", c.Identity())
 	}
+	if sc.retired.Load() {
+		return nil, &ClientDisconnectedError{ID: c.Identity()}
+	}
+
 	return sc.instance, nil
 }

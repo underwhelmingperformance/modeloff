@@ -153,17 +153,24 @@ history replay, so it sees live traffic forward and nothing from before it
 connected — the chat-screen's scrollback is populated purely from live events.
 
 `Session.quitAs` is that one teardown, and it runs the same whoever sent
-the QUIT. The event is logged and broadcast while the actor is still on
-its channels, which is the order PART follows and what carries the QUIT
-to the peers who share them and to the departing client itself.
-Membership goes afterwards, one channel at a time through the shared
-`removeMember`. The instance record goes last, and deleting it is what
-frees the nick, for every client alike. What differs for the client
-whose lifetime is the session's is only what sits under the
-connection: `Session.releaseClient` has no model-client to release and
-`Session.reapClient` has no connection to close, so both refuse for it
-and its subscription outlives its own QUIT. The subscription is the
-only thing that survives.
+the QUIT. A requested QUIT loads the actor's channels and deletes the
+instance before making the departure observable. The event is then
+logged and broadcast while the actor is still on its channels, which
+is the order PART follows and what carries the QUIT to the peers who
+share them and to the departing client itself. Membership goes
+afterwards. Once every durable write succeeds, the session clears the
+user's `session_active` marker. A failure after the event leaves that
+marker in place so the next connection reconciles any stale channel
+rows.
+
+What differs for the client whose lifetime is the session's is only
+what sits under the connection: `Session.releaseClient` has no
+model-client to release and `Session.reapClient` has no connection to
+close, so both refuse for it and its subscription outlives its own
+QUIT. The subscription is the only thing that survives. A later
+`Session.Connect` checks that another client has not claimed the nick
+and restores the user instance so persisted member ids resolve again.
+It then reconciles stale memberships and reactivates the subscription.
 
 A channel the departure empties is destroyed like a last PART (RFC
 2811 §2), and everything the channel held goes with it: its topic,
@@ -212,12 +219,18 @@ issuing `serverClient`, not as a branch on which kind of client it is.
   client's lifetime. `Detach` is the two together, and carries
   `Wait`'s restriction. A client released mid-session — by QUIT,
   KILL, a send-queue disconnect or a failed ADDMODEL — leaves the
-  manager's registry at once, since its identity is free from that
-  point, and moves to a draining set: its turn may still be inside
-  an upstream call, and `Manager.DetachAll(ctx)` joins the draining
-  set along with the attached one. That is the only join, and
-  `main.go` runs it on the way out under the configured
-  `DrainTimeout`; see Shutdown below. The
+  manager's attached registry at once, since its identity is free
+  from that point, and moves to a draining set. A background
+  finaliser joins its dispatch goroutine. If the instance row was
+  deleted, the finaliser then removes its backing rows and indexed
+  memory before it leaves the draining set. Waiting first ensures a
+  memory tool cannot recreate backing rows after the cleanup.
+  `Manager.DetachAll(ctx)` waits for those
+  finalisers and starts one for every client that was still attached;
+  `main.go` calls it on the way out under the configured
+  `DrainTimeout`; see Shutdown below. The manager refuses new
+  attachments once the drain begins, so no client can arrive after
+  `DetachAll` has taken the set it must join. The
   dispatch goroutine watches the subscription's
   `Events` and `Done` channels and runs an LLM turn when
   `dispatchTrigger` says so (a message or join in a window the
@@ -385,15 +398,25 @@ checks and takes a nick as one step, and `ADDMODEL` re-checks the
 nick it was given, because that nick was chosen off the loop and a
 rename may have taken it in the meantime.
 
+If ADDMODEL registers and attaches a client but cannot complete its
+JOIN, `discardModel` records the instance as pending deletion before
+asking the loop to unwind membership. Its bounded cleanup context
+ignores cancellation of the application context, so shutdown cannot
+leave an active registration that the next startup would attach as a
+ghost client. A stopped loop can prevent the immediate deletion, but
+the pending marker keeps the row out of active lookups and startup
+retries it.
+
 ### Shutdown
 
 Teardown runs in the order the layers sit in, and one deadline covers
 all of it. `main.go` cancels the application context, which wakes
 every dispatch goroutine and stops the command loop; then
-`Manager.DetachAll(ctx)` releases every model-client and joins its
-dispatch goroutine, the attached ones and the draining ones alike;
-then `Session.Shutdown(ctx)` closes the registration gate and joins
-every subscription's outbound pump. Only then does the deferred
+`Manager.DetachAll(ctx)` releases every attached model-client and
+waits for every client finaliser, including those already draining;
+then `Session.Shutdown(ctx)` closes the registration and handler
+gates, waits for an accepted ADDMODEL to finish any rollback, and
+joins every subscription's outbound pump. Only then does the deferred
 `Store.Close` run, so on the clean path nothing is still reading or
 writing the database underneath it.
 
@@ -402,22 +425,23 @@ the drain end to end. Releasing a client cancels the context its turn
 runs under, but an upstream call already handed to the network
 answers when it answers. `DetachAll` therefore waits
 per client and gives up at the deadline, returning a
-`modelmanager.DrainTimeoutError` naming the clients still dispatching.
-Those goroutines are abandoned to the exiting process, which is the
-price of a shutdown that finishes; the warning is what tells the
-operator it happened. A configured value that is not positive would
-mean no drain at all, so `main` falls back to
+`modelmanager.DrainTimeoutError` naming the clients still draining.
+Those finalisers are abandoned to the exiting process, which is the
+price of a shutdown that finishes; the warning tells the operator it
+happened. A configured value that is not positive would mean no drain
+at all, so `main` falls back to
 `config.DefaultDrainTimeout` and says so.
 
 Spending the deadline in the drain leaves `Shutdown` none, so on that
-path the outbound pumps are abandoned with the turns. `Shutdown`
-closes the registration gate before it consults the deadline, though,
-and closing that gate is what stops the command loop. An abandoned
-turn waking after `Store.Close` therefore has every wire command it
-issues refused with `session.ErrSessionClosed`, without a database
-round trip; the one thing it can still reach the database through is a
-memory tool, which answers the model with the failure. Nothing on that
-path reaches the operator's log.
+path the outbound pumps and any accepted ADDMODEL rollback are
+abandoned with the turns. `Shutdown` closes the registration and
+handler gates before it consults the deadline, though, and closing the
+registration gate is what stops the command loop. An abandoned turn
+waking after `Store.Close` therefore has every wire command it issues
+refused with `session.ErrSessionClosed`, without a database round trip;
+the one thing it can still reach the database through is a memory tool,
+which answers the model with the failure. Nothing on that path reaches
+the operator's log.
 
 ### Message targets
 
@@ -961,10 +985,11 @@ than resolving the target to find out.
 
 The `session_active` marker is the other half of that record. The
 session writes it during its connect handshake and reads it there to
-classify the previous run; `UserClient.Quit` clears it once the QUIT
-has gone through. A run that ended without a QUIT therefore leaves the
-marker standing, and the next connect reconciles the memberships it
-left behind through `cleanupUncleanShutdown`.
+classify the previous run. The session clears it only after the user's
+QUIT or KILL teardown has completed every durable write. A run that
+ended without a complete teardown therefore leaves the marker
+standing, and the next connect reconciles the memberships it left
+behind through `cleanupUncleanShutdown`.
 
 An issuer's own point-to-point replies (`WHOIS`, `LIST`, and the
 `domain.SystemNotice` a refused `INVITE` or a fallen-short `ADDMODEL`

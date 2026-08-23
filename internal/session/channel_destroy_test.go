@@ -1,13 +1,18 @@
 package session
 
 import (
+	"errors"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api/apitest"
+	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
+	"github.com/laney/modeloff/internal/store/storetest"
 )
 
 // TestChannelDestroy_when_last_member_parts pins RFC 2811 §2: a
@@ -48,6 +53,135 @@ func TestChannelDestroy_when_last_model_quits(t *testing.T) {
 		_, err := s.GetWindow(ctx, "#bots-only")
 		require.ErrorIs(t, err, store.ErrNoSuchChannel,
 			"the only model quit; the channel has no occupants and is destroyed")
+	})
+}
+
+func TestChannelDestroy_forced_teardown_cleans_a_cold_channel_after_load_failure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		loadErr := errors.New("load failed")
+		wrapped := &failingLoadStore{Store: backing, err: loadErr}
+		sess := New(t.Context, wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		botty := seedInstance(t, sess, backing, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#bots-only"),
+		})
+		window := domain.NewChannelWindow("#bots-only", fixedTime)
+		window.Members.Add(botty)
+		window.Modes.InviteOnly = true
+		require.NoError(t, backing.SaveWindow(t.Context(), window))
+		wrapped.failing.Store(true)
+
+		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{Nick: botty.Nick(), Reason: "spam"})
+		require.ErrorIs(t, err, loadErr)
+		require.Equal(t, protocol.Response{}, resp)
+
+		_, err = backing.GetWindow(t.Context(), "#bots-only")
+		require.ErrorIs(t, err, store.ErrNoSuchChannel)
+	})
+}
+
+func TestForcedTeardown_masks_an_unreadable_anonymous_channel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		loadErr := errors.New("load failed")
+		wrapped := &failingLoadStore{Store: backing, err: loadErr}
+		sess := New(t.Context, wrapped, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		botty := seedInstanceRow(t, backing, instanceSpec{
+			Nick:     "botty",
+			ModelID:  "test/model",
+			Channels: testChannels("#secret"),
+		})
+		attachBareClient(t, sess, botty)
+		window := domain.NewChannelWindow("#secret", fixedTime)
+		window.Members.Add(userInstance(t, sess))
+		window.Members.Add(botty)
+		window.Modes.Anonymous = true
+		require.NoError(t, backing.SaveWindow(t.Context(), window))
+		userInstance(t, sess).JoinChannel("#secret", fixedTime)
+		collectEmittedEvents(t, sess)
+		wrapped.failing.Store(true)
+
+		resp, err := userClient(t, sess).Send(t.Context(), protocol.Kill{Nick: botty.Nick(), Reason: "spam"})
+		require.ErrorIs(t, err, loadErr)
+		require.Equal(t, protocol.Response{}, resp)
+		require.Equal(t, []domain.Event{domain.Part{
+			Target:  "#secret",
+			Nick:    domain.AnonymousNick,
+			Message: "Killed by testuser (spam)",
+			At:      fixedTime,
+		}}, collectEmittedEvents(t, sess))
+
+		stored, err := backing.EventsBefore(t.Context(), "#secret", nil, 10)
+		require.NoError(t, err)
+		require.Equal(t, []domain.StoredEvent{{
+			ID: 1,
+			Event: domain.Part{
+				Target:  "#secret",
+				Nick:    domain.AnonymousNick,
+				Message: "Killed by testuser (spam)",
+				At:      fixedTime,
+			},
+		}}, stored)
+	})
+}
+
+func TestQuit_preserves_a_surviving_case_equivalent_channel_row(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backing := storetest.NewMemoryStore(t)
+		sess := New(t.Context, backing, newTestModelClientFactory(t, &apitest.Fake{}), nil)
+		t.Cleanup(func() { _ = sess.Shutdown(t.Context()) })
+		attachTestUserClient(t, sess, "testuser")
+		sess.now = func() time.Time { return fixedTime }
+
+		departing := seedInstance(t, sess, backing, instanceSpec{
+			Nick:     "departing",
+			ModelID:  "test/model",
+			Channels: testChannels("#Dev"),
+		})
+		survivor := seedInstance(t, sess, backing, instanceSpec{
+			Nick:     "survivor",
+			ModelID:  "test/model",
+			Channels: testChannels("#dev"),
+		})
+		selected := domain.NewChannelWindow("#Dev", fixedTime)
+		selected.Topic = "departing row"
+		selected.Members.Add(departing)
+		require.NoError(t, backing.SaveWindow(t.Context(), selected))
+		preserved := domain.NewChannelWindow("#dev", fixedTime.Add(time.Hour))
+		preserved.Topic = "surviving row"
+		preserved.Modes.InviteOnly = true
+		preserved.Members.Add(survivor)
+		require.NoError(t, backing.SaveWindow(t.Context(), preserved))
+
+		require.NoError(t, sess.quitAs(t.Context(), departing, "bye"))
+
+		stored, err := backing.GetWindow(t.Context(), "#Dev")
+		require.NoError(t, err)
+		live, err := sess.loadChannelWindow(t.Context(), "#Dev")
+		require.NoError(t, err)
+		require.Equal(t, struct {
+			Stored domain.Window
+			Live   *domain.ChannelWindow
+		}{
+			Stored: preserved,
+			Live:   preserved,
+		}, struct {
+			Stored domain.Window
+			Live   *domain.ChannelWindow
+		}{
+			Stored: stored,
+			Live:   live,
+		})
 	})
 }
 

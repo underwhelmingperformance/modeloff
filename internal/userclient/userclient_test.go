@@ -434,10 +434,9 @@ func TestUserClient_autojoin_list_omits_the_status_window(t *testing.T) {
 }
 
 // TestUserClient_Quit_ends_the_session_active_marker covers the
-// crash marker's other half. The session writes it when the
-// connection opens; the client clears it when its own QUIT has gone
-// through, which is what makes the next start read this run as a
-// clean one. A run that ends without a QUIT leaves it in place.
+// crash marker's other half. The session clears it once the user's
+// QUIT teardown is durable. A run that ends without a QUIT leaves it
+// in place.
 func TestUserClient_Quit_ends_the_session_active_marker(t *testing.T) {
 	tests := []struct {
 		name string
@@ -573,12 +572,11 @@ type lastRead struct {
 // distinct id, so a test can tell which read a cursor came from, and
 // records the cursors written to it.
 type recordingStore struct {
-	channelHead          int64
-	threadHead           int64
-	stamped              []lastRead
-	dmWindows            []domain.InstanceID
-	autojoin             []domain.ChannelName
-	sessionActiveCleared int
+	channelHead int64
+	threadHead  int64
+	stamped     []lastRead
+	dmWindows   []domain.InstanceID
+	autojoin    []domain.ChannelName
 }
 
 func (*recordingStore) ListAutojoinChannels(context.Context) ([]domain.ChannelName, error) {
@@ -592,12 +590,6 @@ func (s *recordingStore) SetAutojoinChannels(_ context.Context, channels []domai
 }
 
 func (*recordingStore) SaveInstance(context.Context, *domain.Instance) error {
-	return nil
-}
-
-func (s *recordingStore) ClearSessionActive(context.Context) error {
-	s.sessionActiveCleared++
-
 	return nil
 }
 

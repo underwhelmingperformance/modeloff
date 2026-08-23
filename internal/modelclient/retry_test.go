@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -128,14 +129,192 @@ const retryTestDelay = 3 * time.Second
 func newRetryTestClient(t *testing.T, sess *fakeSession, upstream api.Client) *ModelClient {
 	t.Helper()
 
+	return newRetryTestClientWithTools(t, sess, upstream, nil)
+}
+
+func newRetryTestClientWithTools(
+	t *testing.T,
+	sess *fakeSession,
+	upstream api.Client,
+	tools *ToolRegistry,
+) *ModelClient {
+	t.Helper()
+
 	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
 
-	mc := New(inst, sess, func() api.Client { return upstream }, nil, nil, nil, nil, context.Background, nil)
+	mc := New(inst, sess, func() api.Client { return upstream }, nil, tools, nil, nil, context.Background, nil)
 	mc.retry = retryPolicy{Delay: retryTestDelay}
 
 	require.NoError(t, mc.Attach(t.Context()))
 
 	return mc
+}
+
+// TestDispatch_does_not_replay_a_turn_after_a_tool_executed pins the
+// boundary between an upstream request that is safe to repeat and a
+// tool-calling turn that has already changed local state. A transient
+// continuation failure happens after the tool ran, so redispatching
+// the original batch would execute the same tool twice.
+func TestDispatch_does_not_replay_a_turn_after_a_tool_executed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			turns   int
+			effects int
+		)
+
+		tools := NewToolRegistry(ToolSpec{
+			Definition: api.ToolDefinition{Name: "effect"},
+			Execute: func(context.Context, ToolContext, json.RawMessage) (ToolResultPayload, error) {
+				effects++
+
+				return ToolResultPayload{OK: true, Summary: "effect applied"}, nil
+			},
+		})
+		upstream := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				turns++
+
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
+					ID:   "effect-1",
+					Name: "effect",
+					Args: json.RawMessage(`{}`),
+				}}}, nil
+			},
+			ContinueWithToolResultsFn: func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
+				return api.CompletionResult{}, upstreamError(t, http.StatusServiceUnavailable)
+			},
+		}
+
+		sess := newFakeSession()
+		mc := newRetryTestClientWithTools(t, sess, upstream, tools)
+		t.Cleanup(mc.Detach)
+
+		sess.sub.events <- channelMessage("apply it")
+
+		synctest.Wait()
+		time.Sleep(4 * retryTestDelay)
+		synctest.Wait()
+
+		require.Equal(t, struct {
+			turns   int
+			effects int
+		}{
+			turns:   1,
+			effects: 1,
+		}, struct {
+			turns   int
+			effects int
+		}{
+			turns:   turns,
+			effects: effects,
+		})
+	})
+}
+
+func TestDispatch_retries_a_continuation_failure_when_no_tool_executed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			turns         int
+			continuations int
+		)
+
+		upstream := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				turns++
+
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
+					ID:   "unknown-1",
+					Name: "unknown",
+					Args: json.RawMessage(`{}`),
+				}}}, nil
+			},
+			ContinueWithToolResultsFn: func(context.Context, *api.Conversation, []api.ToolResult) (api.CompletionResult, error) {
+				continuations++
+				if continuations == 1 {
+					return api.CompletionResult{}, upstreamError(t, http.StatusServiceUnavailable)
+				}
+
+				return api.CompletionResult{}, nil
+			},
+		}
+
+		sess := newFakeSession()
+		mc := newRetryTestClientWithTools(t, sess, upstream, NewToolRegistry())
+		t.Cleanup(mc.Detach)
+
+		sess.sub.events <- channelMessage("try it")
+
+		synctest.Wait()
+		time.Sleep(2 * retryTestDelay)
+		synctest.Wait()
+
+		require.Equal(t, struct {
+			turns         int
+			continuations int
+		}{
+			turns:         2,
+			continuations: 2,
+		}, struct {
+			turns         int
+			continuations int
+		}{
+			turns:         turns,
+			continuations: continuations,
+		})
+	})
+}
+
+func TestDispatch_does_not_replay_a_tool_execution_failure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			turns   int
+			effects int
+		)
+
+		tools := NewToolRegistry(ToolSpec{
+			Definition: api.ToolDefinition{Name: "effect"},
+			Execute: func(context.Context, ToolContext, json.RawMessage) (ToolResultPayload, error) {
+				effects++
+
+				return ToolResultPayload{}, &ToolExecutionError{Tool: "effect", Err: context.DeadlineExceeded}
+			},
+		})
+		upstream := &apitest.Fake{
+			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
+				turns++
+
+				return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{{
+					ID:   "effect-1",
+					Name: "effect",
+					Args: json.RawMessage(`{}`),
+				}}}, nil
+			},
+		}
+
+		sess := newFakeSession()
+		mc := newRetryTestClientWithTools(t, sess, upstream, tools)
+		t.Cleanup(mc.Detach)
+
+		sess.sub.events <- channelMessage("apply it")
+
+		synctest.Wait()
+		time.Sleep(4 * retryTestDelay)
+		synctest.Wait()
+
+		require.Equal(t, struct {
+			turns   int
+			effects int
+		}{
+			turns:   1,
+			effects: 1,
+		}, struct {
+			turns   int
+			effects int
+		}{
+			turns:   turns,
+			effects: effects,
+		})
+	})
 }
 
 // channelMessage is the delivery that raises a turn in `#dev`.

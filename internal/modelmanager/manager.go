@@ -15,6 +15,7 @@ package modelmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -46,6 +47,11 @@ import (
 // model clients.
 type Store interface {
 	ListInstances(ctx context.Context) ([]*domain.Instance, error)
+	ListPendingInstanceDeletions(ctx context.Context) ([]domain.InstanceID, error)
+	ListPendingMemoryDeletions(ctx context.Context) ([]domain.InstanceID, error)
+	DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error
+	DeleteMemoriesByInstance(ctx context.Context, id domain.InstanceID) error
+	DeletePendingMemoryDeletion(ctx context.Context, id domain.InstanceID) error
 
 	ListPersonas(ctx context.Context) ([]domain.Persona, error)
 	SavePersona(ctx context.Context, p domain.Persona) error
@@ -94,8 +100,8 @@ func defaultPacer() *modelclient.Pacer {
 // [api.Client], the rebuild factory, the persona pool, the small-
 // model id, the catalogue cache, and the per-instance
 // [modelclient.ModelClient] registry. It satisfies
-// [session.ModelClientFactory] via [Manager.Attach] and
-// [Manager.Detach] so a single value passes to `session.New`.
+// [session.ModelClientFactory] via [Manager.Attach], [Manager.Detach]
+// and [Manager.Forget] so a single value passes to `session.New`.
 type Manager struct {
 	store       Store
 	memory      memory.Store
@@ -127,20 +133,35 @@ type Manager struct {
 	// catalogue has never failed.
 	stateFailedAt atomic.Int64
 
-	// clients holds the attached model-clients; draining holds the
-	// ones already released, whose dispatch goroutines are on their
-	// way out. Both are guarded by `clientsMu`.
+	// clients holds the attached model-clients; attaching records
+	// clients still loading their history; draining holds the ones
+	// already released, whose dispatch goroutines and deferred state
+	// deletion are on their way out. stopping becomes true before
+	// DetachAll snapshots either client set, so no later attach can
+	// fall outside that snapshot. All four are guarded by clientsMu.
 	//
 	// A released client leaves `clients` the moment it is released,
 	// because its identity is free again from that point. It moves to
-	// `draining` so the join still has something to join: a turn can
-	// be mid-flight for as long as its upstream call takes, and
-	// [Manager.DetachAll] is the only thing that waits for it. A
-	// client dropped at release would take its goroutine out of every
-	// join's reach.
+	// `draining` so [Manager.DetachAll] can wait for the background
+	// finaliser. A client dropped at release would take its goroutine
+	// and any pending deletion out of shutdown's reach.
 	clientsMu sync.Mutex
 	clients   map[protocol.ClientID]*modelclient.ModelClient
-	draining  []*modelclient.ModelClient
+	attaching map[protocol.ClientID]*clientAttachment
+	draining  map[protocol.ClientID]*drainingClient
+	stopping  bool
+}
+
+type clientAttachment struct {
+	client protocol.Client
+	err    error
+	done   chan struct{}
+}
+
+type drainingClient struct {
+	client *modelclient.ModelClient
+	forget bool
+	done   chan struct{}
 }
 
 // New constructs a [Manager] from cfg. The returned value is ready
@@ -181,6 +202,8 @@ func New(cfg Config) *Manager {
 		smallModel:  smallModel,
 		factory:     cfg.APIFactory,
 		clients:     make(map[protocol.ClientID]*modelclient.ModelClient),
+		attaching:   make(map[protocol.ClientID]*clientAttachment),
+		draining:    make(map[protocol.ClientID]*drainingClient),
 	}
 }
 
@@ -675,6 +698,11 @@ func (m *Manager) PrepareInstance(
 // returns the first error so the connection screen can surface it,
 // but later instances still attempt their attach.
 func (m *Manager) Start(ctx context.Context, sess *session.Session) error {
+	firstErr := m.deletePendingInstances(ctx)
+	if err := m.deletePendingMemoryCollections(ctx); firstErr == nil {
+		firstErr = err
+	}
+
 	instances, err := m.store.ListInstances(ctx)
 	if err != nil {
 		return fmt.Errorf("list instances: %w", err)
@@ -682,7 +710,6 @@ func (m *Manager) Start(ctx context.Context, sess *session.Session) error {
 
 	logger := slog.Default()
 
-	var firstErr error
 	for _, inst := range instances {
 		// An identity the session already holds a client for is
 		// connected, and a second client on it would read the same
@@ -710,6 +737,54 @@ func (m *Manager) Start(ctx context.Context, sess *session.Session) error {
 	return firstErr
 }
 
+func (m *Manager) deletePendingInstances(ctx context.Context) error {
+	ids, err := m.store.ListPendingInstanceDeletions(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending instance deletions: %w", err)
+	}
+
+	var firstErr error
+	for _, id := range ids {
+		if err := m.store.DeleteInstanceByID(ctx, id); err != nil {
+			slog.Default().WarnContext(ctx, "delete pending instance",
+				"component", "modelmanager",
+				"instance_id", id,
+				"error", err,
+			)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete pending instance %q: %w", id, err)
+			}
+			continue
+		}
+
+	}
+
+	return firstErr
+}
+
+func (m *Manager) deletePendingMemoryCollections(ctx context.Context) error {
+	ids, err := m.store.ListPendingMemoryDeletions(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending memory deletions: %w", err)
+	}
+
+	var firstErr error
+	for _, id := range ids {
+		if err := m.finishMemoryDeletion(ctx, id); err != nil {
+			slog.Default().WarnContext(ctx, "delete pending memory collection",
+				"component", "modelmanager",
+				"instance_id", id,
+				"error", err,
+			)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete pending memory collection %q: %w", id, err)
+			}
+		}
+	}
+
+	return firstErr
+}
+
 // Attach satisfies the session-side `ModelClientFactory.Attach`
 // contract. It constructs (or returns the existing handle for) the
 // [modelclient.ModelClient] backing `inst` and subscribes it to
@@ -718,84 +793,179 @@ func (m *Manager) Attach(ctx context.Context, sess *session.Session, inst *domai
 	id := protocol.ClientID(inst.ID())
 
 	m.clientsMu.Lock()
+	if m.stopping {
+		m.clientsMu.Unlock()
+		return nil, &ManagerDrainingError{InstanceID: inst.ID()}
+	}
+	if attaching, ok := m.attaching[id]; ok {
+		m.clientsMu.Unlock()
+
+		select {
+		case <-attaching.done:
+			return attaching.client, attaching.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if existing, ok := m.clients[id]; ok {
 		m.clientsMu.Unlock()
 		return existing, nil
 	}
 
 	mc := modelclient.New(inst, sess, m.APIClientGetter(), m.memory, m.tools, m.EnsureToolCapableModel, m.CachedContextLen, m.baseContext, m.pacer)
+	attaching := &clientAttachment{done: make(chan struct{})}
 	m.clients[id] = mc
+	m.attaching[id] = attaching
 	m.clientsMu.Unlock()
 
-	if err := mc.Attach(ctx); err != nil {
-		m.clientsMu.Lock()
-		delete(m.clients, id)
-		m.clientsMu.Unlock()
-		return nil, fmt.Errorf("attach model client %q: %w", id, err)
-	}
+	attachErr := mc.Attach(ctx)
 
-	return mc, nil
+	m.clientsMu.Lock()
+	current := m.clients[id]
+	switch {
+	case m.stopping:
+		attaching.err = &ManagerDrainingError{InstanceID: inst.ID()}
+	case current != mc:
+		if attachErr == nil {
+			attachErr = modelclient.ErrReleased
+		}
+		attaching.err = fmt.Errorf("attach model client %q: %w", id, attachErr)
+	case attachErr != nil:
+		delete(m.clients, id)
+		attaching.err = fmt.Errorf("attach model client %q: %w", id, attachErr)
+	default:
+		attaching.client = mc
+	}
+	delete(m.attaching, id)
+	close(attaching.done)
+	m.clientsMu.Unlock()
+
+	return attaching.client, attaching.err
 }
 
 // Detach releases the model-client for `id`, ending its connection
-// without waiting for its dispatch goroutine to finish. That
-// goroutine is where a model's own `quit` tool call runs, so this is
-// reached from inside it whenever a model ends its own connection;
-// waiting here would be that goroutine waiting on itself.
-//
-// The client moves to the draining set on the way out, so the
-// goroutine it is still running stays reachable by
-// [Manager.DetachAll]. Idempotent on an unknown id.
-//
-// Session.releaseClient is the only production caller of this
-// method, and it runs for exactly the paths that also delete the
-// instance's store row (QUIT, KILL, a send-queue disconnect, a
-// failed ADDMODEL), never for [Manager.DetachAll]'s bulk release at
-// shutdown, which leaves every attached instance's row alone for the
-// next run. That is what makes it safe to also delete the instance's
-// memory collection for a known id here: every call site that
-// reaches an attached client already means the instance itself is
-// gone too.
+// without deleting its model-owned state.
 func (m *Manager) Detach(id protocol.ClientID) {
+	m.detach(id, false)
+}
+
+// DetachAndForget releases the model-client for `id` and deletes its
+// model-owned state after the dispatch goroutine has stopped. The wait
+// runs on a separate goroutine because a model can reach this method
+// from its own `quit` tool call.
+func (m *Manager) DetachAndForget(id protocol.ClientID) {
+	if m.detach(id, true) {
+		return
+	}
+
+	m.Forget(id)
+}
+
+func (m *Manager) detach(id protocol.ClientID, forget bool) bool {
 	m.clientsMu.Lock()
 	mc, ok := m.clients[id]
 	if ok {
 		delete(m.clients, id)
-		m.draining = append(m.draining, mc)
+		entry := &drainingClient{client: mc, forget: forget, done: make(chan struct{})}
+		m.draining[id] = entry
+		m.clientsMu.Unlock()
+
+		mc.Release()
+		go m.finishDrain(id, entry)
+
+		return true
+	}
+
+	if entry, draining := m.draining[id]; draining {
+		entry.forget = entry.forget || forget
+		m.clientsMu.Unlock()
+
+		return true
 	}
 	m.clientsMu.Unlock()
 
-	if !ok {
-		return
-	}
-
-	mc.Release()
-	m.deleteMemoryCollection(id)
+	return false
 }
 
-// deleteMemoryCollection removes id's memory-index state through
-// [memory.InstanceDeleter], when the configured memory Store
-// implements that optional capability. The plain, non-indexed
-// fallback store [NewDefaultStore] falls back to when the vector
-// index cannot be opened does not, and has no such state to remove.
-func (m *Manager) deleteMemoryCollection(id protocol.ClientID) {
-	deleter, ok := m.memory.(memory.InstanceDeleter)
-	if !ok {
+func (m *Manager) finishDrain(id protocol.ClientID, entry *drainingClient) {
+	entry.client.Wait()
+
+	m.clientsMu.Lock()
+	current, ok := m.draining[id]
+	if !ok || current != entry {
+		m.clientsMu.Unlock()
 		return
 	}
+	forget := entry.forget
+	if !forget {
+		delete(m.draining, id)
+		close(entry.done)
+		m.clientsMu.Unlock()
 
-	ctx := context.Background()
-	if m.baseContext != nil {
-		ctx = m.baseContext()
+		return
 	}
+	m.clientsMu.Unlock()
 
-	if err := deleter.DeleteInstance(ctx, domain.InstanceID(id)); err != nil {
+	m.Forget(id)
+
+	m.clientsMu.Lock()
+	if m.draining[id] == entry {
+		delete(m.draining, id)
+		close(entry.done)
+	}
+	m.clientsMu.Unlock()
+}
+
+// Forget removes model-owned state after the session has deleted the
+// corresponding instance row. Connection release is separate because
+// a server-forced disconnect must still reap a dead client when the
+// row deletion fails.
+func (m *Manager) Forget(id protocol.ClientID) {
+	ctx, cancel := m.memoryDeletionContext()
+	defer cancel()
+
+	if err := m.finishMemoryDeletion(ctx, domain.InstanceID(id)); err != nil {
 		slog.Default().WarnContext(ctx, "delete memory collection",
 			"component", "modelmanager",
 			"instance_id", string(id),
 			"error", err,
 		)
 	}
+}
+
+func (m *Manager) memoryDeletionContext() (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if m.baseContext != nil {
+		base = context.WithoutCancel(m.baseContext())
+	}
+
+	return context.WithTimeout(base, config.DefaultDrainTimeout)
+}
+
+// deleteMemoryCollection removes id's memory-index state through
+// [memory.InstanceDeleter]. A store without that capability cannot
+// confirm that an existing index was removed, so the pending marker
+// remains for a later indexed store to retry.
+func (m *Manager) deleteMemoryCollection(ctx context.Context, id domain.InstanceID) (bool, error) {
+	deleter, ok := m.memory.(memory.InstanceDeleter)
+	if !ok {
+		return false, nil
+	}
+
+	return true, deleter.DeleteInstance(ctx, id)
+}
+
+func (m *Manager) finishMemoryDeletion(ctx context.Context, id domain.InstanceID) error {
+	collectionDeleted, collectionErr := m.deleteMemoryCollection(ctx, id)
+	backingErr := m.store.DeleteMemoriesByInstance(ctx, id)
+	if err := errors.Join(collectionErr, backingErr); err != nil {
+		return err
+	}
+	if !collectionDeleted {
+		return nil
+	}
+
+	return m.store.DeletePendingMemoryDeletion(ctx, id)
 }
 
 // DetachAll ends every model client's connection and joins its
@@ -815,26 +985,21 @@ func (m *Manager) deleteMemoryCollection(id protocol.ClientID) {
 // It carries [modelclient.ModelClient.Wait]'s restriction: never
 // from a dispatch turn.
 func (m *Manager) DetachAll(ctx context.Context) error {
-	clients := m.takeAllClients()
+	clients, started := m.beginAllDrains()
 
-	for _, mc := range clients {
-		mc.Release()
+	for id, entry := range started {
+		entry.client.Release()
+		go m.finishDrain(id, entry)
 	}
 
 	pending := make(map[protocol.ClientID]struct{}, len(clients))
-
-	// Buffered to the full count, so every joiner has a slot waiting
-	// for it. One whose client finishes after the deadline, with this
-	// call already returned and nobody reading, still completes its
-	// send and exits.
 	joined := make(chan protocol.ClientID, len(clients))
-
-	for _, mc := range clients {
-		pending[mc.Identity()] = struct{}{}
+	for id, entry := range clients {
+		pending[id] = struct{}{}
 
 		go func() {
-			mc.Wait()
-			joined <- mc.Identity()
+			<-entry.done
+			joined <- id
 		}()
 	}
 
@@ -850,30 +1015,42 @@ func (m *Manager) DetachAll(ctx context.Context) error {
 	return nil
 }
 
-// takeAllClients empties both registries and returns everything that
-// was in them: the attached clients and the ones already draining.
-func (m *Manager) takeAllClients() []*modelclient.ModelClient {
+// beginAllDrains moves every attached client into the draining set
+// and returns all work that DetachAll must join.
+func (m *Manager) beginAllDrains() (map[protocol.ClientID]*drainingClient, map[protocol.ClientID]*drainingClient) {
 	m.clientsMu.Lock()
 	defer m.clientsMu.Unlock()
+	m.stopping = true
 
-	clients := make([]*modelclient.ModelClient, 0, len(m.clients)+len(m.draining))
-	for _, mc := range m.clients {
-		clients = append(clients, mc)
+	clients := make(map[protocol.ClientID]*drainingClient, len(m.clients)+len(m.draining))
+	started := make(map[protocol.ClientID]*drainingClient, len(m.clients))
+	maps.Copy(clients, m.draining)
+	for id, mc := range m.clients {
+		entry := &drainingClient{client: mc, done: make(chan struct{})}
+		m.draining[id] = entry
+		clients[id] = entry
+		started[id] = entry
 	}
-	clients = append(clients, m.draining...)
 
 	m.clients = make(map[protocol.ClientID]*modelclient.ModelClient)
-	m.draining = nil
 
-	return clients
+	return clients, started
 }
 
-// DrainTimeoutError reports the model clients whose dispatch
-// goroutine was still running when [Manager.DetachAll]'s deadline
-// passed. Each is inside a turn that did not answer its
-// cancellation. The process is on its way out, so the deadline
-// releases the drain and leaves those goroutines running; naming
-// them here is what tells the operator which clients that was.
+// ManagerDrainingError reports an attach attempted after the manager
+// began its terminal drain.
+type ManagerDrainingError struct {
+	InstanceID domain.InstanceID
+}
+
+func (e *ManagerDrainingError) Error() string {
+	return fmt.Sprintf("attach model client %q: model manager is draining", e.InstanceID)
+}
+
+// DrainTimeoutError reports the model clients whose finaliser was
+// still running when [Manager.DetachAll]'s deadline passed. A client
+// may still be inside a turn that did not answer cancellation or
+// deleting model-owned state after that turn ended.
 type DrainTimeoutError struct {
 	Abandoned []protocol.ClientID
 	Err       error
@@ -885,7 +1062,7 @@ func (e *DrainTimeoutError) Error() string {
 		ids[i] = string(id)
 	}
 
-	return fmt.Sprintf("drain model clients: %v; %d still dispatching: %s",
+	return fmt.Sprintf("drain model clients: %v; %d still draining: %s",
 		e.Err, len(ids), strings.Join(ids, ", "))
 }
 

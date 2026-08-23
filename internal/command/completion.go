@@ -141,6 +141,11 @@ func complete[C KindProvider](set Set[C], ctx C, raw string, cursor int, kind do
 		return completion
 	}
 
+	if cctx.passthrough || startsPassthrough(cctx.node, cctx.positionalIndex, prefix) {
+		completion.AppendSpace = false
+		return completion
+	}
+
 	// Flag name completion: current token starts with "--".
 	if strings.HasPrefix(prefix, "--") {
 		completion.Suggestions = filterSuggestions(flagSuggestions(cctx.node, cctx.usedFlags), prefix)
@@ -261,6 +266,7 @@ type completionClassification[C KindProvider] struct {
 	positionalIndex    int
 	expectingFlagValue *Flag[C]
 	usedFlags          map[string]bool
+	passthrough        bool
 	invalid            bool
 }
 
@@ -294,11 +300,15 @@ func classifyForCompletion[C KindProvider](node *Node[C], preceding []string) co
 
 	for i := 0; i < len(preceding); i++ {
 		tok := preceding[i]
+		flagName, _, hasAttachedValue := splitLongFlagToken(tok)
+		if !hasAttachedValue {
+			flagName = tok
+		}
 
-		if binding, ok := findFlagBinding(cc.node, tok); ok {
-			cc.usedFlags[tok] = true
+		if binding, ok := findFlagBinding(cc.node, flagName); ok {
+			cc.usedFlags[flagName] = true
 
-			if binding.Flag.Boolean {
+			if binding.Flag.Boolean || hasAttachedValue {
 				continue
 			}
 
@@ -322,14 +332,12 @@ func classifyForCompletion[C KindProvider](node *Node[C], preceding []string) co
 			continue
 		}
 
-		pos := resolvePositional(cc.node.Positionals, cc.positionalIndex)
-		if pos != nil {
-			if !pos.Variadic {
-				cc.positionalIndex++
-				continue
+		if consumed, done := consumeCompletionPositional(&cc, tok); consumed {
+			if done {
+				return cc
 			}
 
-			return cc
+			continue
 		}
 
 		child := cc.node.Find(tok)
@@ -349,6 +357,63 @@ func classifyForCompletion[C KindProvider](node *Node[C], preceding []string) co
 	}
 
 	return cc
+}
+
+func startsPassthrough[C KindProvider](node *Node[C], positionalIndex int, prefix string) bool {
+	pos := resolvePositional(node.Positionals, positionalIndex)
+	if pos == nil || pos.Passthrough == PassthroughModeNone {
+		return false
+	}
+	if !classifyOptionToken(prefix).isFlag() {
+		return true
+	}
+	if pos.Passthrough == PassthroughModePartial {
+		return false
+	}
+
+	flagName, _, hasAttachedValue := splitLongFlagToken(prefix)
+	if hasAttachedValue {
+		return !hasFlagPrefix(node, flagName)
+	}
+
+	return !hasFlagPrefix(node, prefix)
+}
+
+func consumeCompletionPositional[C KindProvider](cc *completionClassification[C], token string) (consumed, done bool) {
+	pos := resolvePositional(cc.node.Positionals, cc.positionalIndex)
+	if pos == nil {
+		return false, false
+	}
+
+	if pos.Passthrough != PassthroughModeNone {
+		optionKind := classifyOptionToken(token)
+		if optionKind == optionTokenEnd {
+			cc.passthrough = true
+		} else if pos.Passthrough == PassthroughModePartial && optionKind.isFlag() {
+			cc.invalid = true
+		} else {
+			cc.passthrough = true
+		}
+
+		return true, true
+	}
+
+	if pos.Variadic {
+		return true, true
+	}
+
+	cc.positionalIndex++
+	return true, false
+}
+
+func hasFlagPrefix[C KindProvider](node *Node[C], prefix string) bool {
+	for _, binding := range allFlagBindings(node) {
+		if strings.HasPrefix(binding.Flag.Name, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func flagSuggestions[C KindProvider](node *Node[C], used map[string]bool) []Suggestion {

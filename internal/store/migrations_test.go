@@ -408,6 +408,79 @@ func seedV3Database(t *testing.T, db *sql.DB) {
 	require.NoError(t, tx.Commit())
 }
 
+func seedV5Database(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	ctx := t.Context()
+	seedV1Database(t, db)
+
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	for _, migration := range migrations {
+		if migration.Version > 5 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '5')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+}
+
+func TestApplyMigrations_v5_to_v6_keeps_existing_instances_active(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	db.SetMaxOpenConns(1)
+	seedV5Database(t, db)
+
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)`,
+		"inst-botty", "botty", `{}`)
+	require.NoError(t, err)
+	require.NoError(t, applyMigrations(ctx, db))
+
+	var pendingDeletion int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT pending_deletion FROM instances WHERE instance_id = ?`,
+		"inst-botty",
+	).Scan(&pendingDeletion))
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO pending_memory_deletions (instance_id) VALUES (?)`,
+		"inst-gone")
+	require.NoError(t, err)
+	var pendingMemoryDeletion string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT instance_id FROM pending_memory_deletions`,
+	).Scan(&pendingMemoryDeletion))
+
+	version, err := readSchemaVersion(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, struct {
+		version               int
+		pendingDeletion       int
+		pendingMemoryDeletion string
+	}{
+		version:               SchemaVersion,
+		pendingDeletion:       0,
+		pendingMemoryDeletion: "inst-gone",
+	}, struct {
+		version               int
+		pendingDeletion       int
+		pendingMemoryDeletion string
+	}{
+		version:               version,
+		pendingDeletion:       pendingDeletion,
+		pendingMemoryDeletion: pendingMemoryDeletion,
+	})
+}
+
 // TestNewSQLiteStore_opens_existing_v3_database is the regression
 // test for the DM read-cursor blocker: before dm_last_read existed,
 // a DM's read cursor could never be recorded, because

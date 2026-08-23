@@ -212,7 +212,8 @@ func newTestModelClient(sess Session) *ModelClient {
 // goroutine had been joined, and the goroutine started afterwards.
 //
 // The fixture parks the attach inside its history load and asserts
-// the detach cannot finish while it is parked.
+// the detach cannot finish while it is parked. Once released, the
+// attach reports that it did not establish a live connection.
 func TestModelClient_Detach_waits_for_an_in_flight_Attach(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		sess := newFakeSession()
@@ -245,7 +246,7 @@ func TestModelClient_Detach_waits_for_an_in_flight_Attach(t *testing.T) {
 		close(sess.repliesGate)
 		synctest.Wait()
 
-		require.NoError(t, <-attached)
+		require.ErrorIs(t, <-attached, ErrReleased)
 		<-detached
 
 		// The connection is over, so it cannot be taken up again.

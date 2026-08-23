@@ -26,7 +26,10 @@
 package protocol
 
 import (
+	"encoding/json"
 	"fmt"
+	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,32 +48,147 @@ const (
 	ReplyAction ReplyKind = "action"
 )
 
+// CommandName returns the IRC command represented by the reply kind.
+func (k ReplyKind) CommandName() string {
+	switch k {
+	case ReplyMessage:
+		return PrivMsg{}.Name()
+	case ReplyAction:
+		return Action{}.Name()
+	default:
+		return string(k)
+	}
+}
+
 // ReplyPart is the validation shape for a message the model wants
 // to send via the `msg` / `me` tools. Exactly one of `Body` or
 // `Spans` must be populated; the renderer in `internal/ircfmt`
 // turns styled spans into wire-level IRC control characters.
 type ReplyPart struct {
-	Kind  ReplyKind   `json:"type"`
-	Body  string      `json:"body,omitempty"`
-	Spans []ReplySpan `json:"spans,omitempty"`
+	Kind  ReplyKind  `json:"type"`
+	Body  string     `json:"body,omitempty"`
+	Spans ReplySpans `json:"spans,omitempty"`
 }
 
 // ReplyStyle describes formatting to apply to a span. Colour values
 // are 0..15 (the IRC mIRC palette).
 type ReplyStyle struct {
-	Bold      bool   `json:"bold,omitempty"`
-	Italic    bool   `json:"italic,omitempty"`
-	Underline bool   `json:"underline,omitempty"`
-	Reverse   bool   `json:"reverse,omitempty"`
-	Strike    bool   `json:"strike,omitempty"`
-	FG        *uint8 `json:"fg,omitempty"`
-	BG        *uint8 `json:"bg,omitempty"`
+	Bold      bool               `json:"bold,omitempty"`
+	Italic    bool               `json:"italic,omitempty"`
+	Underline bool               `json:"underline,omitempty"`
+	Reverse   bool               `json:"reverse,omitempty"`
+	Strike    bool               `json:"strike,omitempty"`
+	FG        *ReplyPaletteIndex `json:"fg,omitempty" jsonschema:"minimum=0,maximum=15"`
+	BG        *ReplyPaletteIndex `json:"bg,omitempty" jsonschema:"minimum=0,maximum=15"`
 }
 
 // ReplySpan is a run of text with optional style.
 type ReplySpan struct {
-	Text  string      `json:"text"`
+	Text  string      `json:"text" jsonschema:"minLength=1"`
 	Style *ReplyStyle `json:"style,omitempty"`
+}
+
+// ReplySpans contains the styled spans for one IRC message.
+type ReplySpans []ReplySpan
+
+// ReplyPartShapeError reports that a reply supplied both body and
+// spans, or supplied neither. Exactly one representation is valid.
+type ReplyPartShapeError struct {
+	HasBody  bool
+	HasSpans bool
+}
+
+func (e ReplyPartShapeError) Error() string {
+	return "reply part must contain exactly one of body or spans"
+}
+
+// EmptyReplySpanError reports a span with no text.
+type EmptyReplySpanError struct {
+	Index int
+}
+
+func (e EmptyReplySpanError) Error() string {
+	return fmt.Sprintf("span %d is empty", e.Index)
+}
+
+// InvalidReplySpanTextError reports framing bytes in a span.
+type InvalidReplySpanTextError struct {
+	Index int
+}
+
+func (e InvalidReplySpanTextError) Error() string {
+	return fmt.Sprintf("span %d contains NUL, CR or LF", e.Index)
+}
+
+// ReplyColour identifies the foreground or background component of
+// a styled reply span.
+type ReplyColour string
+
+// ReplyPaletteIndex is an IRC mIRC-palette colour from 0 to 15.
+type ReplyPaletteIndex uint8
+
+// UnmarshalText parses a decimal palette index.
+func (c *ReplyPaletteIndex) UnmarshalText(text []byte) error {
+	value, err := strconv.ParseUint(string(text), 10, 8)
+	if err != nil || value > 15 {
+		return &InvalidReplyColourError{Value: string(text)}
+	}
+
+	*c = ReplyPaletteIndex(value)
+
+	return nil
+}
+
+// UnmarshalJSON accepts every JSON spelling of a mathematical
+// integer within the palette range.
+func (c *ReplyPaletteIndex) UnmarshalJSON(data []byte) error {
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return &InvalidReplyColourError{Value: string(data)}
+	}
+
+	rational, ok := new(big.Rat).SetString(number.String())
+	if !ok || !rational.IsInt() {
+		return &InvalidReplyColourError{Value: number.String()}
+	}
+
+	value, err := strconv.ParseUint(rational.Num().String(), 10, 8)
+	if err != nil || value > 15 {
+		return &InvalidReplyColourError{Value: number.String()}
+	}
+
+	*c = ReplyPaletteIndex(value)
+
+	return nil
+}
+
+// InvalidReplyColourError reports a malformed or out-of-range
+// palette index.
+type InvalidReplyColourError struct {
+	Value string
+}
+
+func (e InvalidReplyColourError) Error() string {
+	return fmt.Sprintf("invalid IRC colour %q; expected an integer from 0 to 15", e.Value)
+}
+
+const (
+	// ReplyForeground identifies a span's foreground colour.
+	ReplyForeground ReplyColour = "foreground"
+
+	// ReplyBackground identifies a span's background colour.
+	ReplyBackground ReplyColour = "background"
+)
+
+// ReplyColourOutOfRangeError reports a palette index outside 0..15.
+type ReplyColourOutOfRangeError struct {
+	Index  int
+	Colour ReplyColour
+	Value  ReplyPaletteIndex
+}
+
+func (e ReplyColourOutOfRangeError) Error() string {
+	return fmt.Sprintf("span %d %s colour %d is out of range", e.Index, e.Colour, e.Value)
 }
 
 // forbiddenBodyBytes are the octets RFC 2812 §2.3 excludes from a
@@ -83,49 +201,69 @@ type ReplySpan struct {
 // are sanitised where the message is rendered, not here.
 const forbiddenBodyBytes = "\x00\r\n"
 
+// ValidateMessageBody enforces the IRC trailing-parameter grammar
+// for a PRIVMSG or Action body. Whitespace-only text and control
+// characters other than the three framing bytes are valid.
+func ValidateMessageBody(command, body string, at time.Time) error {
+	if body == "" {
+		return domain.NoTextToSendError{Command: command, At: at}
+	}
+	if strings.ContainsAny(body, forbiddenBodyBytes) {
+		return domain.InvalidMessageBodyError{Command: command, At: at}
+	}
+
+	return nil
+}
+
 // ValidateReplyPart reports whether a reply part is structurally
 // valid for IRC delivery. The dispatcher rejects the tool call back
 // to the model when validation fails so the model can self-correct.
 func ValidateReplyPart(part ReplyPart) error {
-	hasBody := strings.TrimSpace(part.Body) != ""
+	return part.Validate()
+}
+
+// Validate enforces the body-or-spans shape and IRC body rules.
+func (part ReplyPart) Validate() error {
+	hasBody := part.Body != ""
 	hasSpans := len(part.Spans) > 0
 
 	if hasBody == hasSpans {
-		return fmt.Errorf("reply part must contain exactly one of body or spans")
+		return ReplyPartShapeError{HasBody: hasBody, HasSpans: hasSpans}
 	}
 
 	if hasBody {
-		if strings.ContainsAny(part.Body, forbiddenBodyBytes) {
-			return fmt.Errorf("reply body must not contain NUL, CR or LF")
-		}
-
-		return nil
+		return ValidateMessageBody(part.Kind.CommandName(), part.Body, time.Time{})
 	}
 
-	for index, span := range part.Spans {
+	return part.Spans.Validate()
+}
+
+// Validate enforces the intrinsic constraints of styled reply spans.
+func (spans ReplySpans) Validate() error {
+	for index, span := range spans {
 		if span.Text == "" {
-			return fmt.Errorf("span %d is empty", index)
+			return EmptyReplySpanError{Index: index}
 		}
 		if strings.ContainsAny(span.Text, forbiddenBodyBytes) {
-			return fmt.Errorf("span %d contains NUL, CR or LF", index)
+			return InvalidReplySpanTextError{Index: index}
 		}
 		if span.Style == nil {
 			continue
 		}
-		if err := validateReplyStyle(*span.Style); err != nil {
-			return fmt.Errorf("span %d: %w", index, err)
+		if err := validateReplyStyle(index, *span.Style); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func validateReplyStyle(style ReplyStyle) error {
+func validateReplyStyle(index int, style ReplyStyle) error {
 	if style.FG != nil && *style.FG > 15 {
-		return fmt.Errorf("foreground colour %d is out of range", *style.FG)
+		return ReplyColourOutOfRangeError{Index: index, Colour: ReplyForeground, Value: *style.FG}
 	}
 	if style.BG != nil && *style.BG > 15 {
-		return fmt.Errorf("background colour %d is out of range", *style.BG)
+		return ReplyColourOutOfRangeError{Index: index, Colour: ReplyBackground, Value: *style.BG}
 	}
 
 	return nil

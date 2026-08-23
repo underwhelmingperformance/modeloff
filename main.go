@@ -176,7 +176,8 @@ func main() {
 	// whole way out, in the order the layers sit in: DetachAll waits
 	// for the model turns still unwinding, the models attached and
 	// the ones already draining from a QUIT or KILL alike, and
-	// Shutdown joins the delivery pumps behind them.
+	// Shutdown waits for accepted server handlers to finish their
+	// rollback before it joins the delivery pumps behind them.
 	//
 	// When both return nil, nothing is left reading or writing the
 	// store by the time the deferred Close reaches it. When DetachAll

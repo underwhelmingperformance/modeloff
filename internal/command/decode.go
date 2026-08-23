@@ -51,23 +51,22 @@ func (f DecoderFunc) Decode(raw string, target reflect.Value) error {
 	return f(raw, target)
 }
 
-// FieldDecoder may be implemented by field types that need custom
-// parsing. This is checked first during resolution, before any
-// registered types or kind defaults.
-type FieldDecoder interface {
-	Decode(raw string) error
+// Validatable may be implemented by decoded field and command types
+// that enforce invariants on their populated Go representation. It
+// follows Kong's value-validation convention.
+type Validatable interface {
+	Validate() error
 }
 
 var (
-	fieldDecoderType    = reflect.TypeFor[FieldDecoder]()
+	validatableType     = reflect.TypeFor[Validatable]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 )
 
 // Registry maps types and kinds to Decoders. Resolution order:
-//  1. FieldDecoder interface on the type (or pointer to it)
-//  2. Exact type match
-//  3. encoding.TextUnmarshaler interface
-//  4. Kind fallback (including slice)
+//  1. Exact type match
+//  2. encoding.TextUnmarshaler interface
+//  3. Kind fallback (including slice)
 type Registry struct {
 	types map[reflect.Type]Decoder
 	kinds map[reflect.Kind]Decoder
@@ -95,12 +94,6 @@ func (r *Registry) RegisterKind(kind reflect.Kind, d Decoder) *Registry {
 
 // ForType resolves a Decoder for the given type.
 func (r *Registry) ForType(typ reflect.Type) Decoder {
-	for _, impl := range []reflect.Type{typ, reflect.PointerTo(typ)} {
-		if impl.Implements(fieldDecoderType) {
-			return &fieldDecoderAdapter{}
-		}
-	}
-
 	if d, ok := r.types[typ]; ok {
 		return d
 	}
@@ -127,6 +120,23 @@ func (r *Registry) ForType(typ reflect.Type) Decoder {
 
 	if d, ok := r.kinds[typ.Kind()]; ok {
 		return d
+	}
+
+	return nil
+}
+
+func validateDecodedValue(target reflect.Value) error {
+	if !target.IsValid() {
+		return nil
+	}
+	if target.Kind() == reflect.Pointer && target.IsNil() {
+		return nil
+	}
+	if target.Type().Implements(validatableType) {
+		return target.Interface().(Validatable).Validate()
+	}
+	if target.CanAddr() && target.Addr().Type().Implements(validatableType) {
+		return target.Addr().Interface().(Validatable).Validate()
 	}
 
 	return nil
@@ -166,20 +176,6 @@ func (r *Registry) RegisterDefaults() *Registry {
 		RegisterType(reflect.TypeFor[time.Duration](), durationDecoder()).
 		RegisterType(reflect.TypeFor[time.Time](), timeDecoder()).
 		RegisterType(reflect.TypeFor[*url.URL](), urlDecoder())
-}
-
-type fieldDecoderAdapter struct{}
-
-func (a *fieldDecoderAdapter) Decode(raw string, target reflect.Value) error {
-	var fd FieldDecoder
-
-	if target.Type().Implements(fieldDecoderType) {
-		fd = target.Interface().(FieldDecoder)
-	} else {
-		fd = target.Addr().Interface().(FieldDecoder)
-	}
-
-	return fd.Decode(raw)
 }
 
 func stringDecoder() DecoderFunc {
@@ -252,6 +248,10 @@ func durationDecoder() DecoderFunc {
 type textUnmarshalerAdapter struct{}
 
 func (a *textUnmarshalerAdapter) Decode(raw string, target reflect.Value) error {
+	if target.Kind() == reflect.Pointer && target.IsNil() {
+		target.Set(reflect.New(target.Type().Elem()))
+	}
+
 	var um encoding.TextUnmarshaler
 
 	if target.Type().Implements(textUnmarshalerType) {
@@ -261,7 +261,7 @@ func (a *textUnmarshalerAdapter) Decode(raw string, target reflect.Value) error 
 	}
 
 	if err := um.UnmarshalText([]byte(raw)); err != nil {
-		return &DecodeError{Value: raw, Expected: "text", Err: err}
+		return err
 	}
 
 	return nil

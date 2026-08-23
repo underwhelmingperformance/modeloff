@@ -69,6 +69,7 @@ type serverClient struct {
 	// disconnect — including the QUIT that disconnect broadcasts,
 	// which comes straight back to this same queue.
 	overflowed atomic.Bool
+	retired    atomic.Bool
 
 	// pumpDone closes when this subscription's pump goroutine
 	// exits, so [Session.reapClient] and [Session.Shutdown] can join

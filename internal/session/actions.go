@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -257,14 +258,50 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 	})
 }
 
-// quitAs disconnects the given actor from every joined channel.
-// The QUIT is logged and broadcast while the actor is still on those
-// channels, which is the order PART follows (RFC 2812 §3.2.2) and
-// what carries the event to the peers who share them and to the
-// departing client itself. Membership goes afterwards, one channel
-// at a time through [Session.removeMember], so a channel the
-// departure empties is destroyed like a last PART (RFC 2811 §2).
-// The instance record goes last, which is what frees the nick.
+// quitCommittedError reports a teardown failure after the QUIT was
+// already logged and broadcast. Callers must still end the connection.
+type quitCommittedError struct {
+	Err error
+}
+
+func (e *quitCommittedError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *quitCommittedError) Unwrap() error {
+	return e.Err
+}
+
+type quitDurability uint8
+
+const (
+	quitRequiresDeletion quitDurability = iota
+	quitForced
+)
+
+type quitOutcome struct {
+	err             error
+	instanceDeleted bool
+}
+
+type quitState struct {
+	channels         []domain.ChannelName
+	windows          []*domain.ChannelWindow
+	unloaded         []domain.ChannelName
+	teardownErrors   []error
+	initialDeleteErr error
+	pendingDeleteErr error
+	instanceDeleted  bool
+}
+
+// quitAs disconnects the given actor from every joined channel. It
+// loads the channels and deletes the instance row before making the
+// QUIT observable. A failure in either step therefore leaves the
+// connection intact and produces no QUIT that a restart could undo.
+// The event is then logged and broadcast against the actor's existing
+// membership, which carries it to peers who share those channels and
+// to the departing client. Membership goes afterwards, so a channel
+// the departure empties is destroyed like a last PART (RFC 2811 §2).
 //
 // This is the one teardown, whoever sent the QUIT. The subscription
 // is a separate matter: the dispatcher reaps a model-client's
@@ -272,16 +309,29 @@ func (s *Session) partAs(ctx context.Context, actor *domain.Instance, ch domain.
 // client whose lifetime is the session's has no connection under it
 // to close, so both refuse for it.
 func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message string) error {
+	return s.quit(ctx, actor, message, quitRequiresDeletion).err
+}
+
+func (s *Session) quit(
+	ctx context.Context,
+	actor *domain.Instance,
+	message string,
+	durability quitDurability,
+) quitOutcome {
 	actorID := actor.ID()
 	actorNick := actor.Nick()
+	var outcome quitOutcome
 
-	return s.inSpan(ctx, "session.quit", []attribute.KeyValue{
+	outcome.err = s.inSpan(ctx, "session.quit", []attribute.KeyValue{
 		attribute.String(observability.AttrNick, string(actorNick)),
 	}, func(ctx context.Context, span trace.Span) error {
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actorID)))
 
 		now := s.now()
-		channels := s.instanceChannelNames(actor)
+		state, err := s.prepareQuit(ctx, actor, durability)
+		if err != nil {
+			return err
+		}
 
 		quit := domain.Quit{
 			Nick:       actorNick,
@@ -291,45 +341,152 @@ func (s *Session) quitAs(ctx context.Context, actor *domain.Instance, message st
 			Instance:   actor,
 		}
 
-		s.propagateActorEvent(ctx, actor, actorEventConfig{
-			build: func() broadcastEvent { return quit },
-		})
+		s.emitQuit(ctx, actor, quit, state.channels, state.unloaded)
+		s.retireClient(actorID)
+		s.removeQuitMembership(ctx, actor, &state)
+		s.retryForcedQuitDeletion(ctx, actor, &state)
+		outcome.instanceDeleted = state.instanceDeleted
 
-		// A client is told what happened to its own connection, which
-		// matters for the QUIT it did not ask for: RFC 2812 §3.7.1 has
-		// a killed client told it was killed. The broadcast above is
-		// usually how it hears, because it is still on its channels
-		// and the membership filter carries it its own QUIT.
-		//
-		// Two cases leave it with no channel the QUIT can arrive
-		// through: a client on none at all, and one whose channels all
-		// carry `+a`, where RFC 2811 §4.2.1 withholds the QUIT and
-		// sends a masked PART in its place so no member learns who
-		// left. `namedChannels` is the same question `maskActorEvent`
-		// asks per recipient. Both are answered with a direct
-		// delivery, which is the fallback `changeNickAs` makes for
-		// NICK, for the same reason.
-		if len(namedChannels(channels, s.anonymousChannels(ctx, channels))) == 0 {
-			s.deliverToClient(ctx, actorID, quit)
+		if err := errors.Join(state.teardownErrors...); err != nil {
+			return &quitCommittedError{Err: err}
 		}
-
-		for _, ch := range channels {
-			window, err := s.loadChannelWindow(ctx, ch)
-			if err != nil {
-				return fmt.Errorf("load channel %q: %w", ch, err)
+		if actorID == domain.InstanceID(protocol.UserClientID) {
+			if err := s.store.ClearSessionActive(ctx); err != nil {
+				return &quitCommittedError{Err: fmt.Errorf("clear session active: %w", err)}
 			}
-
-			if err := s.removeMember(ctx, window, actor); err != nil {
-				return err
-			}
-		}
-
-		if err := s.store.DeleteInstanceByID(ctx, actorID); err != nil {
-			return fmt.Errorf("delete instance: %w", err)
 		}
 
 		return nil
 	})
+
+	return outcome
+}
+
+func (s *Session) prepareQuit(
+	ctx context.Context,
+	actor *domain.Instance,
+	durability quitDurability,
+) (quitState, error) {
+	state := quitState{channels: s.instanceChannelNames(actor)}
+	state.windows = make([]*domain.ChannelWindow, 0, len(state.channels))
+
+	for _, ch := range state.channels {
+		window, err := s.loadChannelWindow(ctx, ch)
+		if err == nil {
+			state.windows = append(state.windows, window)
+			continue
+		}
+		if durability == quitRequiresDeletion {
+			return quitState{}, fmt.Errorf("load channel %q: %w", ch, err)
+		}
+
+		state.unloaded = append(state.unloaded, ch)
+		state.teardownErrors = append(state.teardownErrors, fmt.Errorf("load channel %q: %w", ch, err))
+	}
+
+	if err := s.store.DeleteInstanceByID(ctx, actor.ID()); err != nil {
+		if durability == quitRequiresDeletion {
+			return quitState{}, fmt.Errorf("delete instance: %w", err)
+		}
+
+		state.initialDeleteErr = fmt.Errorf("delete instance: %w", err)
+		if actor.ID() != domain.InstanceID(protocol.UserClientID) {
+			if markErr := s.store.MarkInstancePendingDeletion(ctx, actor.ID()); markErr != nil {
+				state.pendingDeleteErr = fmt.Errorf("mark instance pending deletion: %w", markErr)
+			}
+		}
+		return state, nil
+	}
+
+	state.instanceDeleted = true
+
+	return state, nil
+}
+
+func (s *Session) emitQuit(
+	ctx context.Context,
+	actor *domain.Instance,
+	quit domain.Quit,
+	channels []domain.ChannelName,
+	maskedChannels []domain.ChannelName,
+) {
+	s.propagateActorEvent(ctx, actor, actorEventConfig{
+		build:          func() broadcastEvent { return quit },
+		maskedChannels: maskedChannels,
+	})
+
+	// A client is told what happened to its own connection, which
+	// matters for the QUIT it did not ask for: RFC 2812 §3.7.1 has
+	// a killed client told it was killed. The broadcast above is
+	// usually how it hears, because it is still on its channels
+	// and the membership filter carries it its own QUIT.
+	//
+	// Two cases leave it with no channel the QUIT can arrive
+	// through: a client on none at all, and one whose channels all
+	// carry `+a`, where RFC 2811 §4.2.1 withholds the QUIT and
+	// sends a masked PART in its place so no member learns who
+	// left. `namedChannels` is the same question `maskActorEvent`
+	// asks per recipient. Both are answered with a direct
+	// delivery, which is the fallback `changeNickAs` makes for
+	// NICK, for the same reason.
+	anonymous := s.anonymousChannels(ctx, channels)
+	for _, ch := range maskedChannels {
+		if !slices.Contains(anonymous, ch) {
+			anonymous = append(anonymous, ch)
+		}
+	}
+	if len(namedChannels(channels, anonymous)) == 0 {
+		s.deliverToClient(ctx, actor.ID(), quit)
+	}
+}
+
+func (s *Session) removeQuitMembership(ctx context.Context, actor *domain.Instance, state *quitState) {
+	if state.instanceDeleted {
+		for _, ch := range state.channels {
+			actor.LeaveChannels(ch)
+			if err := s.reloadChannelWindow(ctx, ch); err != nil {
+				state.teardownErrors = append(state.teardownErrors,
+					fmt.Errorf("reload channel %q: %w", ch, err))
+			}
+		}
+
+		return
+	}
+
+	for _, window := range state.windows {
+		s.removeMemberFromWindow(window, actor)
+		err := s.commitChannel(ctx, window)
+
+		if err != nil {
+			state.teardownErrors = append(state.teardownErrors, fmt.Errorf("leave channel %q: %w", window.Name(), err))
+		}
+	}
+
+	for _, ch := range state.unloaded {
+		actor.LeaveChannels(ch)
+	}
+}
+
+func (s *Session) retryForcedQuitDeletion(ctx context.Context, actor *domain.Instance, state *quitState) {
+	if state.instanceDeleted {
+		return
+	}
+
+	retryErr := s.store.DeleteInstanceByID(ctx, actor.ID())
+	if retryErr == nil {
+		state.instanceDeleted = true
+		return
+	}
+
+	state.teardownErrors = append(state.teardownErrors, state.initialDeleteErr)
+	state.teardownErrors = append(state.teardownErrors, fmt.Errorf("retry instance deletion: %w", retryErr))
+	if state.pendingDeleteErr != nil {
+		if markErr := s.store.MarkInstancePendingDeletion(ctx, actor.ID()); markErr != nil {
+			state.teardownErrors = append(state.teardownErrors, state.pendingDeleteErr)
+			state.teardownErrors = append(state.teardownErrors,
+				fmt.Errorf("retry mark instance pending deletion: %w", markErr))
+		}
+	}
 }
 
 // changeNickAs changes the given actor's nickname. The grammar and
@@ -900,8 +1057,8 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 
 // killAs is the operator-issued forced disconnect of `target` per
 // RFC 2812 §3.7.1. The kill is announced exactly as IRC frames it: a
-// killed client is seen to QUIT, so `quitAs` broadcasts a wire
-// `QUIT` to peers in shared channels with the conventional
+// killed client is seen to QUIT, so the forced teardown broadcasts a
+// wire `QUIT` to peers in shared channels with the conventional
 // `"Killed by <oper> (<reason>)"` body.
 //
 // The dispatcher's `handleKill` is the only caller and runs the
@@ -915,8 +1072,8 @@ func (s *Session) admitModelAs(ctx context.Context, actor, inst *domain.Instance
 // underneath differs: `Session.releaseClient` and
 // `Session.reapClient` refuse for the client whose lifetime is the
 // session's.
-func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, reason string) error {
+func (s *Session) killAs(ctx context.Context, oper, target *domain.Instance, reason string) quitOutcome {
 	body := fmt.Sprintf("Killed by %s (%s)", oper.Nick(), reason)
 
-	return s.quitAs(ctx, target, body)
+	return s.quit(ctx, target, body, quitForced)
 }

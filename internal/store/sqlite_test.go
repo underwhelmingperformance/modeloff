@@ -884,6 +884,61 @@ func TestSQLiteStore_DeleteInstanceByID(t *testing.T) {
 
 	_, err := s.GetInstanceByID(ctx, "inst-temp")
 	require.Error(t, err)
+	pending, err := s.ListPendingMemoryDeletions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.InstanceID{"inst-temp"}, pending)
+
+	require.NoError(t, s.DeletePendingMemoryDeletion(ctx, "inst-temp"))
+	pending, err = s.ListPendingMemoryDeletions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.InstanceID(nil), pending)
+}
+
+func TestSQLiteStore_DeleteInstanceByID_does_not_queue_user_memory(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	user := domain.NewUserInstance("alice")
+	require.NoError(t, s.SaveInstance(ctx, user))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, user.ID()))
+	pending, err := s.ListPendingMemoryDeletions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.InstanceID(nil), pending)
+}
+
+func TestSQLiteStore_pending_instance_deletions_are_not_active(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	active := domain.NewModelInstance("inst-active", "active", "test/model", "", nil)
+	pending := domain.NewModelInstance("inst-pending", "pending", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, active))
+	require.NoError(t, s.SaveInstance(ctx, pending))
+	require.NoError(t, s.MarkInstancePendingDeletion(ctx, pending.ID()))
+
+	instances, err := s.ListInstances(ctx)
+	require.NoError(t, err)
+	pendingIDs, err := s.ListPendingInstanceDeletions(ctx)
+	require.NoError(t, err)
+	_, byIDErr := s.GetInstanceByID(ctx, pending.ID())
+	_, byNickErr := s.ResolveNick(ctx, pending.Nick())
+
+	require.Equal(t, []comparableInstance{normaliseInstance(active)}, func() []comparableInstance {
+		result := make([]comparableInstance, len(instances))
+		for index, inst := range instances {
+			result[index] = normaliseInstance(inst)
+		}
+
+		return result
+	}())
+	require.Equal(t, []domain.InstanceID{pending.ID()}, pendingIDs)
+	require.ErrorIs(t, byIDErr, sql.ErrNoRows)
+	require.ErrorIs(t, byNickErr, ErrNoSuchNick)
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, pending.ID()))
+	pendingIDs, err = s.ListPendingInstanceDeletions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []domain.InstanceID(nil), pendingIDs)
 }
 
 // TestSQLiteStore_WriteMemory_records_at pins that a written entry
@@ -980,6 +1035,99 @@ func TestSQLiteStore_DeleteInstanceByID_leaves_other_instances_memories(t *testi
 	entries, err := s.ReadMemories(ctx, "inst-kept")
 	require.NoError(t, err)
 	require.Equal(t, []MemoryEntry{{Key: "fact", Content: "likes coffee", At: testTime}}, entries)
+}
+
+func TestSQLiteStore_DeleteInstanceByID_removes_channel_memberships(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	gone := domain.NewModelInstance("inst-gone", "gone", "test/model", "", nil)
+	kept := domain.NewModelInstance("inst-kept", "kept", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, gone))
+	require.NoError(t, s.SaveInstance(ctx, kept))
+
+	sole := domain.NewChannelWindow("#sole", testTime)
+	sole.Members.Add(gone)
+	sole.Modes.InviteOnly = true
+	require.NoError(t, s.SaveWindow(ctx, sole))
+
+	shared := domain.NewChannelWindow("#shared", testTime)
+	shared.Topic = "still here"
+	shared.Members.Add(gone)
+	shared.Members.Add(kept)
+	require.NoError(t, s.SaveWindow(ctx, shared))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, gone.ID()))
+
+	_, err := s.GetWindow(ctx, sole.Name())
+	require.ErrorIs(t, err, ErrNoSuchChannel)
+	got, err := s.GetWindow(ctx, shared.Name())
+	require.NoError(t, err)
+	want := domain.NewChannelWindow("#shared", testTime)
+	want.Topic = "still here"
+	want.Members.Add(kept)
+	require.Equal(t, domain.Window(want), got)
+}
+
+func TestSQLiteStore_DeleteInstanceByID_removes_channel_shadow_spellings(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	gone := domain.NewModelInstance("inst-gone", "gone", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, gone))
+	canonical := domain.NewChannelWindow("#Dev", testTime)
+	canonical.Members.Add(gone)
+	require.NoError(t, s.SaveWindow(ctx, canonical))
+	shadow := domain.NewChannelWindow("#dev", testTime.Add(time.Hour))
+	shadow.Topic = "stale topic"
+	shadow.Modes.InviteOnly = true
+	require.NoError(t, s.SaveWindow(ctx, shadow))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, gone.ID()))
+
+	_, err := s.GetWindow(ctx, "#Dev")
+	require.ErrorIs(t, err, ErrNoSuchChannel)
+}
+
+func TestSQLiteStore_DeleteInstanceByID_preserves_a_live_channel_beside_an_empty_shadow(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	gone := domain.NewModelInstance("inst-gone", "gone", "test/model", "", nil)
+	kept := domain.NewModelInstance("inst-kept", "kept", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, gone))
+	require.NoError(t, s.SaveInstance(ctx, kept))
+	canonical := domain.NewChannelWindow("#Dev", testTime)
+	canonical.Topic = "live topic"
+	canonical.Members.Add(gone)
+	canonical.Members.Add(kept)
+	require.NoError(t, s.SaveWindow(ctx, canonical))
+	shadow := domain.NewChannelWindow("#dev", testTime.Add(time.Hour))
+	shadow.Topic = "stale topic"
+	shadow.Members.Add(gone)
+	require.NoError(t, s.SaveWindow(ctx, shadow))
+
+	require.NoError(t, s.DeleteInstanceByID(ctx, gone.ID()))
+
+	got, err := s.GetWindow(ctx, "#dev")
+	require.NoError(t, err)
+	want := domain.NewChannelWindow("#Dev", testTime)
+	want.Topic = "live topic"
+	want.Members.Add(kept)
+	require.Equal(t, domain.Window(want), got)
+
+	dbRows, err := s.db.QueryContext(ctx,
+		`SELECT name FROM channels WHERE name = ? COLLATE NOCASE ORDER BY name`, "#Dev")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dbRows.Close() })
+	var names []string
+	for dbRows.Next() {
+		var name string
+		require.NoError(t, dbRows.Scan(&name))
+		names = append(names, name)
+	}
+	require.NoError(t, dbRows.Err())
+	require.Equal(t, []string{"#Dev"}, names)
 }
 
 func TestSQLiteStore_registry_canonical_pointer_across_reloads(t *testing.T) {
@@ -1760,17 +1908,18 @@ func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
 	t.Helper()
 
 	queries := map[string]string{
-		"last_read":        `SELECT * FROM last_read`,
-		"channels":         `SELECT * FROM channels`,
-		"events":           `SELECT * FROM events`,
-		"dm_windows":       `SELECT * FROM dm_windows`,
-		"dm_last_read":     `SELECT * FROM dm_last_read`,
-		"instance_replies": `SELECT * FROM instance_replies`,
-		"instances":        `SELECT * FROM instances`,
-		"memories":         `SELECT * FROM memories`,
-		"personas":         `SELECT * FROM personas`,
-		"state":            `SELECT * FROM state`,
-		"autojoin":         `SELECT * FROM autojoin`,
+		"last_read":                `SELECT * FROM last_read`,
+		"channels":                 `SELECT * FROM channels`,
+		"events":                   `SELECT * FROM events`,
+		"dm_windows":               `SELECT * FROM dm_windows`,
+		"dm_last_read":             `SELECT * FROM dm_last_read`,
+		"instance_replies":         `SELECT * FROM instance_replies`,
+		"pending_memory_deletions": `SELECT * FROM pending_memory_deletions`,
+		"instances":                `SELECT * FROM instances`,
+		"memories":                 `SELECT * FROM memories`,
+		"personas":                 `SELECT * FROM personas`,
+		"state":                    `SELECT * FROM state`,
+		"autojoin":                 `SELECT * FROM autojoin`,
 	}
 
 	out := make(map[string][]string, len(queries))

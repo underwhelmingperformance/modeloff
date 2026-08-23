@@ -2,9 +2,11 @@ package command
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
+	invjsonschema "github.com/invopop/jsonschema"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -244,6 +246,71 @@ func TestComplete_free_form_arguments_have_no_suggestions(t *testing.T) {
 	require.Equal(t, Completion{
 		Visible: true, ReplaceStart: 11, ReplaceEnd: 16, TypedPrefix: "hello",
 	}, complete(cmds, testCtxValue, "/msg botty hello", 16, domain.KindChannel, nil))
+}
+
+func TestComplete_passthrough_keeps_flags_available_until_the_first_value(t *testing.T) {
+	for _, mode := range []PassthroughMode{PassthroughModeAll, PassthroughModePartial} {
+		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+			cmds := Set[testCtx]{Commands: []*Node[testCtx]{
+				{
+					Name: "exec",
+					Positionals: []Positional[testCtx]{
+						{Name: "args", Optional: true, Variadic: true, Passthrough: mode},
+					},
+					Flags: []Flag[testCtx]{{Name: "--force", Optional: true, Boolean: true}},
+				},
+			}}
+
+			beforeValue := complete(cmds, testCtxValue, "/exec --fo", 10, domain.KindChannel, nil)
+			require.Equal(t, []Suggestion{{Value: "--force", Label: "--force"}}, beforeValue.Suggestions)
+
+			afterValue := complete(cmds, testCtxValue, "/exec command --fo", 18, domain.KindChannel, nil)
+			require.Equal(t, Completion{
+				Visible:      true,
+				ReplaceStart: 14,
+				ReplaceEnd:   18,
+				TypedPrefix:  "--fo",
+			}, afterValue)
+		})
+	}
+}
+
+func TestComplete_attached_flag_values_do_not_start_passthrough(t *testing.T) {
+	for _, mode := range []PassthroughMode{PassthroughModeAll, PassthroughModePartial} {
+		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+			cmds := Set[testCtx]{Commands: []*Node[testCtx]{
+				{
+					Name: "exec",
+					Positionals: []Positional[testCtx]{
+						{Name: "args", Optional: true, Variadic: true, Passthrough: mode},
+					},
+					Flags: []Flag[testCtx]{
+						{Name: "--force", Optional: true, Boolean: true},
+						{Name: "--format", Optional: true},
+					},
+				},
+			}}
+
+			require.Equal(t, Completion{
+				Visible:      true,
+				ReplaceStart: 20,
+				ReplaceEnd:   24,
+				AppendSpace:  true,
+				TypedPrefix:  "--fo",
+				Suggestions: []Suggestion{
+					{Value: "--force", Label: "--force"},
+				},
+			}, complete(cmds, testCtxValue, "/exec --format=json --fo", 24, domain.KindChannel, nil))
+			require.Equal(t, Completion{
+				Visible:      true,
+				ReplaceStart: 6,
+				ReplaceEnd:   19,
+				AppendSpace:  true,
+				TypedPrefix:  "--format=json",
+				Suggestions:  []Suggestion{},
+			}, complete(cmds, testCtxValue, "/exec --format=json", 19, domain.KindChannel, nil))
+		})
+	}
 }
 
 func TestComplete_composes_sources(t *testing.T) {
@@ -1426,7 +1493,7 @@ type toolJoinCmd struct {
 }
 
 type toolTopicCmd struct {
-	Topic []string `arg:"" optional:"" help:"Topic text"`
+	Topic []string `arg:"" optional:"" tool:"" help:"Topic text"`
 }
 
 type toolKickCmd struct {
@@ -1440,7 +1507,7 @@ type toolCountCmd struct {
 }
 
 type toolSliceCmd struct {
-	Tags []string `arg:"" optional:"" help:"Tags to apply"`
+	Tags []string `arg:"" optional:"" tool:"Tag values exposed to the model" help:"Tags to apply"`
 }
 
 type toolNoToolCmd struct{}
@@ -1577,7 +1644,7 @@ func TestToolParameters(t *testing.T) {
 		require.Equal(t, map[string]any{
 			"type":        []any{"array", "null"},
 			"items":       map[string]any{"type": "string"},
-			"description": "Tags to apply",
+			"description": "Tag values exposed to the model",
 		}, props["tags"])
 	})
 }
@@ -1600,7 +1667,8 @@ type strictSpan struct {
 }
 
 func TestStructSchemaViaReflector_strict(t *testing.T) {
-	schema := structSchemaViaReflector(reflect.TypeFor[strictSpan]())
+	schema, err := schemaViaReflector(reflect.TypeFor[strictSpan]())
+	require.NoError(t, err)
 
 	require.Equal(t, map[string]any{
 		"type":                 "object",
@@ -1622,6 +1690,812 @@ func TestStructSchemaViaReflector_strict(t *testing.T) {
 	}, schema)
 }
 
+type constrainedStyle struct {
+	FG *uint8 `json:"fg,omitempty" jsonschema:"minimum=0,maximum=15"`
+	BG *uint8 `json:"bg,omitempty" jsonschema:"minimum=0,maximum=15"`
+}
+
+type constrainedSpan struct {
+	Text  string            `json:"text" jsonschema:"minLength=1"`
+	Style *constrainedStyle `json:"style,omitempty"`
+}
+
+type constrainedSpans []constrainedSpan
+
+func TestStructSchemaViaReflector_preserves_type_constraints(t *testing.T) {
+	schema, err := schemaViaReflector(reflect.TypeFor[constrainedSpan]())
+	require.NoError(t, err)
+	properties := schema["properties"].(map[string]any)
+	require.Equal(t, float64(1), properties["text"].(map[string]any)["minLength"])
+
+	style := properties["style"].(map[string]any)
+	styleProperties := style["properties"].(map[string]any)
+	for _, colour := range []string{"fg", "bg"} {
+		colourSchema := styleProperties[colour].(map[string]any)
+		require.Equal(t, float64(0), colourSchema["minimum"])
+		require.Equal(t, float64(15), colourSchema["maximum"])
+	}
+}
+
+type xorSchemaCommand struct {
+	Body    []string         `arg:"" passthrough:"all" xor:"content" max:"2" tool:"Plain bodies"`
+	Spans   constrainedSpans `cli:"-" xor:"content" max:"3" tool:"Styled spans"`
+	CLIOnly string           `optional:"" tool:"-"`
+}
+
+type xorSchemaGrammar struct {
+	Msg xorSchemaCommand `cmd:"" tool:""`
+}
+
+type toolOnlyPayload struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+type toolOnlyStructCommand struct {
+	Data toolOnlyPayload `cli:"-" tool:"Structured data"`
+}
+
+type toolOnlyStructGrammar struct {
+	Inspect toolOnlyStructCommand `cmd:"" tool:""`
+}
+
+type optionalUnionValue struct{}
+
+func (optionalUnionValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{
+		AnyOf: []*invjsonschema.Schema{
+			{Type: "string"},
+			{Type: "integer"},
+		},
+	}
+}
+
+type pointerOnlyUnionValue struct{}
+
+func (*pointerOnlyUnionValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{
+		AnyOf: []*invjsonschema.Schema{
+			{Type: "boolean"},
+			{Type: "integer"},
+		},
+	}
+}
+
+type nestedPointerOnlyUnionValue struct {
+	Value pointerOnlyUnionValue `json:"value"`
+}
+
+type enumOnlyValue string
+
+func (enumOnlyValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{Type: "string", Enum: []any{"alpha", "beta"}}
+}
+
+type constOnlyValue string
+
+func (constOnlyValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{Type: "string", Const: "fixed"}
+}
+
+type optionalConstraintCommand struct {
+	Enum  enumOnlyValue  `cli:"-" optional:"" tool:"Enum value"`
+	Const constOnlyValue `cli:"-" optional:"" tool:"Const value"`
+}
+
+type optionalConstraintGrammar struct {
+	Inspect optionalConstraintCommand `cmd:"" tool:""`
+}
+
+type definitionPayload struct {
+	Required string `json:"required"`
+	Optional string `json:"optional,omitempty"`
+}
+
+type emptyObjectValue struct{}
+
+func (emptyObjectValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{Type: "object"}
+}
+
+type emptyObjectCommand struct {
+	Value emptyObjectValue `cli:"-" tool:"Empty object"`
+}
+
+type emptyObjectGrammar struct {
+	Inspect emptyObjectCommand `cmd:"" tool:""`
+}
+
+type trueSchemaValue string
+
+func (trueSchemaValue) JSONSchema() *invjsonschema.Schema {
+	return invjsonschema.TrueSchema
+}
+
+type falseSchemaValue string
+
+func (falseSchemaValue) JSONSchema() *invjsonschema.Schema {
+	return invjsonschema.FalseSchema
+}
+
+type implicitTrueSchemaValue string
+
+func (implicitTrueSchemaValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{}
+}
+
+type nestedTrueSchemaValue struct {
+	Value trueSchemaValue `json:"value"`
+}
+
+type providerKeywordProperties struct {
+	If   string `json:"if"`
+	Not  string `json:"not"`
+	Then string `json:"then"`
+}
+
+type providerKeywordPropertiesCommand struct {
+	Value providerKeywordProperties `cli:"-" tool:"Keyword-named properties"`
+}
+
+type providerKeywordPropertiesGrammar struct {
+	Inspect providerKeywordPropertiesCommand `cmd:"" tool:""`
+}
+
+type unsupportedMapCommand struct {
+	Value map[string]string `cli:"-" tool:"Map value"`
+}
+
+type unsupportedMapGrammar struct {
+	Inspect unsupportedMapCommand `cmd:"" tool:""`
+}
+
+type nestedMapValue struct {
+	Labels map[string]string `json:"labels"`
+}
+
+type nestedMapCommand struct {
+	Value nestedMapValue `cli:"-" tool:"Nested map value"`
+}
+
+type nestedMapGrammar struct {
+	Inspect nestedMapCommand `cmd:"" tool:""`
+}
+
+type customMapValue struct{}
+
+func (customMapValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{
+		Type:                 "object",
+		AdditionalProperties: &invjsonschema.Schema{Type: "string"},
+	}
+}
+
+type customMapCommand struct {
+	Value customMapValue `cli:"-" tool:"Custom map value"`
+}
+
+type customMapGrammar struct {
+	Inspect customMapCommand `cmd:"" tool:""`
+}
+
+type optionalUnionCommand struct {
+	Value optionalUnionValue `cli:"-" optional:"" tool:"Optional union"`
+}
+
+type optionalUnionGrammar struct {
+	Inspect optionalUnionCommand `cmd:"" tool:""`
+}
+
+type unsupportedProviderValue struct{}
+
+func (unsupportedProviderValue) JSONSchema() *invjsonschema.Schema {
+	return &invjsonschema.Schema{
+		AllOf: []*invjsonschema.Schema{{Type: "string"}},
+	}
+}
+
+type unsupportedProviderCommand struct {
+	Value unsupportedProviderValue `cli:"-" tool:"Unsupported value"`
+}
+
+type unsupportedProviderGrammar struct {
+	Inspect unsupportedProviderCommand `cmd:"" tool:""`
+}
+
+func xorSchemaSet(t *testing.T) Set[testCtx] {
+	t.Helper()
+
+	set, err := Build[testCtx](&xorSchemaGrammar{})
+	require.NoError(t, err)
+
+	return set
+}
+
+func TestToolParameters_transforms_flat_xor_fields(t *testing.T) {
+	node := xorSchemaSet(t).Find("msg")
+	require.Equal(t, expectedXORProviderSchema(), node.ToolParameters())
+}
+
+func expectedXORProviderSchema() map[string]any {
+	bodyBranch := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"body": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Plain bodies",
+			},
+		},
+		"required":             []string{"body"},
+		"additionalProperties": false,
+	}
+	spansBranch := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"spans": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"text", "style"},
+					"properties": map[string]any{
+						"text": map[string]any{"type": "string"},
+						"style": map[string]any{
+							"type":                 []any{"object", "null"},
+							"additionalProperties": false,
+							"required":             []string{"bg", "fg"},
+							"properties": map[string]any{
+								"fg": map[string]any{"type": []any{"integer", "null"}},
+								"bg": map[string]any{"type": []any{"integer", "null"}},
+							},
+						},
+					},
+				},
+				"description": "Styled spans",
+			},
+		},
+		"required":             []string{"spans"},
+		"additionalProperties": false,
+	}
+
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"content": map[string]any{
+				"anyOf": []any{bodyBranch, spansBranch},
+			},
+		},
+		"required":             []string{"content"},
+		"additionalProperties": false,
+	}
+}
+
+func TestToolParameters_returns_a_defensive_copy(t *testing.T) {
+	node := toolSet(t).Find("join")
+	first := node.ToolParameters()
+	properties := first["properties"].(map[string]any)
+	delete(properties, "channel")
+	first["required"].([]string)[0] = "changed"
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"channel": map[string]any{"type": "string", "description": "Channel to join"},
+		},
+		"required":             []string{"channel"},
+		"additionalProperties": false,
+	}, node.ToolParameters())
+}
+
+func TestProviderToolSchema_removes_unsupported_keywords_without_mutating_runtime_schema(t *testing.T) {
+	runtime := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"choice": map[string]any{
+				"oneOf": []any{
+					map[string]any{"type": "string"},
+					map[string]any{"type": "null"},
+				},
+			},
+			"maximum": map[string]any{
+				"type":    "number",
+				"minimum": float64(0),
+				"maximum": float64(15),
+			},
+			"values": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 3,
+				"items": map[string]any{
+					"type":      "string",
+					"minLength": float64(1),
+				},
+			},
+		},
+		"required":             []string{"choice", "maximum", "values"},
+		"additionalProperties": false,
+	}
+	runtimeBefore := cloneToolSchema(runtime)
+
+	provider, err := providerToolSchema("test", runtime)
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"choice": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string"},
+					map[string]any{"type": "null"},
+				},
+			},
+			"maximum": map[string]any{"type": "number"},
+			"values": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+		},
+		"required":             []string{"choice", "maximum", "values"},
+		"additionalProperties": false,
+	}, provider)
+	require.Equal(t, runtimeBefore, runtime)
+}
+
+func TestToolValue_enforces_constraints_omitted_from_the_provider_schema(t *testing.T) {
+	node := xorSchemaSet(t).Find("msg")
+
+	tests := []struct {
+		name string
+		raw  string
+		want []ToolArgumentViolation
+	}{
+		{
+			name: "maximum array length",
+			raw:  `{"content":{"body":["one","two","three"]}}`,
+			want: []ToolArgumentViolation{
+				{},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"anyOf"}},
+				{InstanceLocation: []string{"content", "body"}, KeywordLocation: []string{"maxItems"}},
+				{InstanceLocation: []string{"content"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"required"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"additionalProperties"}},
+			},
+		},
+		{
+			name: "minimum span text length",
+			raw:  `{"content":{"spans":[{"text":"","style":null}]}}`,
+			want: []ToolArgumentViolation{
+				{},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"anyOf"}},
+				{InstanceLocation: []string{"content"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"required"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"additionalProperties"}},
+				{InstanceLocation: []string{"content", "spans", "0", "text"}, KeywordLocation: []string{"minLength"}},
+			},
+		},
+		{
+			name: "maximum colour value",
+			raw:  `{"content":{"spans":[{"text":"hello","style":{"fg":16,"bg":null}}]}}`,
+			want: []ToolArgumentViolation{
+				{},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"anyOf"}},
+				{InstanceLocation: []string{"content"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"required"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"additionalProperties"}},
+				{InstanceLocation: []string{"content", "spans", "0", "style", "fg"}, KeywordLocation: []string{"maximum"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := node.ToolValue(json.RawMessage(tt.raw))
+
+			var validation *ToolArgumentsValidationError
+			require.ErrorAs(t, err, &validation)
+			require.Equal(t, struct {
+				Tool       string
+				Violations []ToolArgumentViolation
+			}{Tool: "msg", Violations: tt.want}, struct {
+				Tool       string
+				Violations []ToolArgumentViolation
+			}{Tool: validation.Tool, Violations: validation.Violations})
+		})
+	}
+}
+
+func TestToolValue_validates_the_provider_schema_before_flattening(t *testing.T) {
+	node := xorSchemaSet(t).Find("msg")
+
+	value, err := node.ToolValue(json.RawMessage(`{"content":{"body":["one","two"]}}`))
+	require.NoError(t, err)
+	require.Equal(t, xorSchemaCommand{Body: []string{"one", "two"}}, value)
+
+	tests := []struct {
+		name string
+		raw  string
+		want []ToolArgumentViolation
+	}{
+		{
+			name: "missing group",
+			raw:  `{}`,
+			want: []ToolArgumentViolation{
+				{},
+				{KeywordLocation: []string{"required"}},
+			},
+		},
+		{
+			name: "both branches",
+			raw:  `{"content":{"body":["one"],"spans":[]}}`,
+			want: []ToolArgumentViolation{
+				{},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"anyOf"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"additionalProperties"}},
+				{InstanceLocation: []string{"content"}, KeywordLocation: []string{"additionalProperties"}},
+			},
+		},
+		{
+			name: "unknown property",
+			raw:  `{"content":{"body":["one"]},"extra":true}`,
+			want: []ToolArgumentViolation{
+				{},
+				{KeywordLocation: []string{"additionalProperties"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := node.ToolValue(json.RawMessage(tt.raw))
+
+			var validation *ToolArgumentsValidationError
+			require.ErrorAs(t, err, &validation)
+			require.Equal(t, struct {
+				Tool       string
+				Violations []ToolArgumentViolation
+			}{
+				Tool:       "msg",
+				Violations: tt.want,
+			}, struct {
+				Tool       string
+				Violations []ToolArgumentViolation
+			}{
+				Tool:       validation.Tool,
+				Violations: validation.Violations,
+			})
+		})
+	}
+}
+
+func TestFieldScopes_separate_CLI_and_tool_parameters(t *testing.T) {
+	set := xorSchemaSet(t)
+
+	value, err := set.ParseValue("/msg --cli-only local hello there")
+	require.NoError(t, err)
+	require.Equal(t, xorSchemaCommand{Body: []string{"hello there"}, CLIOnly: "local"}, value)
+
+	value, err = set.ParseValue("/msg --spans literal")
+	require.NoError(t, err)
+	require.Equal(t, xorSchemaCommand{Body: []string{"--spans literal"}}, value)
+
+	require.Equal(t, expectedXORProviderSchema(), set.Find("msg").ToolParameters())
+}
+
+func TestFieldScopes_tool_only_struct_needs_no_CLI_decoder(t *testing.T) {
+	set, err := Build[testCtx](&toolOnlyStructGrammar{})
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"data": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"value", "count"},
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string"},
+					"count": map[string]any{"type": "integer"},
+				},
+				"description": "Structured data",
+			},
+		},
+		"required":             []string{"data"},
+		"additionalProperties": false,
+	}, set.Find("inspect").ToolParameters())
+
+	value, err := set.Find("inspect").ToolValue(json.RawMessage(`{"data":{"value":"present","count":4.0}}`))
+	require.NoError(t, err)
+	require.Equal(t, toolOnlyStructCommand{Data: toolOnlyPayload{Value: "present", Count: 4}}, value)
+}
+
+func TestToolParameters_optional_custom_union_adds_a_null_branch(t *testing.T) {
+	set, err := Build[testCtx](&optionalUnionGrammar{})
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string"},
+					map[string]any{"type": "integer"},
+					map[string]any{"type": "null"},
+				},
+				"description": "Optional union",
+			},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}, set.Find("inspect").ToolParameters())
+}
+
+func TestToolParameters_optional_constraints_preserve_non_null_values(t *testing.T) {
+	set, err := Build[testCtx](&optionalConstraintGrammar{})
+	require.NoError(t, err)
+	node := set.Find("inspect")
+
+	runtimeSchema, _, err := buildToolParameters(node.toolFields)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"enum": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string", "enum": []any{"alpha", "beta"}},
+					map[string]any{"type": "null"},
+				},
+				"description": "Enum value",
+			},
+			"const": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string", "const": "fixed"},
+					map[string]any{"type": "null"},
+				},
+				"description": "Const value",
+			},
+		},
+		"required":             []string{"enum", "const"},
+		"additionalProperties": false,
+	}, runtimeSchema)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"enum": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string", "enum": []any{"alpha", "beta"}},
+					map[string]any{"type": "null"},
+				},
+				"description": "Enum value",
+			},
+			"const": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "string", "enum": []any{"fixed"}},
+					map[string]any{"type": "null"},
+				},
+				"description": "Const value",
+			},
+		},
+		"required":             []string{"enum", "const"},
+		"additionalProperties": false,
+	}, node.ToolParameters())
+
+	value, err := node.ToolValue(json.RawMessage(`{"enum":"alpha","const":"fixed"}`))
+	require.NoError(t, err)
+	require.Equal(t, optionalConstraintCommand{
+		Enum:  "alpha",
+		Const: "fixed",
+	}, value)
+
+	value, err = node.ToolValue(json.RawMessage(`{"enum":null,"const":null}`))
+	require.NoError(t, err)
+	require.Equal(t, optionalConstraintCommand{}, value)
+
+	_, err = node.ToolValue(json.RawMessage(`{"enum":"alpha","const":"other"}`))
+	var validation *ToolArgumentsValidationError
+	require.ErrorAs(t, err, &validation)
+	require.Equal(t, struct {
+		Tool       string
+		Violations []ToolArgumentViolation
+	}{
+		Tool: "inspect",
+		Violations: []ToolArgumentViolation{
+			{},
+			{InstanceLocation: []string{"const"}, KeywordLocation: []string{"anyOf"}},
+			{InstanceLocation: []string{"const"}, KeywordLocation: []string{"enum"}},
+			{InstanceLocation: []string{"const"}, KeywordLocation: []string{"type"}},
+		},
+	}, struct {
+		Tool       string
+		Violations []ToolArgumentViolation
+	}{
+		Tool:       validation.Tool,
+		Violations: validation.Violations,
+	})
+}
+
+func TestToolParameters_strictifies_object_definitions(t *testing.T) {
+	schema, err := schemaViaCustomType(invjsonschema.Reflect(definitionPayload{}))
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{
+		"$ref": "#/$defs/definitionPayload",
+		"$defs": map[string]any{
+			"definitionPayload": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"required": map[string]any{"type": "string"},
+					"optional": map[string]any{"type": []any{"string", "null"}},
+				},
+				"required":             []string{"required", "optional"},
+				"additionalProperties": false,
+			},
+		},
+	}, schema)
+
+	compiled, err := compileToolSchema("inspect", schema)
+	require.NoError(t, err)
+	require.NoError(t, compiled.Validate(map[string]any{"required": "yes", "optional": nil}))
+}
+
+func TestMakeStrictObjectSchema_preserves_optional_references(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{"$ref": "#/$defs/value"},
+		},
+		"$defs": map[string]any{
+			"value": map[string]any{"type": "string", "enum": []any{"referenced"}},
+		},
+	}
+
+	makeStrictObjectSchema(schema)
+	provider, err := providerToolSchema("inspect", schema)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{
+				"anyOf": []any{
+					map[string]any{"$ref": "#/$defs/value"},
+					map[string]any{"type": "null"},
+				},
+			},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+		"$defs": map[string]any{
+			"value": map[string]any{"type": "string", "enum": []any{"referenced"}},
+		},
+	}, provider)
+
+	compiled, err := compileToolSchema("inspect", schema)
+	require.NoError(t, err)
+	require.NoError(t, compiled.Validate(map[string]any{"value": "referenced"}))
+	require.NoError(t, compiled.Validate(map[string]any{"value": nil}))
+}
+
+func TestToolParameters_strictifies_empty_objects(t *testing.T) {
+	set, err := Build[testCtx](&emptyObjectGrammar{})
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"description":          "Empty object",
+			},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}, set.Find("inspect").ToolParameters())
+}
+
+func TestToolSchemaForType_rejects_boolean_schemas(t *testing.T) {
+	tests := []struct {
+		name     string
+		typ      reflect.Type
+		value    bool
+		location []string
+	}{
+		{name: "true", typ: reflect.TypeFor[trueSchemaValue](), value: true},
+		{name: "false", typ: reflect.TypeFor[falseSchemaValue](), value: false},
+		{name: "implicit true", typ: reflect.TypeFor[implicitTrueSchemaValue](), value: true},
+		{
+			name:     "nested true",
+			typ:      reflect.TypeFor[nestedTrueSchemaValue](),
+			value:    true,
+			location: []string{"properties", "value"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := toolSchemaForType(tt.typ)
+
+			var schemaErr *UnsupportedBooleanToolSchemaError
+			require.ErrorAs(t, err, &schemaErr)
+			require.Equal(t, &UnsupportedBooleanToolSchemaError{
+				Value:    tt.value,
+				Location: tt.location,
+			}, schemaErr)
+		})
+	}
+}
+
+func TestBuild_rejects_structural_keywords_the_provider_cannot_represent(t *testing.T) {
+	_, err := Build[testCtx](&unsupportedProviderGrammar{})
+
+	var keywordErr *UnsupportedProviderSchemaKeywordError
+	require.ErrorAs(t, err, &keywordErr)
+	require.Equal(t, &UnsupportedProviderSchemaKeywordError{
+		Tool:     "inspect",
+		Keyword:  "allOf",
+		Location: []string{"properties", "value", "allOf"},
+	}, keywordErr)
+}
+
+func TestBuild_treats_property_names_as_opaque_schema_data(t *testing.T) {
+	set, err := Build[testCtx](&providerKeywordPropertiesGrammar{})
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"if":   map[string]any{"type": "string"},
+					"not":  map[string]any{"type": "string"},
+					"then": map[string]any{"type": "string"},
+				},
+				"required":             []string{"if", "not", "then"},
+				"additionalProperties": false,
+				"description":          "Keyword-named properties",
+			},
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}, set.Find("inspect").ToolParameters())
+}
+
+func TestBuild_rejects_tool_maps_without_a_fixed_property_schema(t *testing.T) {
+	_, err := Build[testCtx](&unsupportedMapGrammar{})
+
+	var typeErr *UnsupportedToolSchemaTypeError
+	require.ErrorAs(t, err, &typeErr)
+	require.Equal(t, &UnsupportedToolSchemaTypeError{Type: reflect.TypeFor[map[string]string]()}, typeErr)
+}
+
+func TestBuild_rejects_nested_tool_maps_without_a_fixed_property_schema(t *testing.T) {
+	_, err := Build[testCtx](&nestedMapGrammar{})
+
+	var keywordErr *UnsupportedProviderSchemaKeywordError
+	require.ErrorAs(t, err, &keywordErr)
+	require.Equal(t, &UnsupportedProviderSchemaKeywordError{
+		Tool:    "inspect",
+		Keyword: "additionalProperties",
+		Location: []string{
+			"properties", "value", "properties", "labels", "additionalProperties",
+		},
+	}, keywordErr)
+}
+
+func TestBuild_rejects_custom_dictionary_schemas(t *testing.T) {
+	_, err := Build[testCtx](&customMapGrammar{})
+
+	var keywordErr *UnsupportedProviderSchemaKeywordError
+	require.ErrorAs(t, err, &keywordErr)
+	require.Equal(t, &UnsupportedProviderSchemaKeywordError{
+		Tool:     "inspect",
+		Keyword:  "additionalProperties",
+		Location: []string{"properties", "value", "additionalProperties"},
+	}, keywordErr)
+}
+
 func TestToolValue(t *testing.T) {
 	s := toolSet(t)
 
@@ -1634,10 +2508,34 @@ func TestToolValue(t *testing.T) {
 		require.Equal(t, toolJoinCmd{Channel: "#general"}, val)
 	})
 
+	t.Run("supplied zero values remain present", func(t *testing.T) {
+		node := s.Find("count")
+
+		val, err := node.ToolValue(json.RawMessage(`{"count":0,"force":false}`))
+		require.NoError(t, err)
+		require.Equal(t, toolCountCmd{Count: 0, Force: false}, val)
+	})
+
+	t.Run("mathematical integers use the Go integer representation", func(t *testing.T) {
+		node := s.Find("count")
+
+		for _, raw := range []string{
+			`{"count":4,"force":false}`,
+			`{"count":4.0,"force":false}`,
+			`{"count":4e0,"force":false}`,
+		} {
+			t.Run(raw, func(t *testing.T) {
+				value, err := node.ToolValue(json.RawMessage(raw))
+				require.NoError(t, err)
+				require.Equal(t, toolCountCmd{Count: 4, Force: false}, value)
+			})
+		}
+	})
+
 	t.Run("empty args uses defaults", func(t *testing.T) {
 		node := s.Find("topic")
 
-		val, err := node.ToolValue(nil)
+		val, err := node.ToolValue(json.RawMessage(`{"topic": null}`))
 		require.NoError(t, err)
 		require.Equal(t, toolTopicCmd{}, val)
 	})
@@ -1648,9 +2546,9 @@ func TestToolValue(t *testing.T) {
 
 		_, err := node.ToolValue(raw)
 
-		var me *MissingArgError
-		require.ErrorAs(t, err, &me)
-		require.Equal(t, "channel", me.Name)
+		var validation *ToolArgumentsValidationError
+		require.ErrorAs(t, err, &validation)
+		require.Equal(t, "join", validation.Tool)
 	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
@@ -1664,14 +2562,20 @@ func TestToolValue(t *testing.T) {
 		node := &Node[testCtx]{Name: "broken"}
 
 		_, err := node.ToolValue(json.RawMessage(`{}`))
-		require.ErrorContains(t, err, "no factory")
+
+		var noFactory *NoFactoryError
+		require.ErrorAs(t, err, &noFactory)
+		require.Equal(t, &NoFactoryError{Path: "broken"}, noFactory)
 	})
 
 	t.Run("non-leaf", func(t *testing.T) {
 		node := &Node[testCtx]{Name: "parent", Children: []*Node[testCtx]{{Name: "child"}}}
 
 		_, err := node.ToolValue(json.RawMessage(`{}`))
-		require.ErrorContains(t, err, "not a tool leaf")
+
+		var notLeaf *NotToolLeafError
+		require.ErrorAs(t, err, &notLeaf)
+		require.Equal(t, &NotToolLeafError{Path: "parent"}, notLeaf)
 	})
 }
 
@@ -1693,12 +2597,51 @@ func TestToolSchemaForType(t *testing.T) {
 				"items": map[string]any{"type": "string"},
 			},
 		},
+		{
+			name: "fixed string array",
+			typ:  reflect.TypeFor[[2]string](),
+			want: map[string]any{
+				"type":     "array",
+				"items":    map[string]any{"type": "string"},
+				"minItems": 2,
+				"maxItems": 2,
+			},
+		},
+		{
+			name: "pointer-only custom schema",
+			typ:  reflect.TypeFor[pointerOnlyUnionValue](),
+			want: map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "boolean"},
+					map[string]any{"type": "integer"},
+				},
+			},
+		},
+		{
+			name: "nested pointer-only custom schema",
+			typ:  reflect.TypeFor[nestedPointerOnlyUnionValue](),
+			want: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"value": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "integer"},
+						},
+					},
+				},
+				"required":             []string{"value"},
+				"additionalProperties": false,
+			},
+		},
 		{name: "pointer to string", typ: reflect.TypeFor[*string](), want: map[string]any{"type": "string"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, toolSchemaForType(tt.typ))
+			got, err := toolSchemaForType(tt.typ)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }

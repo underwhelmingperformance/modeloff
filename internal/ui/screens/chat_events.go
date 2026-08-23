@@ -358,12 +358,6 @@ func (s ChatScreen) handleQuitEvent(msg domain.Quit, targets []domain.ChannelNam
 // [ui.QuitCompleteMsg] in flight, so the only QUIT that gets this far
 // unannounced is one the server ran without being asked: a KILL
 // naming this client.
-//
-// Ending the session-active marker is the same bookkeeping
-// [userclient.UserClient.Quit] does, and for the same reason: the
-// connection ended through the server's own teardown, so the
-// memberships are already gone and the next start has nothing to
-// reconcile.
 func (s ChatScreen) exitOnOwnQuit(msg domain.Quit) (ChatScreen, tea.Cmd) {
 	if s.quitting || msg.Instance != s.user.Instance() {
 		return s, nil
@@ -371,9 +365,7 @@ func (s ChatScreen) exitOnOwnQuit(msg domain.Quit) (ChatScreen, tea.Cmd) {
 
 	s.quitting = true
 
-	return s, func() tea.Msg {
-		return ui.QuitCompleteMsg{Err: s.user.Disconnected(s.baseContext())}
-	}
+	return s, msgCmd(ui.QuitCompleteMsg{})
 }
 
 func (s ChatScreen) handleTopicChangeEvent(msg domain.TopicChange) (ChatScreen, tea.Cmd) {

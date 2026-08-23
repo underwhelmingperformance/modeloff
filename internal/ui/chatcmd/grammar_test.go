@@ -3,6 +3,7 @@ package chatcmd
 import (
 	"fmt"
 	"iter"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -168,13 +169,163 @@ func TestNewParser_parse_returns_typed_command(t *testing.T) {
 	}
 }
 
+func TestNewParser_passthrough_accepts_single_dash_values(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want any
+	}{
+		{
+			name: "removed channel mode",
+			raw:  "/mode -i",
+			want: ModeCommand{Changes: ModeChanges{{Change: Remove, Mode: ModeInviteOnly{}}}},
+		},
+		{
+			name: "removed member mode",
+			raw:  "/mode -o alice",
+			want: ModeCommand{Changes: ModeChanges{{Change: Remove, Mode: ModeOperator{Target: "alice"}}}},
+		},
+		{
+			name: "removed nick highlight",
+			raw:  "/config highlight -$nick",
+			want: HighlightConfig{Words: HighlightWords{"-$nick"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := testParser.Parse(tt.raw)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestReplyToolSchemas_describe_runtime_constraints(t *testing.T) {
+	type descriptions struct {
+		plain string
+		spans string
+	}
+
+	tests := []struct {
+		name       string
+		tool       string
+		plainField string
+		want       descriptions
+	}{
+		{
+			name:       "message",
+			tool:       "msg",
+			plainField: "body",
+			want: descriptions{
+				plain: "One to 4 non-empty plain messages to send in order. Each array element becomes a separate IRC message.",
+				spans: "One to 32 styled spans for one IRC message. Each span has non-empty text and optional style (bold, italic, underline, reverse, strike, fg, bg); fg and bg use palette values 0..15.",
+			},
+		},
+		{
+			name:       "action",
+			tool:       "me",
+			plainField: "action",
+			want: descriptions{
+				plain: "One to 4 non-empty plain actions to send in order. Each array element becomes a separate IRC action.",
+				spans: "One to 32 styled spans for one IRC action. Each span has non-empty text and optional style (bold, italic, underline, reverse, strike, fg, bg); fg and bg use palette values 0..15.",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := testParser.Set().Find(tt.tool).ToolParameters()
+			properties := schema["properties"].(map[string]any)
+			content := properties["content"].(map[string]any)
+			branches := content["anyOf"].([]any)
+			plain := branches[0].(map[string]any)["properties"].(map[string]any)
+			spans := branches[1].(map[string]any)["properties"].(map[string]any)
+
+			got := descriptions{
+				plain: plain[tt.plainField].(map[string]any)["description"].(string),
+				spans: spans["spans"].(map[string]any)["description"].(string),
+			}
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestNewParser_q_alias_parses_as_query(t *testing.T) {
 	cmd, err := testParser.Parse("/q fakenick hello there")
 	require.NoError(t, err)
 	require.Equal(t, QueryCommand{
 		Nick: "fakenick",
-		Body: []string{"hello", "there"},
+		Body: CommandText("hello there"),
 	}, cmd)
+}
+
+func TestNewParser_maps_free_text_remainders_once(t *testing.T) {
+	topic := CommandText("release planning")
+	tests := []struct {
+		name string
+		raw  string
+		want any
+	}{
+		{
+			name: "part message",
+			raw:  "/part gone for lunch",
+			want: PartCommand{Message: CommandText("gone for lunch")},
+		},
+		{
+			name: "kill reason",
+			raw:  "/kill testbot repeated flooding",
+			want: KillCommand{Nick: "testbot", Reason: CommandText("repeated flooding")},
+		},
+		{
+			name: "message body",
+			raw:  "/msg testbot a b c",
+			want: MsgCommand{Target: "testbot", Body: MessageBodies{"a b c"}},
+		},
+		{
+			name: "message spacing",
+			raw:  "/msg testbot   hello   there  ",
+			want: MsgCommand{Target: "testbot", Body: MessageBodies{"hello   there  "}},
+		},
+		{
+			name: "query body",
+			raw:  "/query testbot hello there",
+			want: QueryCommand{Nick: "testbot", Body: CommandText("hello there")},
+		},
+		{
+			name: "topic",
+			raw:  "/topic release planning",
+			want: TopicCommand{Topic: &topic},
+		},
+		{
+			name: "action",
+			raw:  "/me waves at everyone",
+			want: MeCommand{Action: ActionBodies{"waves at everyone"}},
+		},
+		{
+			name: "quit message",
+			raw:  "/quit see you later",
+			want: QuitCommand{Message: CommandText("see you later")},
+		},
+		{
+			name: "timestamp format",
+			raw:  "/config timestamp-format 15:04 MST",
+			want: TimestampFormatConfig{Format: CommandText("15:04 MST")},
+		},
+		{
+			name: "persona description",
+			raw:  "/config persona bard A travelling storyteller",
+			want: PersonaConfig{ID: "bard", Description: CommandText("A travelling storyteller")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := testParser.Parse(tt.raw)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestQuitCommand_quitMessage_defaults_to_leaving(t *testing.T) {
@@ -190,22 +341,22 @@ func TestQuitCommand_quitMessage_defaults_to_leaving(t *testing.T) {
 		},
 		{
 			name: "empty message uses default",
-			cmd:  QuitCommand{Message: []string{}},
+			cmd:  QuitCommand{Message: CommandText("")},
 			want: "leaving",
 		},
 		{
 			name: "whitespace-only message uses default",
-			cmd:  QuitCommand{Message: []string{"  "}},
+			cmd:  QuitCommand{Message: CommandText("  ")},
 			want: "leaving",
 		},
 		{
 			name: "custom message is preserved",
-			cmd:  QuitCommand{Message: []string{"see", "ya"}},
+			cmd:  QuitCommand{Message: CommandText("see ya")},
 			want: "see ya",
 		},
 		{
 			name: "single word message is preserved",
-			cmd:  QuitCommand{Message: []string{"goodbye"}},
+			cmd:  QuitCommand{Message: CommandText("goodbye")},
 			want: "goodbye",
 		},
 	}
@@ -432,11 +583,47 @@ func TestJoinOutcome_Text(t *testing.T) {
 func TestJoinCommand_help_states_the_channel_cap(t *testing.T) {
 	node := testParser.Set().Find("join")
 	require.NotNil(t, node)
-	require.Len(t, node.Positionals, 2)
-	require.Equal(t,
-		fmt.Sprintf("Channel to join or create, or a comma-separated list of up to %d to join at once", protocol.MaxJoinTargets),
-		node.Positionals[0].Help,
-	)
+
+	type positionalShape struct {
+		Name        string
+		Help        string
+		Optional    bool
+		Variadic    bool
+		Passthrough command.PassthroughMode
+		Source      uintptr
+	}
+	sourcePointer := func(source command.SuggestionSource[CompletionContext]) uintptr {
+		if source == nil {
+			return 0
+		}
+
+		return reflect.ValueOf(source).Pointer()
+	}
+
+	positionals := make([]positionalShape, len(node.Positionals))
+	for i, positional := range node.Positionals {
+		positionals[i] = positionalShape{
+			Name:        positional.Name,
+			Help:        positional.Help,
+			Optional:    positional.Optional,
+			Variadic:    positional.Variadic,
+			Passthrough: positional.Passthrough,
+			Source:      sourcePointer(positional.Source),
+		}
+	}
+
+	require.Equal(t, []positionalShape{
+		{
+			Name:   "channel",
+			Help:   fmt.Sprintf("Channel to join or create, or a comma-separated list of up to %d to join at once", protocol.MaxJoinTargets),
+			Source: sourcePointer(channelsSource),
+		},
+		{
+			Name:     "key",
+			Help:     "Channel key, if the channel has +k",
+			Optional: true,
+		},
+	}, positionals)
 }
 
 func TestComplete_kick_suggests_active_members_excluding_self(t *testing.T) {
@@ -583,7 +770,7 @@ func TestPokeCommand_Run_returns_PokeRequested(t *testing.T) {
 func TestParse_config_persona_command(t *testing.T) {
 	cmd, err := testParser.Parse("/config persona bard A travelling storyteller")
 	require.NoError(t, err)
-	require.Equal(t, PersonaConfig{ID: "bard", Description: []string{"A", "travelling", "storyteller"}}, cmd)
+	require.Equal(t, PersonaConfig{ID: "bard", Description: CommandText("A travelling storyteller")}, cmd)
 }
 
 func TestComplete_config_persona_no_value_suggestions(t *testing.T) {

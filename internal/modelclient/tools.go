@@ -83,6 +83,18 @@ type ToolContext struct {
 	Actor   *domain.Instance
 	Target  protocol.MsgTarget
 	Client  protocol.Client
+	Pace    func(context.Context, string) error
+}
+
+// PaceMessage waits before one chat message when the caller supplied
+// a typing pacer. Direct tool invocations leave Pace nil and send
+// immediately.
+func (tc ToolContext) PaceMessage(ctx context.Context, body string) error {
+	if tc.Pace == nil {
+		return nil
+	}
+
+	return tc.Pace(ctx, body)
 }
 
 // ToolResultPayload is the common tool result envelope returned to
@@ -92,6 +104,28 @@ type ToolResultPayload struct {
 	Summary string `json:"summary,omitempty"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
+}
+
+// ToolOutcome separates a model-facing result from an execution
+// failure that must abort the current tool loop.
+type ToolOutcome struct {
+	Payload        ToolResultPayload
+	ExecutionError error
+}
+
+// ToolExecutionError reports an infrastructure failure while running
+// a named tool. Model-correctable refusals use ToolResultPayload.
+type ToolExecutionError struct {
+	Tool string
+	Err  error
+}
+
+func (e *ToolExecutionError) Error() string {
+	return "execute tool " + e.Tool + ": " + e.Err.Error()
+}
+
+func (e *ToolExecutionError) Unwrap() error {
+	return e.Err
 }
 
 // ToolSpec describes a model-callable tool and how to execute it.

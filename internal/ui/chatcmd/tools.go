@@ -13,7 +13,7 @@ import (
 // ToolCommand is implemented by slash-command leaves that are also
 // executable as model tools.
 type ToolCommand interface {
-	RunTool(context.Context, modelclient.ToolContext) modelclient.ToolResultPayload
+	RunTool(context.Context, modelclient.ToolContext) modelclient.ToolOutcome
 }
 
 // BuildToolRegistry derives tool specs from the command grammar.
@@ -39,18 +39,31 @@ func BuildToolRegistry() (*modelclient.ToolRegistry, error) {
 			Execute: func(ctx context.Context, tc modelclient.ToolContext, rawArgs json.RawMessage) (modelclient.ToolResultPayload, error) {
 				value, err := current.ToolValue(rawArgs)
 				if err != nil {
-					return modelclient.ToolResultPayload{}, err
+					return commandToolResult(current.ToolName(), toolRefusal(err))
 				}
 
 				tool, ok := value.(ToolCommand)
 				if !ok {
-					return modelclient.ToolResultPayload{}, fmt.Errorf("command /%s does not implement ToolCommand", current.Path())
+					return commandToolResult(current.ToolName(), toolExecutionFailure(
+						fmt.Errorf("command /%s does not implement ToolCommand", current.Path()),
+					))
 				}
 
-				return tool.RunTool(ctx, tc), nil
+				return commandToolResult(current.ToolName(), tool.RunTool(ctx, tc))
 			},
 		})
 	}
 
 	return modelclient.NewToolRegistry(specs...), nil
+}
+
+func commandToolResult(name string, outcome modelclient.ToolOutcome) (modelclient.ToolResultPayload, error) {
+	if outcome.ExecutionError != nil {
+		return modelclient.ToolResultPayload{}, &modelclient.ToolExecutionError{
+			Tool: name,
+			Err:  outcome.ExecutionError,
+		}
+	}
+
+	return outcome.Payload, nil
 }

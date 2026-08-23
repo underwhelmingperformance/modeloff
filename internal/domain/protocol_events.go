@@ -76,6 +76,8 @@ func (ErroneousNicknameError) isProtocolEvent()    {}
 func (ErroneousPersonaError) isProtocolEvent()     {}
 func (ErroneousTopicError) isProtocolEvent()       {}
 func (CannotSendToChannelError) isProtocolEvent()  {}
+func (NoTextToSendError) isProtocolEvent()         {}
+func (InvalidMessageBodyError) isProtocolEvent()   {}
 func (UnknownCommandError) isProtocolEvent()       {}
 func (UnknownConfigKeyError) isProtocolEvent()     {}
 func (InvalidDurationError) isProtocolEvent()      {}
@@ -101,6 +103,8 @@ func (ErroneousNicknameError) domainEvent()    {}
 func (ErroneousPersonaError) domainEvent()     {}
 func (ErroneousTopicError) domainEvent()       {}
 func (CannotSendToChannelError) domainEvent()  {}
+func (NoTextToSendError) domainEvent()         {}
+func (InvalidMessageBodyError) domainEvent()   {}
 func (UnknownCommandError) domainEvent()       {}
 func (UnknownConfigKeyError) domainEvent()     {}
 func (InvalidDurationError) domainEvent()      {}
@@ -304,6 +308,29 @@ type CannotSendToChannelError struct {
 	Channel ChannelName
 	Reason  SendBlockReason
 	At      time.Time
+}
+
+// NoTextToSendError refuses an empty PRIVMSG or Action body. It is
+// the protocol-shaped form of ERR_NOTEXTTOSEND (numeric 412).
+type NoTextToSendError struct {
+	Command string
+	At      time.Time
+}
+
+func (e NoTextToSendError) Error() string {
+	return fmt.Sprintf("%s has no text to send", e.Command)
+}
+
+// InvalidMessageBodyError refuses framing bytes that cannot occur
+// inside an IRC trailing parameter. Other control characters remain
+// valid message content.
+type InvalidMessageBodyError struct {
+	Command string
+	At      time.Time
+}
+
+func (e InvalidMessageBodyError) Error() string {
+	return fmt.Sprintf("%s body must not contain NUL, CR or LF", e.Command)
 }
 
 func (e CannotSendToChannelError) Error() string {

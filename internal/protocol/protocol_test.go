@@ -330,13 +330,13 @@ func TestFromChannelEvent_channel_mode_change(t *testing.T) {
 }
 
 func TestValidateReplyPart(t *testing.T) {
-	fg := uint8(4)
-	outOfRange := uint8(16)
+	fg := ReplyPaletteIndex(4)
+	outOfRange := ReplyPaletteIndex(16)
 
 	tests := []struct {
 		name    string
 		part    ReplyPart
-		wantErr string
+		wantErr error
 	}{
 		{
 			name: "valid body",
@@ -355,68 +355,127 @@ func TestValidateReplyPart(t *testing.T) {
 		{
 			name:    "rejects body and spans together",
 			part:    ReplyPart{Body: "hello", Spans: []ReplySpan{{Text: "world"}}},
-			wantErr: "exactly one of body or spans",
+			wantErr: ReplyPartShapeError{HasBody: true, HasSpans: true},
 		},
 		{
 			name:    "rejects newline in body",
 			part:    ReplyPart{Kind: ReplyMessage, Body: "line one\nline two"},
-			wantErr: "reply body must not contain NUL, CR or LF",
+			wantErr: domain.InvalidMessageBodyError{Command: "PRIVMSG"},
 		},
 		{
 			name:    "rejects carriage return in body",
 			part:    ReplyPart{Kind: ReplyMessage, Body: "line one\rline two"},
-			wantErr: "reply body must not contain NUL, CR or LF",
+			wantErr: domain.InvalidMessageBodyError{Command: "PRIVMSG"},
 		},
 		{
 			name:    "rejects NUL in body",
 			part:    ReplyPart{Kind: ReplyMessage, Body: "before\x00after"},
-			wantErr: "reply body must not contain NUL, CR or LF",
+			wantErr: domain.InvalidMessageBodyError{Command: "PRIVMSG"},
 		},
 		{
 			name:    "rejects empty span",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: ""}}},
-			wantErr: "span 0 is empty",
+			wantErr: EmptyReplySpanError{Index: 0},
 		},
 		{
 			name:    "rejects newline in span",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: "line one\nline two"}}},
-			wantErr: "span 0 contains NUL, CR or LF",
+			wantErr: InvalidReplySpanTextError{Index: 0},
 		},
 		{
 			name:    "rejects carriage return in span",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: "line one\rline two"}}},
-			wantErr: "span 0 contains NUL, CR or LF",
+			wantErr: InvalidReplySpanTextError{Index: 0},
 		},
 		{
 			name:    "rejects NUL in span",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: "before\x00after"}}},
-			wantErr: "span 0 contains NUL, CR or LF",
+			wantErr: InvalidReplySpanTextError{Index: 0},
 		},
 		{
 			name:    "rejects out-of-range foreground colour",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: "hello", Style: &ReplyStyle{FG: &outOfRange}}}},
-			wantErr: "foreground colour 16 is out of range",
+			wantErr: ReplyColourOutOfRangeError{Index: 0, Colour: ReplyForeground, Value: 16},
 		},
 		{
 			name:    "rejects out-of-range background colour",
 			part:    ReplyPart{Spans: []ReplySpan{{Text: "hello", Style: &ReplyStyle{BG: &outOfRange}}}},
-			wantErr: "background colour 16 is out of range",
+			wantErr: ReplyColourOutOfRangeError{Index: 0, Colour: ReplyBackground, Value: 16},
 		},
 		{
 			name:    "rejects missing body and spans",
 			part:    ReplyPart{},
-			wantErr: "exactly one of body or spans",
+			wantErr: ReplyPartShapeError{},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateReplyPart(tc.part)
-			if tc.wantErr == "" {
+			if tc.wantErr == nil {
 				require.NoError(t, err)
 				return
 			}
-			require.ErrorContains(t, err, tc.wantErr)
+			require.Equal(t, tc.wantErr, err)
+		})
+	}
+}
+
+func TestReplyPaletteIndex_rejects_invalid_JSON_integers_with_a_typed_error(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want *InvalidReplyColourError
+	}{
+		{raw: "4.5", want: &InvalidReplyColourError{Value: "4.5"}},
+		{raw: "16", want: &InvalidReplyColourError{Value: "16"}},
+		{raw: "-1", want: &InvalidReplyColourError{Value: "-1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			var colour ReplyPaletteIndex
+			require.Equal(t, tt.want, colour.UnmarshalJSON([]byte(tt.raw)))
+		})
+	}
+}
+
+func TestValidateMessageBody(t *testing.T) {
+	at := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr error
+	}{
+		{name: "text", body: "hello"},
+		{name: "whitespace", body: " \t "},
+		{name: "IRC formatting controls", body: "\x01ACTION waves\x01 \x02bold\x02"},
+		{name: "escape", body: "\x1b[31mred"},
+		{
+			name:    "empty",
+			wantErr: domain.NoTextToSendError{Command: "PRIVMSG", At: at},
+		},
+		{
+			name:    "NUL",
+			body:    "before\x00after",
+			wantErr: domain.InvalidMessageBodyError{Command: "PRIVMSG", At: at},
+		},
+		{
+			name:    "carriage return",
+			body:    "before\rafter",
+			wantErr: domain.InvalidMessageBodyError{Command: "PRIVMSG", At: at},
+		},
+		{
+			name:    "newline",
+			body:    "before\nafter",
+			wantErr: domain.InvalidMessageBodyError{Command: "PRIVMSG", At: at},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMessageBody("PRIVMSG", tc.body, at)
+			require.Equal(t, tc.wantErr, err)
 		})
 	}
 }

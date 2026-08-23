@@ -33,8 +33,9 @@ import (
 // persona generation). Both apply only when the caller has not
 // already set a deadline on the context.
 const (
-	defaultChatTimeout = 60 * time.Second
-	defaultMetaTimeout = 30 * time.Second
+	defaultChatTimeout            = 60 * time.Second
+	defaultMetaTimeout            = 30 * time.Second
+	anthropicStructuredOutputBeta = "structured-outputs-2025-11-13"
 )
 
 // OpenRouterClient implements Client using openai-go for chat
@@ -213,9 +214,10 @@ func (c *OpenRouterClient) SendEvents(
 		func(ctx context.Context, span trace.Span) error {
 			msgs := buildMessages(systemPrompt, selfInstanceID, history, events)
 			params := openai.ChatCompletionNewParams{
-				Model:    shared.ChatModel(string(modelID)),
-				Messages: msgs,
-				Tools:    toolParams(tools),
+				Model:             shared.ChatModel(string(modelID)),
+				Messages:          msgs,
+				Tools:             toolParams(tools),
+				ParallelToolCalls: openai.Bool(false),
 			}
 			if selfInstanceID != "" {
 				params.PromptCacheKey = openai.String(string(selfInstanceID))
@@ -288,9 +290,10 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 			}
 
 			params := openai.ChatCompletionNewParams{
-				Model:    shared.ChatModel(string(conv.modelID)),
-				Messages: msgs,
-				Tools:    toolParams(tools),
+				Model:             shared.ChatModel(string(conv.modelID)),
+				Messages:          msgs,
+				Tools:             toolParams(tools),
+				ParallelToolCalls: openai.Bool(false),
 			}
 			if conv.promptCacheKey != "" {
 				params.PromptCacheKey = openai.String(string(conv.promptCacheKey))
@@ -685,8 +688,14 @@ func (c *OpenRouterClient) chatCompletion(
 		// key still reaches providers that use it for cache bucketing.
 		opts = append(opts, option.WithHeader("x-session-id", payload.PromptCacheKey.Value))
 	}
+	if len(payload.Tools) > 0 {
+		opts = append(opts, option.WithJSONSet("provider.require_parameters", true))
+	}
 
 	if isAnthropicModel(modelID) {
+		if len(payload.Tools) > 0 {
+			opts = append(opts, option.WithHeader("x-anthropic-beta", anthropicStructuredOutputBeta))
+		}
 		opts = append(opts, option.WithJSONSet("cache_control", map[string]string{"type": "ephemeral"}))
 	}
 

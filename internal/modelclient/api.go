@@ -37,6 +37,23 @@ const (
 	terminalQuit terminalTool = "quit"
 )
 
+// nonReplayableTurnError reports a turn failure after the model's
+// tool calls started executing. The original batch cannot be sent to
+// the model again because a tool may already have changed external or
+// local state, even when the failure happened while reporting its
+// result upstream.
+type nonReplayableTurnError struct {
+	Err error
+}
+
+func (e *nonReplayableTurnError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *nonReplayableTurnError) Unwrap() error {
+	return e.Err
+}
+
 // terminalToolFor classifies a tool name. Anything the turn survives
 // is [terminalNone].
 func terminalToolFor(name string) terminalTool {
@@ -108,6 +125,7 @@ func runTurn(
 	}
 
 	outcome := turnOutcome{}
+	executedAnyTool := false
 
 	for range maxToolLoopTurns {
 		if len(result.PendingToolCalls) == 0 {
@@ -120,18 +138,23 @@ func runTurn(
 			return outcome, nil
 		}
 
-		toolResults, terminal, wErr := executeTools(ctx, sess, ToolContext{
+		batch, wErr := executeTools(ctx, sess, ToolContext{
 			Session: sess,
 			Actor:   inst,
 			Target:  target,
 			Client:  caller,
 		}, registry, result.PendingToolCalls, pacer)
+		executedAnyTool = executedAnyTool || batch.executed
 		if wErr != nil {
+			if executedAnyTool {
+				return outcome, &nonReplayableTurnError{Err: wErr}
+			}
+
 			return outcome, wErr
 		}
 		outcome.toolTurnCount++
 
-		switch terminal {
+		switch batch.terminal {
 		case terminalPass:
 			outcome.passReason = observability.PassReasonModelPass
 			return outcome, nil
@@ -140,11 +163,15 @@ func runTurn(
 		case terminalNone:
 		}
 
-		result, err = apiClient.ContinueWithToolResults(ctx, result.Conversation, toolResults, definitions...)
+		result, err = apiClient.ContinueWithToolResults(ctx, result.Conversation, batch.results, definitions...)
 		if err != nil {
 			if next, ok := classifyUpstreamSilence(err); ok {
 				next.toolTurnCount = outcome.toolTurnCount
 				return next, nil
+			}
+
+			if executedAnyTool {
+				return outcome, &nonReplayableTurnError{Err: err}
 			}
 
 			return outcome, err
@@ -173,18 +200,24 @@ func classifyUpstreamSilence(err error) (turnOutcome, bool) {
 	return turnOutcome{}, false
 }
 
+type toolBatchOutcome struct {
+	results  []api.ToolResult
+	terminal terminalTool
+	executed bool
+}
+
 // executeTools runs pending tool calls in order and returns the
 // results to feed back to the model, along with the [terminalTool]
 // that closed the turn if one did.
 //
-// A terminal tool stops the batch where it sits, so the results
-// cover the calls up to and including it. That is what keeps the
+// A successful terminal tool stops the batch where it sits, so the
+// results cover the calls up to and including it. That is what keeps
 // calls a model sequenced after its own `quit` from running as a
-// client that no longer exists. A `pass` mixed with other tools is
-// rejected wholesale under the pass-exclusivity rule, which ends the
-// turn the same way. The rich reason text the model supplied to
-// `pass` lands on the per-call execute_tool span as `pass.reason`;
-// the dispatch-turn span carries the stable enum.
+// client that no longer exists. A rejected terminal call and a mixed
+// `pass` batch return their error results to the model so it can issue
+// a corrected call in the same tool loop. The rich reason text from a
+// successful `pass` lands on the per-call execute_tool span as
+// `pass.reason`; the dispatch-turn span carries the stable enum.
 func executeTools(
 	ctx context.Context,
 	sess Session,
@@ -192,13 +225,16 @@ func executeTools(
 	registry *ToolRegistry,
 	calls []api.PendingToolCall,
 	pacer *Pacer,
-) ([]api.ToolResult, terminalTool, error) {
+) (toolBatchOutcome, error) {
 	if reject := rejectMixedPass(calls); reject != nil {
-		return reject, terminalPass, nil
+		return toolBatchOutcome{results: reject}, nil
 	}
 
-	results := make([]api.ToolResult, 0, len(calls))
+	outcome := toolBatchOutcome{results: make([]api.ToolResult, 0, len(calls))}
 	tracer := sess.TracerProvider().Tracer("github.com/laney/modeloff/internal/modelclient")
+	if pacer != nil {
+		toolCtx.Pace = pacer.Wait
+	}
 
 	for _, call := range calls {
 		toolName := call.Name
@@ -210,25 +246,27 @@ func executeTools(
 			),
 		)
 
-		if body, ok := pacingBody(toolName, call.Args); ok {
-			if err := pacer.Wait(callCtx, body); err != nil {
-				callSpan.End()
-				return nil, terminalNone, err
-			}
-		}
-
 		payload := ToolResultPayload{
 			OK:    false,
 			Error: fmt.Sprintf("unknown tool %q", toolName),
 		}
 
 		if spec, ok := registry.Find(toolName); ok {
+			outcome.executed = true
 			nextPayload, err := spec.Execute(callCtx, toolCtx, call.Args)
 			if err != nil {
-				payload = ToolResultPayload{OK: false, Error: err.Error()}
-			} else {
-				payload = nextPayload
+				var executionError *ToolExecutionError
+				if errors.As(err, &executionError) {
+					callSpan.RecordError(err)
+					callSpan.SetStatus(codes.Error, err.Error())
+					callSpan.End()
+
+					return outcome, err
+				}
+
+				nextPayload = ToolResultPayload{OK: false, Error: err.Error()}
 			}
+			payload = nextPayload
 		}
 
 		if payload.OK {
@@ -241,23 +279,23 @@ func executeTools(
 		callSpan.End()
 
 		data, _ := json.Marshal(payload)
-		results = append(results, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
+		outcome.results = append(outcome.results, api.ToolResult{ToolCallID: call.ID, Content: string(data)})
 
-		if terminal := terminalToolFor(toolName); terminal != terminalNone {
-			return results, terminal, nil
+		if terminal := terminalToolFor(toolName); payload.OK && terminal != terminalNone {
+			outcome.terminal = terminal
+			return outcome, nil
 		}
 	}
 
-	return results, terminalNone, nil
+	return outcome, nil
 }
 
 // rejectMixedPass enforces the rule that `pass` is mutually
 // exclusive with every other tool in the same turn. When violated,
 // every call (including the pass itself) receives an error result
-// explaining the rule. The caller treats the rejection as a turn-
-// ending silence so the model gets a single retry opportunity — the
-// next turn carries the rejection results as tool-role messages and
-// the model can issue a corrected call.
+// explaining the rule. The rejection does not end the turn. The
+// caller sends the results back in the same tool loop so the model can
+// issue a corrected batch.
 func rejectMixedPass(calls []api.PendingToolCall) []api.ToolResult {
 	hasPass := false
 	hasOther := false

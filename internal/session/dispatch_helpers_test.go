@@ -33,29 +33,20 @@ var chatcmdToolRegistry = func() *modelclient.ToolRegistry {
 }()
 
 // msgToolCalls builds a [api.CompletionResult] whose PendingToolCalls
-// invoke the `msg` tool once per body — the wire-shape the new
-// dispatch loop expects when a model wants to say something. The
-// `body` field on MsgCommand is a `[]string`, so the JSON shape is
-// an array of words (one element here per call).
+// invoke `msg` once. Each body becomes a separate IRC message in
+// array order.
 func msgToolCalls(t testing.TB, target domain.ChannelName, bodies ...string) api.CompletionResult {
 	t.Helper()
 
-	calls := make([]api.PendingToolCall, 0, len(bodies))
-	for i, body := range bodies {
-		args, err := json.Marshal(map[string]any{
-			"target": string(target),
-			"body":   []string{body},
-		})
-		require.NoError(t, err)
+	args, err := json.Marshal(map[string]any{
+		"target":  string(target),
+		"content": map[string]any{"body": bodies},
+	})
+	require.NoError(t, err)
 
-		calls = append(calls, api.PendingToolCall{
-			ID:   fmt.Sprintf("call_msg_%d", i),
-			Name: "msg",
-			Args: args,
-		})
-	}
-
-	return api.CompletionResult{PendingToolCalls: calls}
+	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
+		{ID: "call_msg_0", Name: "msg", Args: args},
+	}}
 }
 
 // whoisToolCall builds a [api.CompletionResult] whose
@@ -80,7 +71,7 @@ func whoisToolCall(t testing.TB, nick domain.Nick) api.CompletionResult {
 func meToolCall(t testing.TB, body string) api.CompletionResult {
 	t.Helper()
 
-	args, err := json.Marshal(map[string]any{"action": []string{body}})
+	args, err := json.Marshal(map[string]any{"content": map[string]any{"action": []string{body}}})
 	require.NoError(t, err)
 
 	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
@@ -115,14 +106,37 @@ func msgSpansToolCall(t testing.TB, target domain.ChannelName, spans []protocol.
 	t.Helper()
 
 	args, err := json.Marshal(map[string]any{
-		"target": string(target),
-		"spans":  spans,
+		"target":  string(target),
+		"content": map[string]any{"spans": strictReplySpans(spans)},
 	})
 	require.NoError(t, err)
 
 	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
 		{ID: "call_msg_spans_0", Name: "msg", Args: args},
 	}}
+}
+
+func strictReplySpans(spans []protocol.ReplySpan) []map[string]any {
+	values := make([]map[string]any, len(spans))
+
+	for index, span := range spans {
+		var style any
+		if span.Style != nil {
+			style = map[string]any{
+				"bold":      span.Style.Bold,
+				"italic":    span.Style.Italic,
+				"underline": span.Style.Underline,
+				"reverse":   span.Style.Reverse,
+				"strike":    span.Style.Strike,
+				"fg":        span.Style.FG,
+				"bg":        span.Style.BG,
+			}
+		}
+
+		values[index] = map[string]any{"text": span.Text, "style": style}
+	}
+
+	return values
 }
 
 // dispatchUserMessage sends `body` to `ch` as the user and returns
@@ -259,9 +273,10 @@ type testModelClientFactory struct {
 	// test that quits or kills a model does not leave its goroutine
 	// running past the end of the test with the `t`-scoped store
 	// still in hand.
-	mu       sync.Mutex
-	clients  map[protocol.ClientID]*modelclient.ModelClient
-	draining []*modelclient.ModelClient
+	mu        sync.Mutex
+	clients   map[protocol.ClientID]*modelclient.ModelClient
+	draining  []*modelclient.ModelClient
+	forgotten []protocol.ClientID
 }
 
 func newTestModelClientFactory(t testing.TB, apiClient api.Client) *testModelClientFactory {
@@ -335,6 +350,25 @@ func (f *testModelClientFactory) Detach(id protocol.ClientID) {
 	}
 
 	mc.Release()
+}
+
+func (f *testModelClientFactory) DetachAndForget(id protocol.ClientID) {
+	f.Detach(id)
+	f.Forget(id)
+}
+
+func (f *testModelClientFactory) Forget(id protocol.ClientID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.forgotten = append(f.forgotten, id)
+}
+
+func (f *testModelClientFactory) forgottenIDs() []protocol.ClientID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]protocol.ClientID(nil), f.forgotten...)
 }
 
 // attached returns the identities the factory currently holds a

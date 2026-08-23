@@ -249,7 +249,7 @@ func TestApp_reuse_existing_instance(t *testing.T) {
 						PendingToolCalls: []api.PendingToolCall{{
 							ID:   "tc-join",
 							Name: "join",
-							Args: json.RawMessage(fmt.Sprintf(`{"channel":%q}`, ev.Target)),
+							Args: json.RawMessage(fmt.Sprintf(`{"channel":%q,"key":null}`, ev.Target)),
 						}},
 					}, nil
 				}
@@ -580,8 +580,8 @@ func msgToolCall(t *testing.T, target, body string) api.CompletionResult {
 	t.Helper()
 
 	args, err := json.Marshal(map[string]any{
-		"target": target,
-		"body":   []string{body},
+		"target":  target,
+		"content": map[string]any{"body": []string{body}},
 	})
 	require.NoError(t, err)
 

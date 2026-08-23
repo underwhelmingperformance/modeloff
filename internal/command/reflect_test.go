@@ -7,16 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var nargs1 = 1
-
 // positionalMeta is Positional without the Source field, which is not
 // comparable.
 type positionalMeta struct {
-	Name     string
-	Help     string
-	Optional bool
-	Variadic bool
-	Nargs    *int
+	Name        string
+	Help        string
+	Optional    bool
+	Variadic    bool
+	Passthrough PassthroughMode
 }
 
 func toPositionalMeta(positionals []Positional[testCtx]) []positionalMeta {
@@ -28,11 +26,11 @@ func toPositionalMeta(positionals []Positional[testCtx]) []positionalMeta {
 
 	for i, p := range positionals {
 		out[i] = positionalMeta{
-			Name:     p.Name,
-			Help:     p.Help,
-			Optional: p.Optional,
-			Variadic: p.Variadic,
-			Nargs:    p.Nargs,
+			Name:        p.Name,
+			Help:        p.Help,
+			Optional:    p.Optional,
+			Variadic:    p.Variadic,
+			Passthrough: p.Passthrough,
 		}
 	}
 
@@ -107,31 +105,40 @@ func toNodeMeta(n *Node[testCtx]) nodeMeta {
 
 // fieldMetaMeta is fieldMeta without the decoder, for test comparison.
 type fieldMetaMeta struct {
-	Name     string
-	Help     string
-	Index    int
-	IsFlag   bool
-	BoolFlag bool
-	FlagName string
-	Optional bool
-	Variadic bool
-	Nargs    *int
+	Name        string
+	Help        string
+	Index       int
+	IsFlag      bool
+	BoolFlag    bool
+	FlagName    string
+	Optional    bool
+	Variadic    bool
+	MaxItems    int
+	HasMaxItems bool
+	Passthrough PassthroughMode
 }
 
 func toFieldMeta(fields []fieldMeta) []fieldMetaMeta {
 	out := make([]fieldMetaMeta, len(fields))
 
 	for i, f := range fields {
+		var maxItems int
+		if f.maxItems != nil {
+			maxItems = *f.maxItems
+		}
+
 		out[i] = fieldMetaMeta{
-			Name:     f.name,
-			Help:     f.help,
-			Index:    f.index,
-			IsFlag:   f.isFlag,
-			BoolFlag: f.boolFlag,
-			FlagName: f.flagName,
-			Optional: f.optional,
-			Variadic: f.variadic,
-			Nargs:    f.nargs,
+			Name:        f.name,
+			Help:        f.help,
+			Index:       f.index,
+			IsFlag:      f.isFlag,
+			BoolFlag:    f.boolFlag,
+			FlagName:    f.flagName,
+			Optional:    f.optional,
+			Variadic:    f.variadic,
+			MaxItems:    maxItems,
+			HasMaxItems: f.maxItems != nil,
+			Passthrough: f.passthrough,
 		}
 	}
 
@@ -165,11 +172,20 @@ func TestResolveFieldMetas(t *testing.T) {
 			},
 		},
 		{
-			name: "variadic positional with nargs",
+			name: "variadic positional",
 			cmd:  testMsgCommand{},
 			want: []fieldMetaMeta{
 				{Name: "nick", Help: "Nick to message", Index: 0},
-				{Name: "body", Help: "Message text", Optional: true, Variadic: true, Nargs: &nargs1, Index: 1},
+				{Name: "body", Help: "Message text", Optional: true, Variadic: true, Index: 1},
+			},
+		},
+		{
+			name: "passthrough positional",
+			cmd:  testRawMsgCommand{},
+			want: []fieldMetaMeta{
+				{Name: "nick", Help: "Nick to message", Index: 0},
+				{Name: "body", Help: "Message text", Optional: true, Variadic: true, Passthrough: PassthroughModeAll, Index: 1},
+				{Name: "flag", Help: "Test flag", Index: 2, IsFlag: true, FlagName: "--flag", Optional: true},
 			},
 		},
 		{
@@ -180,7 +196,7 @@ func TestResolveFieldMetas(t *testing.T) {
 			},
 		},
 		{
-			name: "optional variadic without nargs",
+			name: "optional variadic",
 			cmd:  testTopicCommand{},
 			want: []fieldMetaMeta{
 				{Name: "topic", Help: "Topic text", Optional: true, Variadic: true, Index: 0},
@@ -201,6 +217,100 @@ func TestResolveFieldMetas(t *testing.T) {
 			require.Equal(t, tt.want, toFieldMeta(got))
 		})
 	}
+}
+
+func TestResolveFieldMetas_rejects_invalid_passthrough(t *testing.T) {
+	t.Run("flag", func(t *testing.T) {
+		_, err := resolveFieldMetas(struct {
+			Body []string `passthrough:"all"`
+		}{})
+
+		var got *PassthroughOnFlagError
+		require.ErrorAs(t, err, &got)
+		require.Equal(t, &PassthroughOnFlagError{Field: "Body"}, got)
+	})
+
+	t.Run("unsupported mode", func(t *testing.T) {
+		_, err := resolveFieldMetas(struct {
+			Body []string `arg:"" passthrough:"other"`
+		}{})
+
+		var got *UnsupportedPassthroughModeError
+		require.ErrorAs(t, err, &got)
+		require.Equal(t, &UnsupportedPassthroughModeError{Field: "Body", Mode: "other"}, got)
+	})
+
+	t.Run("not final positional", func(t *testing.T) {
+		_, err := resolveFieldMetas(struct {
+			Body []string `arg:"" passthrough:"all"`
+			Tail string   `arg:""`
+		}{})
+
+		var got *PassthroughNotFinalError
+		require.ErrorAs(t, err, &got)
+		require.Equal(t, &PassthroughNotFinalError{Field: "Body"}, got)
+	})
+}
+
+func TestResolveFieldMetas_rejects_unsupported_scope_and_bounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		command any
+		want    error
+	}{
+		{
+			name: "nargs",
+			command: struct {
+				Body []string `arg:"" nargs:"1"`
+			}{},
+			want: &UnsupportedNargsTagError{Field: "Body"},
+		},
+		{
+			name: "CLI scope",
+			command: struct {
+				Body []string `arg:"" cli:"only"`
+			}{},
+			want: &UnsupportedCLIScopeError{Field: "Body", Value: "only"},
+		},
+		{
+			name: "max on scalar",
+			command: struct {
+				Body string `arg:"" max:"2"`
+			}{},
+			want: &MaxOnNonSliceError{Field: "Body", Type: reflect.TypeFor[string]()},
+		},
+		{
+			name: "invalid max",
+			command: struct {
+				Body []string `arg:"" max:"0"`
+			}{},
+			want: &InvalidMaxTagError{Field: "Body", Value: "0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveFieldMetas(tt.command)
+			require.Error(t, err)
+			require.Equal(t, tt.want, err)
+		})
+	}
+}
+
+func TestResolveFieldMetas_accepts_max_on_a_named_slice(t *testing.T) {
+	type bodies []string
+
+	fields, err := resolveFieldMetas(struct {
+		Body bodies `arg:"" max:"2"`
+	}{})
+	require.NoError(t, err)
+	require.Equal(t, []fieldMetaMeta{{
+		Name:        "body",
+		Index:       0,
+		Variadic:    true,
+		MaxItems:    2,
+		HasMaxItems: true,
+	}}, toFieldMeta(fields))
 }
 
 func TestBuildPositionals(t *testing.T) {

@@ -338,6 +338,13 @@ func (mc *ModelClient) Attach(ctx context.Context) error {
 
 	mc.loadHistory(ctx)
 
+	mc.mu.Lock()
+	released := mc.released
+	mc.mu.Unlock()
+	if released {
+		return fmt.Errorf("attach model client %q: %w", mc.instance.ID(), ErrReleased)
+	}
+
 	return nil
 }
 

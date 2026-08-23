@@ -2,15 +2,12 @@ package modelclient
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/laney/modeloff/internal/protocol"
 )
 
 // fixedRandomiser returns a pre-set sequence of [0,1) values,
@@ -183,85 +180,4 @@ func TestPacer_jitterError(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 100*time.Millisecond, d)
 	})
-}
-
-func TestPacingBody(t *testing.T) {
-	mustArgs := func(t *testing.T, v any) json.RawMessage {
-		t.Helper()
-		raw, err := json.Marshal(v)
-		require.NoError(t, err)
-		return raw
-	}
-
-	cases := []struct {
-		name  string
-		tool  string
-		args  json.RawMessage
-		want  string
-		paced bool
-	}{
-		{
-			name:  "msg with body",
-			tool:  "msg",
-			args:  mustArgs(t, map[string]any{"target": "#room", "body": []string{"hello", "world"}}),
-			want:  "hello world",
-			paced: true,
-		},
-		{
-			name:  "me with action",
-			tool:  "me",
-			args:  mustArgs(t, map[string]any{"action": []string{"waves", "slowly"}}),
-			want:  "waves slowly",
-			paced: true,
-		},
-		{
-			name: "msg with spans",
-			tool: "msg",
-			args: mustArgs(t, map[string]any{
-				"target": "#room",
-				"spans": []protocol.ReplySpan{
-					{Text: "hi "},
-					{Text: "there"},
-				},
-			}),
-			want:  "hi there",
-			paced: true,
-		},
-		{
-			name:  "msg with empty body and no spans",
-			tool:  "msg",
-			args:  mustArgs(t, map[string]any{"target": "#room"}),
-			want:  "",
-			paced: true,
-		},
-		{
-			name:  "non-chat tool is not paced",
-			tool:  "write_memory",
-			args:  mustArgs(t, map[string]any{"content": "remember this"}),
-			want:  "",
-			paced: false,
-		},
-		{
-			name:  "pass is not paced",
-			tool:  "pass",
-			args:  mustArgs(t, map[string]any{"reason": "nothing to add"}),
-			want:  "",
-			paced: false,
-		},
-		{
-			name:  "malformed args still paces with empty body",
-			tool:  "msg",
-			args:  json.RawMessage(`{not json`),
-			want:  "",
-			paced: true,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			body, paced := pacingBody(tc.tool, tc.args)
-			require.Equal(t, tc.paced, paced)
-			require.Equal(t, tc.want, body)
-		})
-	}
 }

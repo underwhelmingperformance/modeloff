@@ -80,6 +80,16 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id domain.InstanceID, ke
 		})
 }
 
+// DeleteMemoriesByInstance removes every backing memory row for an
+// instance.
+func (s *SQLiteStore) DeleteMemoriesByInstance(ctx context.Context, id domain.InstanceID) error {
+	return s.inSpan(ctx, "store.sqlite.delete_memories_by_instance",
+		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
+		func(ctx context.Context, _ trace.Span) error {
+			return execMutation(ctx, s.db, `DELETE FROM memories WHERE instance_id = ?`, string(id))
+		})
+}
+
 // ResetMemories implements Store.
 func (s *SQLiteStore) ResetMemories(ctx context.Context) error {
 	return s.inSpan(ctx, "store.sqlite.reset_memories", nil, func(ctx context.Context, _ trace.Span) error {

@@ -160,7 +160,8 @@ func (mc *ModelClient) runBatch(ctx context.Context, batch *turnBatch, pending r
 	pending.supersede(batch.channel)
 
 	err := mc.dispatchTurn(ctx, batch)
-	if err == nil || batch.retried || !api.Retryable(err) {
+	var nonReplayable *nonReplayableTurnError
+	if err == nil || batch.retried || errors.As(err, &nonReplayable) || !api.Retryable(err) {
 		return
 	}
 

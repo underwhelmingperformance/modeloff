@@ -4,11 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
-	"strings"
 	"time"
-
-	"github.com/laney/modeloff/internal/protocol"
 )
 
 // Randomiser supplies the random component of typing-delay jitter as
@@ -95,40 +91,4 @@ func (p *Pacer) duration(body string) (time.Duration, error) {
 	}
 
 	return d, nil
-}
-
-// pacingBody returns the textual content of a chat tool call and
-// reports whether the call should be paced at all. The two chat
-// tools (`msg`, `me`) carry plain text in `body`/`action` or styled
-// runs in `spans`; non-chat tools are emitted at machine speed.
-func pacingBody(name string, args json.RawMessage) (string, bool) {
-	switch name {
-	case "msg", "me":
-	default:
-		return "", false
-	}
-
-	var parsed struct {
-		Body   []string             `json:"body"`
-		Action []string             `json:"action"`
-		Spans  []protocol.ReplySpan `json:"spans"`
-	}
-
-	_ = json.Unmarshal(args, &parsed)
-
-	parts := parsed.Body
-	if len(parts) == 0 {
-		parts = parsed.Action
-	}
-
-	if joined := strings.TrimSpace(strings.Join(parts, " ")); joined != "" {
-		return joined, true
-	}
-
-	var buf strings.Builder
-	for _, sp := range parsed.Spans {
-		buf.WriteString(sp.Text)
-	}
-
-	return buf.String(), true
 }

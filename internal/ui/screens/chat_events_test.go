@@ -569,8 +569,8 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 // names this client. The server runs the ordinary QUIT teardown and
 // the client hears about it on the bus like any other; there is
 // nothing left of the connection to go on rendering, so the screen
-// exits exactly as it does for `/quit`, and ends the session-active
-// marker on the way out.
+// exits exactly as it does for `/quit`. The session clears the
+// session-active marker once the teardown is durable.
 func TestChatScreen_own_kill_ends_the_screen(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")

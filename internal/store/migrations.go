@@ -22,7 +22,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // migration is one forward-only step that brings the database
 // from v(Version-1) to vVersion. Apply runs inside the
@@ -145,6 +145,26 @@ var migrations = []migration{
 				ALTER TABLE memories ADD COLUMN at TEXT NOT NULL DEFAULT ''
 			`); err != nil {
 				return fmt.Errorf("add memories.at: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 6,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE instances ADD COLUMN pending_deletion INTEGER NOT NULL DEFAULT 0
+			`); err != nil {
+				return fmt.Errorf("add instances.pending_deletion: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE pending_memory_deletions (
+					instance_id TEXT PRIMARY KEY
+				)
+			`); err != nil {
+				return fmt.Errorf("create pending_memory_deletions: %w", err)
 			}
 
 			return nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -21,7 +22,7 @@ import (
 func quitToolCall(t testing.TB, message string) api.CompletionResult {
 	t.Helper()
 
-	args, err := json.Marshal(map[string]any{"message": []string{message}})
+	args, err := json.Marshal(map[string]any{"message": message})
 	require.NoError(t, err)
 
 	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
@@ -42,6 +43,7 @@ func quitToolCall(t testing.TB, message string) api.CompletionResult {
 // does.
 func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
 		continues := 0
 		fake := &apitest.Fake{
 			SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
@@ -65,13 +67,18 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 
 		dispatchUserMessage(ctx, t, sess, "#general", "still there?")
 
-		require.Contains(t, collectEmittedEvents(t, sess), domain.Event(domain.Quit{
-			Nick:       "botty",
-			InstanceID: testMemberID("botty"),
-			Message:    "signing off",
-			At:         fixedTime,
-			Instance:   botty,
-		}))
+		require.Equal(t, []domain.Event{
+			bootstrapModeChange(t, sess, bootAt),
+			domain.Message{Target: "#general", From: "testuser", Body: "still there?", At: fixedTime},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.Quit{
+				Nick:       "botty",
+				InstanceID: testMemberID("botty"),
+				Message:    "signing off",
+				At:         fixedTime,
+				Instance:   botty,
+			},
+		}, collectEmittedEvents(t, sess))
 
 		require.Equal(t, 0, continues, "quit ends the turn: there is no client left to ask for another round")
 
@@ -80,6 +87,178 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 		require.False(t, window.Members.HasInstance(botty))
 
 		require.Nil(t, sess.LookupClient(protocol.ClientID(botty.ID())))
+	})
+}
+
+func TestSession_committed_quit_retires_client_before_writer_advances(t *testing.T) {
+	sess, store := newTestSession(t)
+	botty, client := seedPassiveInstance(t, sess, "botty", "test/model")
+
+	var resolveErr error
+	var nickStillConnected bool
+	var activeIDs []protocol.ClientID
+
+	resp, err := sess.onWriter(t.Context(), func(ctx context.Context) (protocol.Response, error) {
+		outcome := sess.quit(ctx, botty, "gone", quitRequiresDeletion)
+
+		_, resolveErr = sess.resolveClientActor(client)
+		nickStillConnected = sess.lookupClientByNick("botty") != nil
+		for _, sub := range sess.subscriberSnapshot() {
+			activeIDs = append(activeIDs, sub.Identity())
+		}
+
+		return commandResult(outcome.err)
+	})
+	require.NoError(t, err)
+	require.Equal(t, protocol.Response{}, resp)
+	postQuitResp, postQuitErr := sess.Handle(t.Context(), client, protocol.Nick{New: "again"})
+	require.Equal(t, protocol.Response{}, postQuitResp)
+
+	var disconnected *ClientDisconnectedError
+	require.ErrorAs(t, resolveErr, &disconnected)
+	require.Equal(t, &ClientDisconnectedError{ID: client.Identity()}, disconnected)
+	disconnected = nil
+	require.ErrorAs(t, postQuitErr, &disconnected)
+	require.Equal(t, &ClientDisconnectedError{ID: client.Identity()}, disconnected)
+	require.False(t, nickStillConnected)
+	require.Equal(t, []protocol.ClientID{protocol.UserClientID}, activeIDs)
+	require.Nil(t, sess.LookupClient(client.Identity()))
+	require.Equal(t, []domain.Event{
+		domain.Quit{
+			Nick:       "botty",
+			InstanceID: botty.ID(),
+			Message:    "gone",
+			At:         fixedTime,
+			Instance:   botty,
+		},
+	}, drainDeliveries(client))
+	_, err = store.ResolveNick(t.Context(), "again")
+	require.ErrorIs(t, err, storemod.ErrNoSuchNick)
+}
+
+func TestSession_user_quit_retires_the_actor_until_connect(t *testing.T) {
+	sess, store := newTestSession(t)
+	client := sess.LookupClient(protocol.UserClientID)
+	require.NotNil(t, client)
+	user := sess.userInstance()
+	require.NoError(t, sess.Connect(t.Context()))
+	drainDeliveries(client)
+
+	resp, err := client.Send(t.Context(), protocol.Quit{Reason: "restart"})
+	require.NoError(t, err)
+	require.Equal(t, protocol.Response{}, resp)
+
+	postQuitResp, postQuitErr := sess.Handle(t.Context(), client, protocol.Nick{New: "again"})
+	var disconnected *ClientDisconnectedError
+	require.ErrorAs(t, postQuitErr, &disconnected)
+	_, resolveErr := store.ResolveNick(t.Context(), "testuser")
+	require.ErrorIs(t, resolveErr, storemod.ErrNoSuchNick)
+	require.Equal(t, struct {
+		active       protocol.Client
+		response     protocol.Response
+		disconnected *ClientDisconnectedError
+		events       []domain.Event
+	}{
+		active:       nil,
+		response:     protocol.Response{},
+		disconnected: &ClientDisconnectedError{ID: protocol.UserClientID},
+		events: []domain.Event{
+			domain.Quit{
+				Nick:       "testuser",
+				InstanceID: protocol.UserClientID,
+				Message:    "restart",
+				At:         fixedTime,
+				Instance:   user,
+			},
+		},
+	}, struct {
+		active       protocol.Client
+		response     protocol.Response
+		disconnected *ClientDisconnectedError
+		events       []domain.Event
+	}{
+		active:       sess.LookupClient(protocol.UserClientID),
+		response:     postQuitResp,
+		disconnected: disconnected,
+		events:       drainDeliveries(client),
+	})
+
+	require.NoError(t, sess.Connect(t.Context()))
+	stored, err := store.ResolveNick(t.Context(), "testuser")
+	require.NoError(t, err)
+	require.Equal(t, struct {
+		active      protocol.Client
+		storedID    domain.InstanceID
+		storedNick  domain.Nick
+		connectedAt time.Time
+		events      []domain.Event
+	}{
+		active:      client,
+		storedID:    protocol.UserClientID,
+		storedNick:  "testuser",
+		connectedAt: fixedTime,
+		events: []domain.Event{
+			domain.Welcome{
+				ServerName: domain.StatusServerName,
+				Nick:       "testuser",
+				At:         fixedTime,
+			},
+		},
+	}, struct {
+		active      protocol.Client
+		storedID    domain.InstanceID
+		storedNick  domain.Nick
+		connectedAt time.Time
+		events      []domain.Event
+	}{
+		active:      sess.LookupClient(protocol.UserClientID),
+		storedID:    stored.ID(),
+		storedNick:  stored.Nick(),
+		connectedAt: sess.ConnectedAt(),
+		events:      drainDeliveries(client),
+	})
+}
+
+func TestSession_user_reactivation_refuses_a_reclaimed_nick(t *testing.T) {
+	sess, store := newTestSession(t)
+	client := sess.LookupClient(protocol.UserClientID)
+	require.NotNil(t, client)
+	require.NoError(t, sess.Connect(t.Context()))
+	drainDeliveries(client)
+
+	resp, err := client.Send(t.Context(), protocol.Quit{Reason: "restart"})
+	require.NoError(t, err)
+	require.Equal(t, protocol.Response{}, resp)
+	drainDeliveries(client)
+
+	replacement := domain.NewModelInstance("inst-replacement", "testuser", "test/model", "", nil)
+	require.NoError(t, store.SaveInstance(t.Context(), replacement))
+
+	err = sess.Connect(t.Context())
+	var nickInUse domain.NickInUseError
+	require.ErrorAs(t, err, &nickInUse)
+	stored, resolveErr := store.ResolveNick(t.Context(), "testuser")
+	require.NoError(t, resolveErr)
+	require.Equal(t, struct {
+		active    protocol.Client
+		nickError domain.NickInUseError
+		storedID  domain.InstanceID
+		events    []domain.Event
+	}{
+		active:    nil,
+		nickError: domain.NickInUseError{Nick: "testuser", At: fixedTime},
+		storedID:  replacement.ID(),
+		events:    nil,
+	}, struct {
+		active    protocol.Client
+		nickError domain.NickInUseError
+		storedID  domain.InstanceID
+		events    []domain.Event
+	}{
+		active:    sess.LookupClient(protocol.UserClientID),
+		nickError: nickInUse,
+		storedID:  stored.ID(),
+		events:    drainDeliveries(client),
 	})
 }
 
@@ -96,6 +275,7 @@ func TestSession_model_quit_tool_ends_its_own_connection(t *testing.T) {
 // is the kind that stops reading in practice.
 func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
 		// The turn parks until the client's own teardown cancels it,
 		// which is what leaves the subscription with nobody reading
 		// it while the flood arrives.
@@ -135,13 +315,18 @@ func TestSession_sendQ_overflow_disconnects_the_client(t *testing.T) {
 
 		synctest.Wait()
 
-		require.Contains(t, collectEmittedEvents(t, sess), domain.Event(domain.Quit{
-			Nick:       "botty",
-			InstanceID: testMemberID("botty"),
-			Message:    sendQExceededReason,
-			At:         fixedTime,
-			Instance:   botty,
-		}))
+		require.Equal(t, []domain.Event{
+			bootstrapModeChange(t, sess, bootAt),
+			domain.Message{Target: "#general", From: "testuser", Body: "are you there?", At: fixedTime},
+			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
+			domain.Quit{
+				Nick:       "botty",
+				InstanceID: testMemberID("botty"),
+				Message:    sendQExceededReason,
+				At:         fixedTime,
+				Instance:   botty,
+			},
+		}, collectEmittedEvents(t, sess))
 
 		require.Nil(t, sess.LookupClient(protocol.ClientID(botty.ID())))
 
@@ -362,8 +547,9 @@ func TestSession_Kill_can_name_the_issuing_client(t *testing.T) {
 // `changeNickAs` makes for NICK, and for the same reason.
 func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 	tests := []struct {
-		name  string
-		setUp func(t *testing.T, sess *Session, ctx context.Context)
+		name     string
+		setUp    func(t *testing.T, sess *Session, ctx context.Context)
+		wantPart bool
 	}{
 		{
 			name:  "on no channels at all",
@@ -374,7 +560,8 @@ func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 			// puts a masked PART there instead, so a client whose
 			// channels all carry `+a` is named nowhere the broadcast
 			// reaches.
-			name: "on anonymous channels only",
+			name:     "on anonymous channels only",
+			wantPart: true,
 			setUp: func(t *testing.T, sess *Session, ctx context.Context) {
 				t.Helper()
 
@@ -405,13 +592,24 @@ func TestSession_Quit_reaches_a_client_the_broadcast_cannot(t *testing.T) {
 				require.NoError(t, resp.Err)
 				synctest.Wait()
 
-				require.Contains(t, collectEmittedEvents(t, sess), domain.Quit{
+				var want []domain.Event
+				if tc.wantPart {
+					want = append(want, domain.Part{
+						Target:  "#hidden",
+						Nick:    domain.AnonymousNick,
+						Message: "Killed by testuser (enough)",
+						At:      fixedTime,
+					})
+				}
+				want = append(want, domain.Quit{
 					Nick:       "testuser",
 					InstanceID: user.ID(),
 					Message:    "Killed by testuser (enough)",
 					At:         fixedTime,
 					Instance:   user,
 				})
+
+				require.Equal(t, want, collectEmittedEvents(t, sess))
 			})
 		})
 	}

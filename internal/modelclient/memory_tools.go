@@ -112,7 +112,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 				err := mem.WriteMemory(ctx, args.Key, args.Content)
 				recordMemoryTool(ctx, "write_memory", err)
 				if err != nil {
-					return ToolResultPayload{}, err
+					return ToolResultPayload{}, &ToolExecutionError{Tool: "write_memory", Err: err}
 				}
 
 				return ToolResultPayload{OK: true, Summary: fmt.Sprintf("stored memory %q", args.Key)}, nil
@@ -146,7 +146,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 				err := mem.DeleteMemory(ctx, args.Key)
 				recordMemoryTool(ctx, "delete_memory", err)
 				if err != nil {
-					return ToolResultPayload{}, err
+					return ToolResultPayload{}, &ToolExecutionError{Tool: "delete_memory", Err: err}
 				}
 
 				return ToolResultPayload{OK: true, Summary: fmt.Sprintf("deleted memory %q", args.Key)}, nil
@@ -188,7 +188,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 				results, err := mem.SearchMemory(ctx, args.Query, args.Limit)
 				recordMemoryTool(ctx, "search_memory", err)
 				if err != nil {
-					return ToolResultPayload{}, err
+					return ToolResultPayload{}, &ToolExecutionError{Tool: "search_memory", Err: err}
 				}
 
 				return ToolResultPayload{OK: true, Summary: fmt.Sprintf("found %d matching memories", len(results)), Data: results}, nil

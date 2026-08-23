@@ -493,7 +493,17 @@ func embeddingUnavailableText(modelID domain.ModelID, probeErr error) string {
 // $nick is preserved across a replace unless the caller explicitly
 // names "-$nick" to drop it; see [applyHighlightWords].
 type HighlightConfig struct {
-	Words []string `arg:"" optional:"" help:"Words to highlight; $nick stays included unless you pass -$nick"`
+	Words HighlightWords `arg:"" optional:"" passthrough:"all" help:"Words to highlight; -$nick disables nickname highlighting"`
+}
+
+// HighlightWords contains the words parsed from the raw command remainder.
+type HighlightWords []string
+
+// UnmarshalText splits the remainder into individual highlight words.
+func (w *HighlightWords) UnmarshalText(text []byte) error {
+	*w = strings.Fields(string(text))
+
+	return nil
 }
 
 // Run implements Command.
@@ -525,7 +535,7 @@ func (c HighlightConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		words := applyHighlightWords(c.Words)
+		words := applyHighlightWords([]string(c.Words))
 
 		if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
 			cfg.HighlightWords = words
@@ -631,7 +641,7 @@ func (c DefaultModesConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // TimestampFormatConfig represents `/config timestamp-format [<format>...]`.
 type TimestampFormatConfig struct {
-	Format []string `arg:"" optional:"" help:"Timestamp format"`
+	Format CommandText `arg:"" optional:"" passthrough:"all" help:"Timestamp format"`
 }
 
 // Run implements Command. A bare invocation prints usage. An empty
@@ -677,8 +687,8 @@ func (c TimestampFormatConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 
 // PersonaConfig represents `/config persona <id> <description...>`.
 type PersonaConfig struct {
-	ID          string   `arg:"" optional:"" help:"Persona identifier"`
-	Description []string `arg:"" optional:"" help:"Persona description"`
+	ID          string      `arg:"" optional:"" help:"Persona identifier"`
+	Description CommandText `arg:"" optional:"" passthrough:"all" help:"Persona description"`
 }
 
 // Run implements Command.
@@ -698,7 +708,7 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 		return usageCmd("config persona", "/config persona <id> <description...>")
 	}
 
-	desc := strings.TrimSpace(strings.Join(c.Description, " "))
+	desc := strings.TrimSpace(c.Description.String())
 	if desc == "" {
 		return usageCmd("config persona", "/config persona <id> <description...>")
 	}
@@ -712,8 +722,8 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 }
 
-func normaliseTimestampFormat(parts []string) *string {
-	joined := strings.TrimSpace(strings.Join(parts, " "))
+func normaliseTimestampFormat(parts CommandText) *string {
+	joined := strings.TrimSpace(parts.String())
 	if joined == `""` || joined == `''` {
 		disabled := ""
 		return &disabled
