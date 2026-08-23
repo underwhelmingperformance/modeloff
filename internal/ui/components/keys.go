@@ -2,9 +2,13 @@ package components
 
 import (
 	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/ui"
 )
+
+const keyChordModifiers tea.KeyMod = tea.ModShift | tea.ModAlt | tea.ModCtrl |
+	tea.ModMeta | tea.ModHyper | tea.ModSuper
 
 // SidebarAction identifies a sidebar keybinding action.
 type SidebarAction int

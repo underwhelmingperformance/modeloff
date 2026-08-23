@@ -409,6 +409,11 @@ func TestMainLayout_window_switch_keys_reach_only_the_sidebar(t *testing.T) {
 			want: components.ActivateIndexMsg{Index: 2},
 		},
 		{
+			name: "lock state does not block alt+3",
+			key:  tea.KeyPressMsg{Code: '3', Mod: tea.ModAlt | tea.ModNumLock},
+			want: components.ActivateIndexMsg{Index: 2},
+		},
+		{
 			name: "alt+a activates next activity",
 			key:  tea.KeyPressMsg{Code: 'a', Mod: tea.ModAlt},
 			want: components.ActivateNextActivityMsg{},

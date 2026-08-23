@@ -416,7 +416,7 @@ func (m MainLayout) translateWindowSwitch(msg tea.KeyPressMsg) (tea.Msg, bool) {
 // directWindowIndex extracts the zero-based window index from an
 // alt+1..alt+9 keypress.
 func directWindowIndex(msg tea.KeyPressMsg) (int, bool) {
-	if msg.Mod != tea.ModAlt || msg.Code < '1' || msg.Code > '9' {
+	if msg.Mod&keyChordModifiers != tea.ModAlt || msg.Code < '1' || msg.Code > '9' {
 		return 0, false
 	}
 

@@ -110,7 +110,7 @@ func (r RichTextarea) handlePaletteKey(msg tea.KeyPressMsg) (RichTextarea, bool)
 // without any modifier, plus a boolean indicating a match. Used by
 // the colour palette to let the user jump straight to a swatch.
 func digitRune(msg tea.KeyPressMsg) (int, bool) {
-	if msg.Mod != 0 || len(msg.Text) != 1 {
+	if msg.Mod&keyChordModifiers != 0 || len(msg.Text) != 1 {
 		return 0, false
 	}
 

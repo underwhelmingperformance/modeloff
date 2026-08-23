@@ -358,6 +358,20 @@ func TestRichTextareaPaletteDigitJump(t *testing.T) {
 	}
 }
 
+func TestRichTextareaPaletteDigitJumpIgnoresLockState(t *testing.T) {
+	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
+	editor.palette.open = true
+
+	updated, _ := editor.Update(tea.KeyPressMsg{
+		Code: '3',
+		Text: "3",
+		Mod:  tea.ModCapsLock | tea.ModNumLock,
+	})
+	editor = updated.(RichTextarea)
+
+	require.Equal(t, 3, editor.PaletteIndex())
+}
+
 func TestRichTextareaPaletteKeyboardTargetsBackgroundForSelection(t *testing.T) {
 	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
 	editor = editor.SetPlainText("hello")
