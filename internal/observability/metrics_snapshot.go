@@ -119,7 +119,9 @@ func snapshotFromResourceMetrics(resourceMetrics metricdata.ResourceMetrics) Met
 			case metricdata.Histogram[float64]:
 				consumeFloat64Histogram(&snapshot, metrics.Name, data)
 			case metricdata.ExponentialHistogram[float64]:
-				consumeDurationHistogram(operations, data)
+				if metrics.Name == MetricOperationDurationMs {
+					consumeDurationHistogram(operations, data)
+				}
 			}
 		}
 	}

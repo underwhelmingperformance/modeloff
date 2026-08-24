@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -26,28 +27,27 @@ func TestRuntime_snapshotMetrics_includes_memory_operations(t *testing.T) {
 		span.End()
 	}
 
+	collectedFrom := time.Now()
 	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)
+	collectedUntil := time.Now()
 
-	type opCount struct {
-		Operation string
-		Count     uint64
-	}
-	got := make([]opCount, 0, len(snapshot.Operations))
-	for _, op := range snapshot.Operations {
-		got = append(got, opCount{op.Operation, op.Count})
-	}
-	require.ElementsMatch(t, []opCount{
-		{"memory.write", 1},
-		{"memory.delete", 1},
-		{"memory.search", 1},
-	}, got)
+	require.WithinRange(t, snapshot.CollectedAt, collectedFrom, collectedUntil)
+	snapshot.CollectedAt = time.Time{}
+	normaliseOperationTimings(t, snapshot.Operations)
 
-	require.ElementsMatch(t, []OperationCountSnapshot{
-		{Operation: "memory.write", Result: ResultOK, Count: 1},
-		{Operation: "memory.delete", Result: ResultOK, Count: 1},
-		{Operation: "memory.search", Result: ResultOK, Count: 1},
-	}, snapshot.OperationCounts)
+	require.Equal(t, MetricsSnapshot{
+		OperationCounts: []OperationCountSnapshot{
+			{Operation: "memory.delete", Result: ResultOK, Count: 1},
+			{Operation: "memory.search", Result: ResultOK, Count: 1},
+			{Operation: "memory.write", Result: ResultOK, Count: 1},
+		},
+		Operations: []OperationTimingSnapshot{
+			{Operation: "memory.delete", Count: 1},
+			{Operation: "memory.search", Count: 1},
+			{Operation: "memory.write", Count: 1},
+		},
+	}, snapshot)
 }
 
 func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
@@ -71,29 +71,61 @@ func TestRuntime_snapshotMetrics_includes_span_derived_usage(t *testing.T) {
 	)
 	span.End()
 
+	collectedFrom := time.Now()
 	snapshot, err := runtime.SnapshotMetrics(ctx)
 	require.NoError(t, err)
+	collectedUntil := time.Now()
 
-	require.Equal(t, int64(1), snapshot.Summary.Requests)
-	require.Equal(t, int64(21), snapshot.Summary.PromptTokens)
-	require.Equal(t, int64(13), snapshot.Summary.CompletionTokens)
-	require.Equal(t, int64(34), snapshot.Summary.TotalTokens)
-	require.Equal(t, int64(5), snapshot.Summary.ReasoningTokens)
-	require.Equal(t, int64(8), snapshot.Summary.CachedTokens)
-	require.Equal(t, int64(3), snapshot.Summary.CacheWriteTokens)
-	require.Equal(t, 0.75, snapshot.Summary.CostCredits)
-	require.Equal(t, []ModelUsageSnapshot{{
-		ModelID:          "anthropic/claude-3-haiku",
-		Requests:         1,
-		PromptTokens:     21,
-		CompletionTokens: 13,
-		TotalTokens:      34,
-		ReasoningTokens:  5,
-		CachedTokens:     8,
-		CacheWriteTokens: 3,
-		CostCredits:      0.75,
-	}}, snapshot.Models)
-	require.NotEmpty(t, snapshot.Operations)
+	require.WithinRange(t, snapshot.CollectedAt, collectedFrom, collectedUntil)
+	snapshot.CollectedAt = time.Time{}
+	normaliseOperationTimings(t, snapshot.Operations)
+
+	require.Equal(t, MetricsSnapshot{
+		Summary: MetricsSummary{
+			Requests:         1,
+			PromptTokens:     21,
+			CompletionTokens: 13,
+			TotalTokens:      34,
+			ReasoningTokens:  5,
+			CachedTokens:     8,
+			CacheWriteTokens: 3,
+			CostCredits:      0.75,
+		},
+		Models: []ModelUsageSnapshot{{
+			ModelID:          "anthropic/claude-3-haiku",
+			Requests:         1,
+			PromptTokens:     21,
+			CompletionTokens: 13,
+			TotalTokens:      34,
+			ReasoningTokens:  5,
+			CachedTokens:     8,
+			CacheWriteTokens: 3,
+			CostCredits:      0.75,
+		}},
+		OperationCounts: []OperationCountSnapshot{{
+			Operation: "api.openrouter.send_events",
+			Result:    ResultTool,
+			Count:     1,
+		}},
+		Operations: []OperationTimingSnapshot{{
+			Operation: "api.openrouter.send_events",
+			Count:     1,
+		}},
+	}, snapshot)
+}
+
+func normaliseOperationTimings(t *testing.T, operations []OperationTimingSnapshot) {
+	t.Helper()
+
+	for i := range operations {
+		operation := &operations[i]
+		require.GreaterOrEqual(t, operation.MinMs, 0.0)
+		require.GreaterOrEqual(t, operation.AverageMs, operation.MinMs)
+		require.GreaterOrEqual(t, operation.MaxMs, operation.AverageMs)
+		operation.AverageMs = 0
+		operation.MinMs = 0
+		operation.MaxMs = 0
+	}
 }
 
 func TestRuntime_snapshotMetrics_counts_tool_follow_up_requests(t *testing.T) {
