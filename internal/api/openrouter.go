@@ -549,23 +549,48 @@ type modelsResponse struct {
 	} `json:"data"`
 }
 
+type listModelsFailure uint8
+
+const (
+	listModelsRequestFailure listModelsFailure = iota + 1
+	listModelsTransportFailure
+	listModelsReadFailure
+	listModelsStatusFailure
+	listModelsDecodeFailure
+)
+
+type listModelsError struct {
+	failure    listModelsFailure
+	statusCode int
+	cause      error
+}
+
+func (e *listModelsError) Error() string {
+	switch e.failure {
+	case listModelsRequestFailure:
+		return "list models: invalid request"
+	case listModelsTransportFailure:
+		return "list models: network error"
+	case listModelsReadFailure:
+		return "list models: response read failed"
+	case listModelsStatusFailure:
+		return fmt.Sprintf("list models: status %d", e.statusCode)
+	case listModelsDecodeFailure:
+		return "list models: invalid response"
+	default:
+		return "list models: failed"
+	}
+}
+
+func (e *listModelsError) Unwrap() error {
+	return e.cause
+}
+
 // responseBodyLogLimit caps how much of an upstream non-2xx body we
 // retain on spans and logs. Large JSON error payloads would otherwise
 // bloat both the trace and the log stream without adding diagnostic
 // value — the leading portion is almost always sufficient.
 const responseBodyLogLimit = 4096
-
-// shapedError carries a user-safe single-line message while preserving
-// the original error in the chain so `errors.Is`/`errors.As` callers
-// (timeouts, cancellation) keep working. Error renders only msg —
-// callers that want the underlying detail must Unwrap.
-type shapedError struct {
-	msg   string
-	cause error
-}
-
-func (e *shapedError) Error() string { return e.msg }
-func (e *shapedError) Unwrap() error { return e.cause }
 
 // truncateBody returns body as a string, capped at limit bytes and
 // suffixed with a marker when truncation occurred. The cut point
@@ -597,15 +622,17 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	err := c.inSpan(ctx, "api.openrouter.list_models", nil, func(ctx context.Context, span trace.Span) error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 		if err != nil {
-			markSpanError(span, observability.ErrorKindTransport, 0, err)
-			return err
+			shaped := &listModelsError{failure: listModelsRequestFailure, cause: err}
+			markSpanError(span, observability.ErrorKindTransport, 0, shaped)
+			logger.ErrorContext(ctx, "openrouter list models request build failed", "error", err)
+			return shaped
 		}
 
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			shaped := &shapedError{msg: "list models: network error", cause: err}
+			shaped := &listModelsError{failure: listModelsTransportFailure, cause: err}
 			markSpanError(span, observability.ErrorKindTransport, 0, shaped)
 			logger.ErrorContext(ctx, "openrouter list models transport failure", "error", err)
 			return shaped
@@ -616,7 +643,7 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 		truncated := truncateBody(body, responseBodyLogLimit)
 
 		if readErr != nil {
-			shaped := &shapedError{msg: "list models: response read failed", cause: readErr}
+			shaped := &listModelsError{failure: listModelsReadFailure, cause: readErr}
 			span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
 			markSpanError(span, observability.ErrorKindTransport, resp.StatusCode, shaped)
 			logger.ErrorContext(ctx, "openrouter list models read failed",
@@ -628,7 +655,10 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 		if resp.StatusCode != http.StatusOK {
 			span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
-			shaped := fmt.Errorf("list models: status %d", resp.StatusCode)
+			shaped := &listModelsError{
+				failure:    listModelsStatusFailure,
+				statusCode: resp.StatusCode,
+			}
 			markSpanError(span, observability.ErrorKindHTTPStatus, resp.StatusCode, shaped)
 			logger.ErrorContext(ctx, "openrouter list models non-2xx",
 				"status", resp.StatusCode,
@@ -639,7 +669,7 @@ func (c *OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 		var mr modelsResponse
 		if err := json.Unmarshal(body, &mr); err != nil {
-			shaped := &shapedError{msg: "list models: invalid response", cause: err}
+			shaped := &listModelsError{failure: listModelsDecodeFailure, cause: err}
 			span.SetAttributes(attribute.String(observability.AttrHTTPResponseBody, truncated))
 			markSpanError(span, observability.ErrorKindResponseParse, 0, shaped)
 			logger.ErrorContext(ctx, "openrouter list models decode failed",

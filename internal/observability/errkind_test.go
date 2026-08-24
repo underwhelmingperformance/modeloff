@@ -76,5 +76,5 @@ func TestErrWithKind_preserves_the_chain(t *testing.T) {
 	tagged := observability.ErrWithKind(cause, observability.ErrorKindNotFound)
 
 	require.ErrorIs(t, tagged, cause)
-	require.Equal(t, cause.Error(), tagged.Error())
+	require.Equal(t, observability.ErrorKindNotFound, observability.ErrorKindOf(tagged))
 }

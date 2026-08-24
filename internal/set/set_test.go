@@ -1,6 +1,7 @@
 package set
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,8 +32,9 @@ func TestSet_Difference(t *testing.T) {
 	for value := range set.Except(New("bob")) {
 		values = append(values, value)
 	}
+	slices.Sort(values)
 
-	require.ElementsMatch(t, []string{"alice", "carol"}, values)
+	require.Equal(t, []string{"alice", "carol"}, values)
 }
 
 func TestSet_Intersection(t *testing.T) {

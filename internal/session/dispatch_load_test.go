@@ -185,17 +185,23 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		snapshots := captured.snapshot()
-		require.NotEmpty(t, snapshots, "the model dispatched at least once")
-
-		var latestReplies []string
-		for _, m := range snapshots[len(snapshots)-1] {
-			if m.Kind == protocol.KindServerReply {
-				latestReplies = append(latestReplies, m.Body)
-			}
-		}
-
-		require.Contains(t, latestReplies, "whois target: test/model",
+		require.Equal(t, [][]protocol.IRCMessage{
+			nil,
+			{
+				{
+					Kind:   protocol.KindPrivMsg,
+					From:   string(userNick(t, sess)),
+					Target: "#general",
+					Body:   "look up target",
+					At:     fixedTime,
+				},
+				{
+					Kind: protocol.KindServerReply,
+					Body: "whois target: test/model",
+					At:   fixedTime,
+				},
+			},
+		}, captured.snapshot(),
 			"botty's own whois reply must re-appear in the latest dispatch's "+
 				"prompt, sourced from the local replies ring")
 	})

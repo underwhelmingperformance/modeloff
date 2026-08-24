@@ -393,6 +393,7 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 		})
 		seedChannelWithMembers(t, sess, s, "#chan", "testuser", "botty")
 		setChannelModes(t, sess, "#chan", domain.ChannelModes{Anonymous: true})
+		_ = collectEmittedEvents(t, sess)
 
 		_, err := userSendMessage(ctx, t, sess, "#chan", "secret")
 		require.NoError(t, err)
@@ -408,12 +409,16 @@ func TestFanOutProtocol_AnonymousRewritesSender(t *testing.T) {
 
 		// The user-client holds echo-message; its own echoed line is
 		// anonymised too (RFC 2811 §4.2.1).
-		require.Contains(t, collectEmittedEvents(t, sess), domain.Message{
-			Target: "#chan",
-			From:   "anonymous",
-			Body:   "secret",
-			At:     fixedTime,
-		})
+		require.Equal(t, []domain.Event{
+			domain.Message{
+				Target: "#chan",
+				From:   "anonymous",
+				Body:   "secret",
+				At:     fixedTime,
+			},
+			domain.ModelDispatchStarted{At: fixedTime},
+			domain.ModelDispatchDone{At: fixedTime},
+		}, collectEmittedEvents(t, sess))
 	})
 }
 

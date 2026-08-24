@@ -80,13 +80,7 @@ func truncateMemoryEntry(e memory.Entry, maxBytes int) memory.Entry {
 // given.
 const personaLineFormat = "\n\nYour persona: %s"
 
-// PersonaLine renders the persona trailer buildSystemPrompt appends
-// when an instance carries a persona, from the same format
-// personaLineFormat holds. It is exported so a caller outside this
-// package, such as a test asserting on an assembled prompt, can build
-// the exact segment to look for instead of restating the format
-// string by hand.
-func PersonaLine(persona string) string {
+func personaLine(persona string) string {
 	return fmt.Sprintf(personaLineFormat, persona)
 }
 
@@ -152,7 +146,7 @@ How to behave:
 	)
 
 	if persona := inst.Persona(); persona != "" {
-		b.WriteString(PersonaLine(persona))
+		b.WriteString(personaLine(persona))
 	}
 
 	b.WriteString(`

@@ -63,7 +63,7 @@ func TestSession_handleJoin_reports_the_canonical_name(t *testing.T) {
 // covers the send path: the message the channel relays, and the row
 // the event log keeps, both carry the channel's own spelling.
 func TestSession_message_to_a_channel_in_another_case_uses_its_name(t *testing.T) {
-	sess, _ := newTestSession(t)
+	sess, s := newTestSession(t)
 	ctx := t.Context()
 
 	require.NoError(t, userJoin(ctx, t, sess, "#Dev"))
@@ -76,9 +76,28 @@ func TestSession_message_to_a_channel_in_another_case_uses_its_name(t *testing.T
 	require.True(t, ok)
 	require.Equal(t, domain.ChannelName("#Dev"), msg.Target)
 
-	stored, err := sess.EventsBefore(ctx, "#Dev", nil, 10)
+	events, err := s.EventsBefore(ctx, "#Dev", nil, 1000)
 	require.NoError(t, err)
-	require.Len(t, stored, 2, "the JOIN and the message are both filed under the one name")
+	require.Equal(t, []domain.StoredEvent{
+		{
+			ID: 1,
+			Event: domain.Join{
+				Target:  "#Dev",
+				Nick:    "testuser",
+				Created: true,
+				At:      fixedTime,
+			},
+		},
+		{
+			ID: 2,
+			Event: domain.Message{
+				Target: "#Dev",
+				From:   "testuser",
+				Body:   "hello",
+				At:     fixedTime,
+			},
+		},
+	}, events, "the JOIN and the message are both filed under the one name")
 }
 
 // TestSession_resolves_a_nick_in_another_case covers RFC 2812 §2.2

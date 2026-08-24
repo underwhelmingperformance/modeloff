@@ -129,7 +129,7 @@ func TestJoinAs_model_joining_existing_channel_gets_RPL_topic_and_names(t *testi
 		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			domain.Join{
 				Target:     "#dev",
 				Nick:       "botty",
@@ -160,7 +160,7 @@ func TestPartAs_model_actor(t *testing.T) {
 		require.NoError(t, sess.partAs(ctx, botty, "#dev", "goodbye"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Part{
 				Target:     "#dev",
@@ -204,7 +204,7 @@ func TestPartAs_non_member_returns_442(t *testing.T) {
 			sess.partAs(ctx, ghost, "#dev", "bye"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 		}, collectEmittedEvents(t, sess))
 
@@ -231,7 +231,7 @@ func TestQuitAs_model_actor(t *testing.T) {
 		require.NoError(t, modelQuitViaWire(ctx, t, sess, botty, "farewell"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Quit{
 				Nick:       "botty",
@@ -291,7 +291,7 @@ func TestKillAs_announces_as_quit(t *testing.T) {
 		require.NoError(t, resp.Err)
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Quit{
 				Nick:       "botty",
@@ -433,7 +433,7 @@ func TestSendMessageAs_model_actor(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Message{
 				Target:     "#dev",
@@ -472,7 +472,7 @@ func TestSendMessageAs_user_actor_echoes_to_originator(t *testing.T) {
 		synctest.Wait()
 
 		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",
@@ -514,7 +514,7 @@ func TestSetTopicAs_model_actor(t *testing.T) {
 		require.NoError(t, sess.setTopicAs(ctx, botty, "#dev", "new topic"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.TopicChange{
 				Target:     "#dev",
@@ -555,7 +555,7 @@ func TestSetTopicAs_no_op_suppresses_event(t *testing.T) {
 		require.NoError(t, sess.setTopicAs(ctx, botty, "#dev", "stable topic"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.TopicChange{
 				Target:     "#dev",
@@ -628,7 +628,7 @@ func TestKickAs_model_actor(t *testing.T) {
 		require.NoError(t, sess.kickAs(ctx, botty, helper, "#dev"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Kicked{
 				Target:       "#dev",
@@ -809,7 +809,7 @@ func TestJoinAs_user_rejoin_preserves_join_time(t *testing.T) {
 		synctest.Wait()
 
 		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#general",
@@ -853,7 +853,7 @@ func TestJoinAs_user_new_channel_emits_join_and_mode(t *testing.T) {
 		synctest.Wait()
 
 		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",
@@ -903,7 +903,7 @@ func TestJoinAs_user_existing_channel_with_topic(t *testing.T) {
 		user := userInstance(t, sess)
 		expectedMembers := testMembers(t, sess, s, "testuser", "alice")
 		expectedMembers.SetModes(user, domain.MemberModes{})
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",
@@ -949,7 +949,7 @@ func TestJoinAs_user_existing_channel_no_topic(t *testing.T) {
 		user := userInstance(t, sess)
 		expectedMembers := testMembers(t, sess, s, "testuser", "alice")
 		expectedMembers.SetModes(user, domain.MemberModes{})
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",
@@ -992,7 +992,7 @@ func TestJoinAs_model_voice_only_no_topic(t *testing.T) {
 		require.NoError(t, joinAs(ctx, sess, botty, "#dev", ""))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",

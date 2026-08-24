@@ -765,7 +765,7 @@ func TestChannelMode_persists_to_channel_log_while_user_mode_does_not(t *testing
 		ctx := t.Context()
 
 		require.NoError(t, userJoin(ctx, t, sess, "#chan"))
-		joinSetupEventsT(t, sess, bootAt, "#chan")
+		prefix := joinSetupEventsT(t, sess, bootAt, "#chan")
 
 		botty := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
@@ -783,9 +783,16 @@ func TestChannelMode_persists_to_channel_log_while_user_mode_does_not(t *testing
 		require.NoError(t, err)
 		synctest.Wait()
 
-		// The user-client received the bootstrap user-mode +o grant on
-		// its bus, proving the grant happened.
-		require.Contains(t, collectEmittedEvents(t, sess), bootstrapModeChange(t, sess, bootAt))
+		require.Equal(t, append(prefix, domain.ChannelModeChange{
+			Target:     "#chan",
+			Nick:       "botty",
+			InstanceID: botty.ID(),
+			Flag:       domain.ModeOperator,
+			Add:        true,
+			By:         "testuser",
+			At:         fixedTime,
+			Instance:   botty,
+		}), collectEmittedEvents(t, sess))
 
 		// Yet the channel log holds only the channel-scoped row; the
 		// user-mode grant left no trace there.

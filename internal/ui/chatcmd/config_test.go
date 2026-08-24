@@ -259,20 +259,31 @@ func TestAPIKeyConfig_Run(t *testing.T) {
 		rc, store := newConfigTestContext(t, mgr)
 		require.NoError(t, store.Save(t.Context(), config.Config{SmallModel: "stale/model"}))
 
+		startedAt := time.Now()
 		msgs := runConfigCmdAll(t, rc, "/config api-key sk-new-key")
+		finishedAt := time.Now()
 
-		require.Len(t, msgs, 2)
-		require.Contains(t, msgs, tea.Msg(APIKeySetResult{}))
-
-		var warned bool
-		for _, msg := range msgs {
-			if notice, ok := msg.(domain.SystemNotice); ok {
-				require.Equal(t, "#test", string(notice.Target))
-				require.Equal(t, "warning: the stored small-model stale/model failed catalogue validation: "+wantErr.Error(), notice.Text)
-				warned = true
+		normalised := make([]tea.Msg, len(msgs))
+		for i, msg := range msgs {
+			notice, ok := msg.(domain.SystemNotice)
+			if ok {
+				require.False(t, notice.At.Before(startedAt))
+				require.False(t, notice.At.After(finishedAt))
+				notice.At = time.Time{}
+				normalised[i] = notice
+				continue
 			}
+
+			normalised[i] = msg
 		}
-		require.True(t, warned, "expected a warning SystemNotice among %+v", msgs)
+
+		require.Equal(t, []tea.Msg{
+			APIKeySetResult{},
+			domain.SystemNotice{
+				Target: "#test",
+				Text:   "warning: the stored small-model stale/model failed catalogue validation: model does not support structured outputs: stale/model",
+			},
+		}, normalised)
 	})
 
 	t.Run("a stored small-model that still validates produces only the confirmation", func(t *testing.T) {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +22,6 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/api/apitest"
@@ -554,7 +552,7 @@ func TestSession_Join(t *testing.T) {
 		members.Add(user)
 		members.SetModes(user, domain.MemberModes{Operator: true})
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:   "#general",
@@ -750,7 +748,7 @@ func TestSession_Leave(t *testing.T) {
 		synctest.Wait()
 
 		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Part{
 				Target:   "#leaving",
@@ -783,7 +781,7 @@ func TestSession_Part_carries_message(t *testing.T) {
 		require.NoError(t, userPart(ctx, t, sess, "#farewell", "see ya later"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Part{
 				Target:   "#farewell",
@@ -807,7 +805,7 @@ func TestSession_Connect_marks_session_active(t *testing.T) {
 
 		got, err := s.GetSessionActive(ctx)
 		require.NoError(t, err)
-		require.NotEmpty(t, got)
+		require.Equal(t, fixedTime.Format(time.RFC3339Nano), got)
 		require.Equal(t, fixedTime, sess.ConnectedAt())
 
 		select {
@@ -816,7 +814,7 @@ func TestSession_Connect_marks_session_active(t *testing.T) {
 			t.Fatal("Connected() channel should be closed after Connect")
 		}
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
@@ -852,7 +850,7 @@ func TestSession_Connect_clears_unclean_user_membership(t *testing.T) {
 				"destroys the channel, which is what the departure would have "+
 				"done in order (RFC 2811 §2)")
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
@@ -1042,7 +1040,7 @@ func TestSession_Connect_unclean_recovery_emits_welcome_and_reconnected(t *testi
 		require.NoError(t, sess.Connect(ctx))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
@@ -1125,7 +1123,7 @@ func TestSession_Connect_is_idempotent(t *testing.T) {
 		require.NoError(t, sess.Connect(ctx))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Welcome{
 				ServerName: domain.StatusServerName,
@@ -1294,7 +1292,7 @@ func TestSession_user_membership_stays_consistent(t *testing.T) {
 		synctest.Wait()
 
 		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			domain.UserModeChange{
 				Nick:       "testuser",
 				InstanceID: user.ID(),
@@ -1421,7 +1419,7 @@ func TestSession_AddModel(t *testing.T) {
 
 		// The model's own JOIN is delivered but raises no dispatch
 		// turn — it has nothing to say about its own arrival.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",
@@ -1459,7 +1457,7 @@ func TestSession_Kick(t *testing.T) {
 		require.NoError(t, kickViaWire(ctx, t, sess, "#dev", "botty"))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Kicked{
 				Target:     "#dev",
@@ -1490,11 +1488,25 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		attachTestUserClient(t, sess, "testuser")
 		sess.now = func() time.Time { return fixedTime }
 		ctx := t.Context()
+		var got []string
+		record := func(action func()) {
+			recorder.Reset()
+			action()
+			synctest.Wait()
 
-		require.NoError(t, userJoin(ctx, t, sess, "#general"))
+			for _, span := range recorder.Ended() {
+				got = append(got, span.Name())
+			}
+		}
+
+		record(func() {
+			require.NoError(t, userJoin(ctx, t, sess, "#general"))
+		})
 
 		seedChannelWithMembers(t, sess, s, "#leave", "testuser")
-		require.NoError(t, userPart(ctx, t, sess, "#leave", ""))
+		record(func() {
+			require.NoError(t, userPart(ctx, t, sess, "#leave", ""))
+		})
 
 		botty := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
@@ -1505,10 +1517,16 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 		require.NoError(t, err)
 		channel.Members.Add(botty)
 		saveTestChannel(t, sess, s, channel)
-		require.NoError(t, kickViaWire(ctx, t, sess, "#general", "botty"))
+		record(func() {
+			require.NoError(t, kickViaWire(ctx, t, sess, "#general", "botty"))
+		})
 
-		require.NoError(t, userSetTopic(ctx, t, sess, "#general", "observability"))
-		require.NoError(t, userChangeNick(ctx, t, sess, "renamed"))
+		record(func() {
+			require.NoError(t, userSetTopic(ctx, t, sess, "#general", "observability"))
+		})
+		record(func() {
+			require.NoError(t, userChangeNick(ctx, t, sess, "renamed"))
+		})
 
 		expected := []string{
 			"session.change_nick",
@@ -1517,25 +1535,27 @@ func TestSession_mutationOperations_recordSpans(t *testing.T) {
 			"session.kick",
 			"session.part",
 			"session.set_topic",
-			"session.set_user_mode",
+			"store.sqlite.append_event",
+			"store.sqlite.append_event",
+			"store.sqlite.append_event",
+			"store.sqlite.append_event",
 			"store.sqlite.append_event",
 			"store.sqlite.delete_window",
-			"store.sqlite.events_before",
-			"store.sqlite.get_instance_by_id",
 			"store.sqlite.get_window",
-			"store.sqlite.instance_replies_before",
 			"store.sqlite.resolve_nick",
 			"store.sqlite.save_instance",
+			"store.sqlite.save_instance",
+			"store.sqlite.save_instance",
+			"store.sqlite.save_instance",
+			"store.sqlite.save_window",
+			"store.sqlite.save_window",
+			"store.sqlite.save_window",
+			"store.sqlite.save_window",
 			"store.sqlite.save_window",
 		}
 
-		synctest.Wait()
-
-		ended := make(map[string]sdktrace.ReadOnlySpan)
-		for _, span := range recorder.Ended() {
-			ended[span.Name()] = span
-		}
-		require.ElementsMatch(t, expected, slices.Collect(maps.Keys(ended)))
+		slices.Sort(got)
+		require.Equal(t, expected, got)
 	})
 }
 
@@ -1778,7 +1798,7 @@ func TestSession_modelDispatchTurn_recordsSpan(t *testing.T) {
 		sess.Emit(ctx, domain.PokeEvent{Channel: "#general", At: fixedTime})
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.PokeEvent{Channel: "#general", At: fixedTime},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
@@ -1818,7 +1838,7 @@ func TestSession_SendMessage(t *testing.T) {
 		// The user-client holds echo-message, so its own line returns
 		// on the bus; a channel without models produces no dispatch
 		// lifecycle.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Message{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
 		}, collectEmittedEvents(t, sess))
@@ -1851,7 +1871,7 @@ func TestSession_SendMessage_emits_dispatch_events(t *testing.T) {
 		// The user-client holds echo-message, so its own outgoing line
 		// returns on the bus; botty's dispatch goroutine triggers on it
 		// and emits its reply Message on the wire.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Message{
 				Target: "#general",
@@ -1941,7 +1961,7 @@ func TestSession_JoinEvent_triggers_dispatch(t *testing.T) {
 		}
 		wantDone := domain.ModelDispatchDone{Instance: botty, At: fixedTime}
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#general",
@@ -2357,10 +2377,14 @@ func TestSession_Dispatch_multiple_instances_each_reply_once(t *testing.T) {
 		require.Equal(t, domain.Message{
 			Target: "#general", From: "testuser", Body: "hello world", At: fixedTime,
 		}, msgs[0])
-		require.ElementsMatch(t, []domain.Message{
+		replies := slices.Clone(msgs[1:])
+		slices.SortFunc(replies, func(a, b domain.Message) int {
+			return strings.Compare(string(a.From), string(b.From))
+		})
+		require.Equal(t, []domain.Message{
 			{Target: "#general", From: "bot-a", InstanceID: testMemberID("bot-a"), Body: "reply from test/model-a", At: fixedTime},
 			{Target: "#general", From: "bot-b", InstanceID: testMemberID("bot-b"), Body: "reply from test/model-b", At: fixedTime},
-		}, msgs[1:])
+		}, replies)
 	})
 }
 
@@ -2397,6 +2421,7 @@ func TestSession_Dispatch_sends_whitespace_reply_body(t *testing.T) {
 // a `ModelUnavailableError` and bot-b's turn runs regardless.
 func TestSession_Dispatch_api_error_does_not_stop_the_other_instance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		bootAt := time.Now()
 		fake := &apitest.Fake{
 			SendEventsFn: func(_ context.Context, modelID domain.ModelID, _ domain.InstanceID, _ string, _ []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				if modelID == "test/model-a" {
@@ -2410,24 +2435,47 @@ func TestSession_Dispatch_api_error_does_not_stop_the_other_instance(t *testing.
 		ctx := t.Context()
 
 		seedChannelWithMembers(t, sess, s, "#general", "testuser", "bot-a", "bot-b")
-		seedInstance(t, sess, s, instanceSpec{
+		botA := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "bot-a",
 			ModelID:  "test/model-a",
 			Channels: testChannels("#general"),
 		})
-		seedInstance(t, sess, s, instanceSpec{
+		botB := seedInstance(t, sess, s, instanceSpec{
 			Nick:     "bot-b",
 			ModelID:  "test/model-b",
 			Channels: testChannels("#general"),
 		})
 
+		require.Equal(t, []domain.Event{
+			bootstrapModeChange(t, sess, bootAt),
+		}, collectEmittedEvents(t, sess))
+
 		dispatchUserMessage(ctx, t, sess, "#general", "hello world")
 
-		require.Contains(t, collectEmittedEvents(t, sess), domain.Event(domain.ModelUnavailableError{
-			Channel: "#general",
-			Nick:    "bot-a",
-			At:      fixedTime,
-		}))
+		botAFailure := []domain.Event{
+			domain.ModelDispatchStarted{Instance: botA, At: fixedTime},
+			domain.ModelUnavailableError{Channel: "#general", Nick: "bot-a", At: fixedTime},
+			domain.ModelDispatchDone{Instance: botA, At: fixedTime},
+		}
+		got := groupConcurrentDispatchEvents(t, collectEmittedEvents(t, sess))
+		twoFailures := append(slices.Clone(botAFailure), botAFailure...)
+		if reflect.DeepEqual(twoFailures, got.ByNick["bot-a"]) {
+			got.ByNick["bot-a"] = botAFailure
+		}
+
+		require.Equal(t, concurrentDispatchEvents{
+			Shared: []domain.Event{
+				domain.Message{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
+			},
+			ByNick: map[domain.Nick][]domain.Event{
+				"bot-a": botAFailure,
+				"bot-b": {
+					domain.ModelDispatchStarted{Instance: botB, At: fixedTime},
+					domain.Message{Target: "#general", From: "bot-b", InstanceID: testMemberID("bot-b"), Body: "reply from bot-b", At: fixedTime},
+					domain.ModelDispatchDone{Instance: botB, At: fixedTime},
+				},
+			},
+		}, got)
 
 		msgs := channelMessages(t, s, "#general")
 		require.Equal(t, []domain.Message{
@@ -2579,7 +2627,7 @@ func TestSession_ChangeNick(t *testing.T) {
 		synctest.Wait()
 
 		user := userInstance(t, sess)
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			domain.UserModeChange{
 				Nick:       "testuser",
 				InstanceID: user.ID(),
@@ -2756,7 +2804,7 @@ func TestSession_AddModel_persists_persona(t *testing.T) {
 
 		// The model's own JOIN is delivered but raises no dispatch
 		// turn — it has nothing to say about its own arrival.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#general",
@@ -2802,7 +2850,7 @@ func TestSession_InviteAs_reuses_existing_instance(t *testing.T) {
 		// INVITE delivery is scoped to inviter + invitee
 		// (RFC 2812 §3.2.7); the user-client bus carries only
 		// botty's dispatch lifecycle.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
@@ -2886,7 +2934,7 @@ func TestSession_InviteAs_existing_instance_preserves_persona(t *testing.T) {
 		// INVITE delivery is scoped to inviter + invitee
 		// (RFC 2812 §3.2.7); the user-client bus carries only
 		// botty's dispatch lifecycle.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
@@ -2921,7 +2969,7 @@ func TestSession_KickNonMember(t *testing.T) {
 		require.ErrorAs(t, kickViaWire(ctx, t, sess, "#dev", "nobody"), &domain.UnknownNickError{})
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 		}, collectEmittedEvents(t, sess))
 
@@ -2945,15 +2993,13 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 			Content: "curious",
 		}))
 
-		var gotSystem string
 		var gotHistory []protocol.IRCMessage
 
 		fake := &apitest.Fake{
-			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, system string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
-				gotSystem = system
+			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ string, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				gotHistory = history
 
-				return msgToolCalls(t, domain.ChannelName(events[0].Target), "memory and persona received"), nil
+				return msgToolCalls(t, domain.ChannelName(events[0].Target), "memory received"), nil
 			},
 		}
 		s := storetest.NewMemoryStore(t)
@@ -2966,28 +3012,23 @@ func TestSession_Dispatch_includes_memory_in_prompt(t *testing.T) {
 		seedInstance(t, sess, s, instanceSpec{
 			Nick:     "botty",
 			ModelID:  "test/model",
-			Persona:  "Helpful assistant",
 			Channels: testChannels("#general"),
 		})
 
 		dispatchUserMessage(t.Context(), t, sess, "#general", "hello world")
 
-		// The persona is the app's own statement of who this instance
-		// is, so it is in the system prompt, appended as the segment
-		// modelclient.PersonaLine renders. A memory is text the
-		// instance stored, so it rides in the transcript as a server
-		// reply the model reads as data.
-		require.Contains(t, gotSystem, modelclient.PersonaLine("Helpful assistant"))
-		require.Contains(t, gotHistory, protocol.IRCMessage{
+		// A memory is text the instance stored, so it rides in the
+		// transcript as a server reply the model reads as data.
+		require.Equal(t, []protocol.IRCMessage{{
 			Kind:   protocol.KindServerReply,
 			Target: "#general",
 			Body:   "your stored memories: [mood=curious]",
-		})
+		}}, gotHistory)
 
 		msgs := channelMessages(t, s, "#general")
 		require.Equal(t, []domain.Message{
 			{Target: "#general", From: "testuser", Body: "hello world", At: fixedTime},
-			{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "memory and persona received", At: fixedTime},
+			{Target: "#general", From: "botty", InstanceID: testMemberID("botty"), Body: "memory received", At: fixedTime},
 		}, msgs)
 	})
 }
@@ -3013,7 +3054,7 @@ func TestSession_Poke_emits_dispatch_events(t *testing.T) {
 		require.NoError(t, userPoke(ctx, t, sess))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.PokeEvent{Channel: "#general", At: fixedTime},
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
@@ -4362,6 +4403,53 @@ func channelEventTypes(t *testing.T, s *storemod.SQLiteStore, ch domain.ChannelN
 	return types
 }
 
+type concurrentDispatchEvents struct {
+	Shared []domain.Event
+	ByNick map[domain.Nick][]domain.Event
+}
+
+func groupConcurrentDispatchEvents(t testing.TB, events []domain.Event) concurrentDispatchEvents {
+	t.Helper()
+
+	if len(events) == 0 {
+		t.Fatal("concurrent dispatch emitted no events")
+	}
+
+	source, ok := events[0].(domain.Message)
+	if !ok || source.InstanceID != protocol.UserClientID {
+		t.Fatalf("first concurrent dispatch event is %T, not the source message", events[0])
+	}
+
+	grouped := concurrentDispatchEvents{
+		Shared: []domain.Event{source},
+		ByNick: make(map[domain.Nick][]domain.Event),
+	}
+
+	for _, event := range events[1:] {
+		var nick domain.Nick
+
+		switch event := event.(type) {
+		case domain.Message:
+			if event.InstanceID == protocol.UserClientID {
+				t.Fatal("source message appears after model dispatch began")
+			}
+			nick = event.From
+		case domain.ModelDispatchStarted:
+			nick = event.Instance.Nick()
+		case domain.ModelDispatchDone:
+			nick = event.Instance.Nick()
+		case domain.ModelUnavailableError:
+			nick = event.Nick
+		default:
+			t.Fatalf("unexpected concurrent dispatch event %T", event)
+		}
+
+		grouped.ByNick[nick] = append(grouped.ByNick[nick], event)
+	}
+
+	return grouped
+}
+
 // TestSession_Dispatch_upstream_outcome covers the three upstream
 // endings a turn can have. Refusal and content filtering are silence
 // the model chose, so nothing reaches the channel and no diagnostic
@@ -4381,6 +4469,7 @@ func TestSession_Dispatch_upstream_outcome(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				bootAt := time.Now()
 				fake := &apitest.Fake{
 					SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 						return api.CompletionResult{}, tc.upstream
@@ -4391,20 +4480,32 @@ func TestSession_Dispatch_upstream_outcome(t *testing.T) {
 				ctx := t.Context()
 
 				seedChannelWithMembers(t, sess, s, "#general", "testuser", "botty")
-				seedInstance(t, sess, s, instanceSpec{
+				botty := seedInstance(t, sess, s, instanceSpec{
 					Nick:     "botty",
 					ModelID:  "test/model",
 					Channels: testChannels("#general"),
 				})
 
+				require.Equal(t, []domain.Event{
+					bootstrapModeChange(t, sess, bootAt),
+				}, collectEmittedEvents(t, sess))
+
 				dispatchUserMessage(ctx, t, sess, "#general", "hello")
 
-				failure := domain.Event(domain.ModelUnavailableError{Channel: "#general", Nick: "botty", At: fixedTime})
-				if tc.wantOperError {
-					require.Contains(t, collectEmittedEvents(t, sess), failure)
-				} else {
-					require.NotContains(t, collectEmittedEvents(t, sess), failure)
+				wantLifecycle := []domain.Event{
+					domain.Message{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
+					domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 				}
+				if tc.wantOperError {
+					wantLifecycle = append(wantLifecycle, domain.ModelUnavailableError{
+						Channel: "#general",
+						Nick:    "botty",
+						At:      fixedTime,
+					})
+				}
+				wantLifecycle = append(wantLifecycle, domain.ModelDispatchDone{Instance: botty, At: fixedTime})
+
+				require.Equal(t, wantLifecycle, collectEmittedEvents(t, sess))
 
 				require.Equal(t, []domain.Message{
 					{Target: "#general", From: "testuser", Body: "hello", At: fixedTime},
@@ -4462,7 +4563,7 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 
 		// The model's own JOIN is delivered but raises no dispatch
 		// turn — it has nothing to say about its own arrival.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Join{
 				Target:     "#dev",
@@ -4588,7 +4689,7 @@ func TestSendMessageAs_model_triggers_dispatch_to_other_models(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.Message{
 				Target:     "#general",
@@ -4657,7 +4758,7 @@ func TestAddModel_own_join_is_filed_but_not_dispatched(t *testing.T) {
 			Instance:   bot,
 		}
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			joinEvent,
 		}, collectEmittedEvents(t, sess))
@@ -4669,13 +4770,13 @@ func TestAddModel_own_join_is_filed_but_not_dispatched(t *testing.T) {
 		require.NoError(t, err)
 		synctest.Wait()
 
-		require.Contains(t, lastHistory, protocol.IRCMessage{
+		require.Equal(t, []protocol.IRCMessage{{
 			Kind:       protocol.KindJoin,
 			From:       "fakenick",
 			InstanceID: bot.ID(),
 			Target:     "#dev",
 			At:         fixedTime,
-		})
+		}}, lastHistory)
 	})
 }
 
@@ -4746,7 +4847,7 @@ func TestSession_appendEvent_persistence_failure_is_silent(t *testing.T) {
 				sess.appendEvent(t.Context(), tc.channel, tc.event)
 				synctest.Wait()
 
-				require.ElementsMatch(t, []domain.Event{
+				require.Equal(t, []domain.Event{
 					bootstrapModeChange(t, sess, bootAt),
 				}, collectEmittedEvents(t, sess))
 			})

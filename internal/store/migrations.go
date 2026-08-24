@@ -24,6 +24,30 @@ import (
 // the single path from v1 onward.
 const SchemaVersion = 6
 
+type schemaTooNewError struct {
+	Found     int
+	Supported int
+}
+
+func (e *schemaTooNewError) Error() string {
+	return fmt.Sprintf(
+		"store schema is v%d but this build expects v%d; downgrades aren't supported",
+		e.Found, e.Supported,
+	)
+}
+
+type missingMigrationError struct {
+	From int
+	To   int
+}
+
+func (e *missingMigrationError) Error() string {
+	return fmt.Sprintf(
+		"store schema is v%d with no migration to reach v%d; delete the store file to start fresh",
+		e.From, e.To,
+	)
+}
+
 // migration is one forward-only step that brings the database
 // from v(Version-1) to vVersion. Apply runs inside the
 // transaction [applyMigrations] opens, so a mid-chain failure
@@ -185,10 +209,7 @@ func applyMigrations(ctx context.Context, db *sql.DB) error {
 	}
 
 	if got > SchemaVersion {
-		return fmt.Errorf(
-			"store schema is v%d but this build expects v%d; downgrades aren't supported",
-			got, SchemaVersion,
-		)
+		return &schemaTooNewError{Found: got, Supported: SchemaVersion}
 	}
 
 	if got == SchemaVersion {
@@ -197,10 +218,7 @@ func applyMigrations(ctx context.Context, db *sql.DB) error {
 
 	missing := missingMigrations(got)
 	if len(missing) == 0 {
-		return fmt.Errorf(
-			"store schema is v%d with no migration to reach v%d; delete the store file to start fresh",
-			got, SchemaVersion,
-		)
+		return &missingMigrationError{From: got, To: SchemaVersion}
 	}
 
 	tx, err := db.BeginTx(ctx, nil)

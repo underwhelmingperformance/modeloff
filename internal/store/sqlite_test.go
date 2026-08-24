@@ -339,18 +339,15 @@ func TestSQLiteStore_SaveWindow_rejects_dm(t *testing.T) {
 func TestSQLiteStore_ListWindows_mixed(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
+	status := domain.NewStatusWindow(testTime)
+	channel := domain.NewChannelWindow("#general", testTime.Add(time.Hour))
 
-	require.NoError(t, s.SaveWindow(ctx, domain.NewStatusWindow(testTime)))
-	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime.Add(time.Hour))))
+	require.NoError(t, s.SaveWindow(ctx, status))
+	require.NoError(t, s.SaveWindow(ctx, channel))
 
 	got, err := s.ListWindows(ctx)
 	require.NoError(t, err)
-
-	kinds := make([]domain.ChannelKind, 0, len(got))
-	for _, w := range got {
-		kinds = append(kinds, w.Kind())
-	}
-	require.ElementsMatch(t, []domain.ChannelKind{domain.KindStatus, domain.KindChannel}, kinds)
+	require.Equal(t, []domain.Window{channel, status}, got)
 }
 
 func TestSQLiteStore_DeleteWindow(t *testing.T) {

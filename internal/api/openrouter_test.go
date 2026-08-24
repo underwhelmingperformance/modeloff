@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -178,26 +179,97 @@ func TestModelInfo_SupportsTools(t *testing.T) {
 	}
 }
 
+type listModelsErrorTestCase struct {
+	name         string
+	baseURL      string
+	serverHandle func() (url string, cleanup func())
+	transport    http.RoundTripper
+	wantError    *listModelsError
+	wantCause    error
+	wantLogError string
+	wantLog      capturedLogRecord
+}
+
+type observedTimeRange struct {
+	startedAt  time.Time
+	finishedAt time.Time
+}
+
 func TestOpenRouterClient_ListModels_error_branches(t *testing.T) {
-	tests := []struct {
-		name         string
-		serverHandle func() (url string, cleanup func())
-		wantErrMsg   string
-		wantLogMsg   string
-	}{
+	transportErr := errors.New("transport failed")
+	readErr := errors.New("read failed")
+	var invalid modelsResponse
+	decodeErr := json.Unmarshal([]byte(`not actually json`), &invalid)
+	require.Error(t, decodeErr)
+	_, requestErr := http.NewRequestWithContext(t.Context(), http.MethodGet, ":/models", nil)
+	require.Error(t, requestErr)
+
+	tests := []listModelsErrorTestCase{
 		{
-			name: "transport failure returns single-line error",
-			serverHandle: func() (string, func()) {
-				srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-				url := srv.URL
-				srv.Close()
-				return url, func() {}
+			name:    "request construction failure is classified",
+			baseURL: ":",
+			wantError: &listModelsError{
+				failure: listModelsRequestFailure,
+				cause:   requestErr,
 			},
-			wantErrMsg: "list models: network error",
-			wantLogMsg: "openrouter list models transport failure",
+			wantLogError: "error",
+			wantLog: capturedLogRecord{
+				Level:   slog.LevelError,
+				Message: "openrouter list models request build failed",
+				Attrs: []capturedLogValue{
+					{Path: []string{"component"}, Value: "api.openrouter"},
+					{Path: []string{"error"}, Value: listModelsRequestFailure},
+				},
+			},
 		},
 		{
-			name: "non-2xx returns shaped status error",
+			name: "transport failure is classified",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, transportErr
+			}),
+			wantError: &listModelsError{
+				failure: listModelsTransportFailure,
+				cause: &url.Error{
+					Op:  "Get",
+					URL: "http://openrouter.invalid/models",
+					Err: transportErr,
+				},
+			},
+			wantCause:    transportErr,
+			wantLogError: "error",
+			wantLog: capturedLogRecord{
+				Level:   slog.LevelError,
+				Message: "openrouter list models transport failure",
+				Attrs: []capturedLogValue{
+					{Path: []string{"component"}, Value: "api.openrouter"},
+					{Path: []string{"error"}, Value: listModelsTransportFailure},
+				},
+			},
+		},
+		{
+			name: "response read failure is classified",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       &errorReadCloser{err: readErr},
+				}, nil
+			}),
+			wantError:    &listModelsError{failure: listModelsReadFailure, cause: readErr},
+			wantCause:    readErr,
+			wantLogError: "body_read_error",
+			wantLog: capturedLogRecord{
+				Level:   slog.LevelError,
+				Message: "openrouter list models read failed",
+				Attrs: []capturedLogValue{
+					{Path: []string{"component"}, Value: "api.openrouter"},
+					{Path: []string{"status"}, Value: int64(http.StatusOK)},
+					{Path: []string{"body_read_error"}, Value: listModelsReadFailure},
+				},
+			},
+		},
+		{
+			name: "non-2xx records its status",
 			serverHandle: func() (string, func()) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -205,11 +277,22 @@ func TestOpenRouterClient_ListModels_error_branches(t *testing.T) {
 				}))
 				return srv.URL, srv.Close
 			},
-			wantErrMsg: "list models: status 503",
-			wantLogMsg: "openrouter list models non-2xx",
+			wantError: &listModelsError{
+				failure:    listModelsStatusFailure,
+				statusCode: http.StatusServiceUnavailable,
+			},
+			wantLog: capturedLogRecord{
+				Level:   slog.LevelError,
+				Message: "openrouter list models non-2xx",
+				Attrs: []capturedLogValue{
+					{Path: []string{"component"}, Value: "api.openrouter"},
+					{Path: []string{"status"}, Value: int64(http.StatusServiceUnavailable)},
+					{Path: []string{"modeloff.http_response_body"}, Value: `{"error":"upstream"}`},
+				},
+			},
 		},
 		{
-			name: "decode failure returns single-line error",
+			name: "decode failure is classified",
 			serverHandle: func() (string, func()) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusOK)
@@ -217,32 +300,161 @@ func TestOpenRouterClient_ListModels_error_branches(t *testing.T) {
 				}))
 				return srv.URL, srv.Close
 			},
-			wantErrMsg: "list models: invalid response",
-			wantLogMsg: "openrouter list models decode failed",
+			wantError:    &listModelsError{failure: listModelsDecodeFailure, cause: decodeErr},
+			wantLogError: "decode_error",
+			wantLog: capturedLogRecord{
+				Level:   slog.LevelError,
+				Message: "openrouter list models decode failed",
+				Attrs: []capturedLogValue{
+					{Path: []string{"component"}, Value: "api.openrouter"},
+					{Path: []string{"decode_error"}, Value: listModelsDecodeFailure},
+					{Path: []string{"modeloff.http_response_body"}, Value: "not actually json"},
+				},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var buf apiLogBuffer
-			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-			slog.SetDefault(slog.New(handler))
+			logs := newCapturedLogHandler()
+			slog.SetDefault(slog.New(logs))
 			t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil))) })
 
-			url, cleanup := tt.serverHandle()
+			url := "http://openrouter.invalid"
+			if tt.baseURL != "" {
+				url = tt.baseURL
+			}
+			cleanup := func() {}
+			if tt.serverHandle != nil {
+				url, cleanup = tt.serverHandle()
+			}
 			t.Cleanup(cleanup)
 
-			client := NewOpenRouterClient("test-key", url, &http.Client{Timeout: time.Second})
+			client := NewOpenRouterClient("test-key", url, &http.Client{
+				Timeout:   time.Second,
+				Transport: tt.transport,
+			})
 
+			observedAt := observedTimeRange{startedAt: time.Now()}
 			_, err := client.ListModels(t.Context())
-			require.Error(t, err)
-			require.Equal(t, tt.wantErrMsg, err.Error())
-			require.NotContains(t, err.Error(), "\n", "user-facing error must be single line")
+			observedAt.finishedAt = time.Now()
 
-			record := buf.find(tt.wantLogMsg)
-			require.NotNil(t, record, "expected %q log entry", tt.wantLogMsg)
+			listErr := requireListModelsError(t, err, tt)
+			records := normaliseListModelsLogs(t, logs.snapshot(), observedAt, tt, listErr)
+			require.Equal(t, []capturedLogRecord{tt.wantLog}, records)
 		})
 	}
+}
+
+func requireListModelsError(
+	t *testing.T,
+	err error,
+	tt listModelsErrorTestCase,
+) *listModelsError {
+	t.Helper()
+	require.Error(t, err)
+
+	var listErr *listModelsError
+	require.ErrorAs(t, err, &listErr)
+	require.Equal(t, tt.wantError, listErr)
+
+	if tt.wantCause != nil {
+		require.ErrorIs(t, err, tt.wantCause)
+	}
+	if tt.wantError.cause == nil {
+		require.NoError(t, listErr.Unwrap())
+	}
+
+	return listErr
+}
+
+func normaliseListModelsLogs(
+	t *testing.T,
+	records []capturedLogRecord,
+	observedAt observedTimeRange,
+	tt listModelsErrorTestCase,
+	listErr *listModelsError,
+) []capturedLogRecord {
+	t.Helper()
+
+	for i := range records {
+		record := &records[i]
+		require.False(t, record.Time.Before(observedAt.startedAt))
+		require.False(t, record.Time.After(observedAt.finishedAt))
+		record.Time = time.Time{}
+
+		if tt.wantLogError == "" || record.Message != tt.wantLog.Message {
+			continue
+		}
+
+		for j := range record.Attrs {
+			attr := &record.Attrs[j]
+			if len(attr.Path) != 1 || attr.Path[0] != tt.wantLogError {
+				continue
+			}
+
+			loggedErr, ok := attr.Value.(error)
+			require.True(t, ok, "log field %q has type %T, not error", tt.wantLogError, attr.Value)
+			require.Same(t, listErr.Unwrap(), loggedErr)
+			if tt.wantCause != nil {
+				require.ErrorIs(t, loggedErr, tt.wantCause)
+			}
+			attr.Value = tt.wantError.failure
+		}
+	}
+
+	return records
+}
+
+func TestCapturedLogHandler_preserves_attribute_order_and_duplicates(t *testing.T) {
+	logs := newCapturedLogHandler()
+	logger := slog.New(logs).With("bound", "first")
+
+	startedAt := time.Now()
+	logger.LogAttrs(t.Context(), slog.LevelInfo, "record",
+		slog.String("duplicate", "one"),
+		slog.String("duplicate", "two"),
+		slog.String("", "empty key"),
+		slog.Group("group", slog.Int("number", 3)),
+	)
+	finishedAt := time.Now()
+
+	records := logs.snapshot()
+	for i := range records {
+		require.False(t, records[i].Time.Before(startedAt))
+		require.False(t, records[i].Time.After(finishedAt))
+		records[i].Time = time.Time{}
+	}
+
+	require.Equal(t, []capturedLogRecord{{
+		Level:   slog.LevelInfo,
+		Message: "record",
+		Attrs: []capturedLogValue{
+			{Path: []string{"bound"}, Value: "first"},
+			{Path: []string{"duplicate"}, Value: "one"},
+			{Path: []string{"duplicate"}, Value: "two"},
+			{Path: []string{""}, Value: "empty key"},
+			{Path: []string{"group", "number"}, Value: int64(3)},
+		},
+	}}, records)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type errorReadCloser struct {
+	err error
+}
+
+func (r *errorReadCloser) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func (*errorReadCloser) Close() error {
+	return nil
 }
 
 // TestOpenRouterClient_SendEvents_ignoresContent pins the new
@@ -1499,6 +1711,121 @@ func newToolCallServer(t *testing.T, tc toolCallFixture) *httptest.Server {
 }
 
 // --- Log capture ---
+
+type capturedLogRecord struct {
+	Time    time.Time
+	Level   slog.Level
+	Message string
+	Attrs   []capturedLogValue
+}
+
+type capturedLogValue struct {
+	Path  []string
+	Value any
+}
+
+type capturedLogAttr struct {
+	groups []string
+	attr   slog.Attr
+}
+
+type capturedLogSink struct {
+	mu      sync.Mutex
+	records []capturedLogRecord
+}
+
+type capturedLogHandler struct {
+	sink   *capturedLogSink
+	attrs  []capturedLogAttr
+	groups []string
+}
+
+func newCapturedLogHandler() *capturedLogHandler {
+	return &capturedLogHandler{sink: &capturedLogSink{}}
+}
+
+func (*capturedLogHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *capturedLogHandler) Handle(_ context.Context, record slog.Record) error {
+	var attrs []capturedLogValue
+	for _, bound := range h.attrs {
+		addCapturedLogAttr(&attrs, bound.groups, bound.attr)
+	}
+	record.Attrs(func(attr slog.Attr) bool {
+		addCapturedLogAttr(&attrs, h.groups, attr)
+		return true
+	})
+
+	h.sink.mu.Lock()
+	h.sink.records = append(h.sink.records, capturedLogRecord{
+		Time:    record.Time,
+		Level:   record.Level,
+		Message: record.Message,
+		Attrs:   attrs,
+	})
+	h.sink.mu.Unlock()
+
+	return nil
+}
+
+func (h *capturedLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	bound := append([]capturedLogAttr(nil), h.attrs...)
+	for _, attr := range attrs {
+		bound = append(bound, capturedLogAttr{
+			groups: append([]string(nil), h.groups...),
+			attr:   attr,
+		})
+	}
+
+	return &capturedLogHandler{
+		sink:   h.sink,
+		attrs:  bound,
+		groups: append([]string(nil), h.groups...),
+	}
+}
+
+func (h *capturedLogHandler) WithGroup(name string) slog.Handler {
+	groups := append([]string(nil), h.groups...)
+	if name != "" {
+		groups = append(groups, name)
+	}
+
+	return &capturedLogHandler{
+		sink:   h.sink,
+		attrs:  append([]capturedLogAttr(nil), h.attrs...),
+		groups: groups,
+	}
+}
+
+func (h *capturedLogHandler) snapshot() []capturedLogRecord {
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+
+	return append([]capturedLogRecord(nil), h.sink.records...)
+}
+
+func addCapturedLogAttr(attrs *[]capturedLogValue, groups []string, attr slog.Attr) {
+	if attr.Equal(slog.Attr{}) {
+		return
+	}
+
+	value := attr.Value.Resolve()
+	if value.Kind() == slog.KindGroup {
+		memberGroups := groups
+		if attr.Key != "" {
+			memberGroups = append(append([]string(nil), groups...), attr.Key)
+		}
+		for _, member := range value.Group() {
+			addCapturedLogAttr(attrs, memberGroups, member)
+		}
+		return
+	}
+
+	path := append(append([]string(nil), groups...), attr.Key)
+	*attrs = append(*attrs, capturedLogValue{Path: path, Value: value.Any()})
+}
 
 type apiLogBuffer struct {
 	mu  sync.Mutex

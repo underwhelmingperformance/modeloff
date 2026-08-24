@@ -1,9 +1,11 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -13,6 +15,14 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/store/storetest"
 )
+
+func searchResultsByKey(results []SearchResult) []SearchResult {
+	ordered := slices.Clone(results)
+	slices.SortFunc(ordered, func(a, b SearchResult) int {
+		return cmp.Compare(a.Entry.Key, b.Entry.Key)
+	})
+	return ordered
+}
 
 // fakeEmbedder produces deterministic embeddings by assigning each
 // topic keyword a unit vector in a different dimension. This makes
@@ -340,15 +350,15 @@ func TestIndexedStore_Search_returns_relevant_entries(t *testing.T) {
 	require.NoError(t, err)
 
 	// The top result is deterministic (exact topic match). The
-	// remaining results tie at similarity 0, so use ElementsMatch.
+	// remaining results tie at similarity 0, so compare them by key.
 	require.Equal(t, SearchResult{
 		Entry:      Entry{Key: "cat_fact", Content: "cats sleep 16 hours a day"},
 		Similarity: 1.0,
 	}, results[0])
-	require.ElementsMatch(t, []SearchResult{
+	require.Equal(t, searchResultsByKey([]SearchResult{
 		{Entry: Entry{Key: "dog_fact", Content: "dogs are loyal companions"}, Similarity: 0},
 		{Entry: Entry{Key: "fish_fact", Content: "fish breathe through gills"}, Similarity: 0},
-	}, results[1:])
+	}), searchResultsByKey(results[1:]))
 }
 
 func TestIndexedStore_Search_respects_limit(t *testing.T) {
@@ -364,7 +374,7 @@ func TestIndexedStore_Search_respects_limit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "one", Content: "a first entry"}, Similarity: 1.0},
-	}, results)
+	}, searchResultsByKey(results))
 }
 
 func TestIndexedStore_Search_zero_limit_returns_all(t *testing.T) {
@@ -378,11 +388,11 @@ func TestIndexedStore_Search_zero_limit_returns_all(t *testing.T) {
 
 	results, err := store.Search(ctx, id, "query", 0)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []SearchResult{
+	require.Equal(t, searchResultsByKey([]SearchResult{
 		{Entry: Entry{Key: "one", Content: "first"}, Similarity: 1.0},
 		{Entry: Entry{Key: "two", Content: "second"}, Similarity: 1.0},
 		{Entry: Entry{Key: "three", Content: "third"}, Similarity: 1.0},
-	}, results)
+	}), searchResultsByKey(results))
 }
 
 func TestIndexedStore_Search_negative_limit_returns_all(t *testing.T) {
@@ -395,10 +405,10 @@ func TestIndexedStore_Search_negative_limit_returns_all(t *testing.T) {
 
 	results, err := store.Search(ctx, id, "query", -1)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []SearchResult{
+	require.Equal(t, searchResultsByKey([]SearchResult{
 		{Entry: Entry{Key: "one", Content: "first"}, Similarity: 1.0},
 		{Entry: Entry{Key: "two", Content: "second"}, Similarity: 1.0},
-	}, results)
+	}), searchResultsByKey(results))
 }
 
 func TestIndexedStore_Search_empty_collection(t *testing.T) {
@@ -610,9 +620,9 @@ func TestIndexedStore_Search_reconverges_a_partially_diverged_index(t *testing.T
 
 	results, err := store.Search(ctx, id, "dogs", 5)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []SearchResult{
-		{Entry: Entry{Key: "cat_fact", Content: "cats are great"}, Similarity: 0},
+	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "dog_fact", Content: "dogs are loyal"}, Similarity: 1.0},
+		{Entry: Entry{Key: "cat_fact", Content: "cats are great"}, Similarity: 0},
 	}, results)
 
 	require.Equal(t, 2, col.Count(), "the missing entry was reindexed")

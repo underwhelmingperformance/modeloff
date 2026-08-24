@@ -143,7 +143,9 @@ func TestSession_pokeQuietWindows_prunes_backoff_for_destroyed_channels(t *testi
 		synctest.Wait()
 		_ = collectEmittedEvents(t, sess)
 
-		require.Contains(t, sess.pokeBackoffState, domain.ChannelName("#temp"))
+		require.Equal(t, map[domain.ChannelName]pokeBackoff{
+			"#temp": {multiplier: 2},
+		}, sess.pokeBackoffState)
 
 		require.NoError(t, userPart(ctx, t, sess, "#temp", "bye"))
 		synctest.Wait()
@@ -152,7 +154,7 @@ func TestSession_pokeQuietWindows_prunes_backoff_for_destroyed_channels(t *testi
 		require.NoError(t, sess.pokeQuietWindows(ctx))
 		synctest.Wait()
 
-		require.NotContains(t, sess.pokeBackoffState, domain.ChannelName("#temp"))
+		require.Equal(t, map[domain.ChannelName]pokeBackoff{}, sess.pokeBackoffState)
 	})
 }
 
@@ -172,7 +174,7 @@ func TestSession_PokeNow_pokes_every_channel(t *testing.T) {
 		require.NoError(t, sess.PokeNow(ctx))
 		synctest.Wait()
 
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			domain.PokeEvent{Channel: "#busy", At: fixedTime},
 			domain.PokeEvent{Channel: "#quiet", At: fixedTime},
 		}, collectEmittedEvents(t, sess))

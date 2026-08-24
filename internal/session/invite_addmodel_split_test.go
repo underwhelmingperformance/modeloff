@@ -2,7 +2,7 @@ package session
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -70,7 +70,7 @@ func TestInviteAs_does_not_auto_attach_existing_model(t *testing.T) {
 		// INVITE is scoped to inviter + invitee (RFC 2812 §3.2.7).
 		// The user-client bus carries only botty's dispatch
 		// lifecycle: the invite itself does not broadcast.
-		require.ElementsMatch(t, []domain.Event{
+		require.Equal(t, []domain.Event{
 			bootstrapModeChange(t, sess, bootAt),
 			domain.ModelDispatchStarted{Instance: botty, At: fixedTime},
 			domain.ModelDispatchDone{Instance: botty, At: fixedTime},
@@ -144,10 +144,11 @@ func TestAddModel_unwinds_a_client_that_could_not_connect(t *testing.T) {
 
 		factory, ok := sess.modelClientFactory.(*testModelClientFactory)
 		require.True(t, ok)
-		factory.attachErr = fmt.Errorf("upstream unavailable")
+		attachErr := errors.New("upstream unavailable")
+		factory.attachErr = attachErr
 
 		err := addModelViaWire(ctx, t, sess, "#general", "anthropic/claude-3-haiku", "Helpful")
-		require.ErrorContains(t, err, "upstream unavailable")
+		require.ErrorIs(t, err, attachErr)
 
 		synctest.Wait()
 

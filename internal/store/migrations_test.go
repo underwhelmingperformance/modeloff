@@ -164,7 +164,9 @@ func TestApplyMigrations_newer_database_fails_loud(t *testing.T) {
 	require.NoError(t, err)
 
 	err = applyMigrations(ctx, db)
-	require.ErrorContains(t, err, "downgrades aren't supported")
+	var versionErr *schemaTooNewError
+	require.ErrorAs(t, err, &versionErr)
+	require.Equal(t, &schemaTooNewError{Found: 999, Supported: SchemaVersion}, versionErr)
 }
 
 func TestApplyMigrations_older_database_without_migration_fails_loud(t *testing.T) {
@@ -188,7 +190,9 @@ func TestApplyMigrations_older_database_without_migration_fails_loud(t *testing.
 	require.NoError(t, err)
 
 	err = applyMigrations(ctx, db)
-	require.ErrorContains(t, err, "no migration to reach")
+	var migrationErr *missingMigrationError
+	require.ErrorAs(t, err, &migrationErr)
+	require.Equal(t, &missingMigrationError{From: 0, To: SchemaVersion}, migrationErr)
 }
 
 // TestApplyMigrations_v1_to_v2_adds_dm_thread_support recreates the

@@ -459,7 +459,8 @@ func TestFileStore_OnChange_multiple_callbacks(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	require.ElementsMatch(t, []int{0, 1, 2}, order)
+	slices.Sort(order)
+	require.Equal(t, []int{0, 1, 2}, order)
 }
 
 func TestFileStore_OnChange_concurrent_safety(t *testing.T) {

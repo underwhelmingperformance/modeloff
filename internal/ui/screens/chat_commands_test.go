@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/modelmanager"
 	"github.com/laney/modeloff/internal/protocol"
@@ -274,10 +275,13 @@ func TestChatScreen_join_completion_offers_unjoined_directory_channel(t *testing
 	completer := screen.completionSet()
 	c := completer.Complete("/join #u", len("/join #u"))
 
-	var values []string
-	for _, s := range c.Suggestions {
-		values = append(values, s.Value)
-	}
-
-	require.Contains(t, values, "#unjoined")
+	require.Equal(t, command.Completion{
+		Visible: true,
+		Suggestions: []command.Suggestion{
+			{Value: "#unjoined", Label: "#unjoined"},
+		},
+		ReplaceStart: 6,
+		ReplaceEnd:   8,
+		TypedPrefix:  "#u",
+	}, c)
 }
