@@ -857,7 +857,10 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, guard p
 			return protocol.Response{}, fmt.Errorf("add model issuer: %w", protocol.ErrSubscriptionClosed)
 		}
 
-		registered, registerErr := s.registerModelAs(ctx, cmd.Channel, cmd.Model, prepared.Nick, prepared.Persona)
+		registered, registerErr := s.registerModelAs(
+			ctx, cmd.Channel, cmd.Model, prepared.Nick,
+			prepared.Persona, prepared.PersonaTemplate,
+		)
 		if registerErr != nil {
 			return commandResult(registerErr)
 		}

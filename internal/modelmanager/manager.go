@@ -16,6 +16,7 @@ package modelmanager
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -791,12 +792,14 @@ func (m *Manager) PrepareInstance(
 ) (session.PreparedInstance, error) {
 	logger := slog.Default().With("component", "modelmanager", "model_id", modelID)
 
-	resolvedPersona, assigned, err := m.resolvePersona(ctx, persona)
+	resolvedPersona, template, assigned, err := m.resolvePersona(ctx, persona)
 	if err != nil {
 		return session.PreparedInstance{}, err
 	}
 
-	prepared := session.PreparedInstance{Persona: resolvedPersona}
+	prepared := session.PreparedInstance{
+		Persona: resolvedPersona, PersonaTemplate: template,
+	}
 	if assigned {
 		if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
 			return prepared, domain.ErroneousPersonaError{Reason: reason, At: m.now()}
@@ -822,6 +825,7 @@ func (m *Manager) PrepareInstance(
 				fmt.Sprintf("no persona was assigned to %s (%v); it joins without one", modelID, err))
 		} else {
 			prepared.Persona = p.Description
+			prepared.PersonaTemplate = personaTemplateProvenance(p)
 		}
 	}
 
@@ -841,23 +845,35 @@ func (m *Manager) PrepareInstance(
 
 // resolvePersona copies a persona template when requested is its exact ID.
 // Text that does not identify a template remains a literal persona.
-func (m *Manager) resolvePersona(ctx context.Context, requested string) (string, bool, error) {
+func (m *Manager) resolvePersona(
+	ctx context.Context,
+	requested string,
+) (string, *domain.PersonaTemplateProvenance, bool, error) {
 	if requested == "" {
-		return "", false, nil
+		return "", nil, false, nil
 	}
 
 	personas, err := m.store.ListPersonas(ctx)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve persona %q: %w", requested, err)
+		return "", nil, false, fmt.Errorf("resolve persona %q: %w", requested, err)
 	}
 
 	for _, persona := range personas {
 		if persona.ID == requested {
-			return persona.Description, true, nil
+			return persona.Description, personaTemplateProvenance(persona), true, nil
 		}
 	}
 
-	return requested, true, nil
+	return requested, nil, true, nil
+}
+
+func personaTemplateProvenance(persona domain.Persona) *domain.PersonaTemplateProvenance {
+	hash := sha256.Sum256([]byte(persona.Description))
+
+	return &domain.PersonaTemplateProvenance{
+		ID: persona.ID, Origin: persona.Origin,
+		DescriptionHash: fmt.Sprintf("%x", hash),
+	}
 }
 
 // Start attaches the boot-time model-instance set to sess. Each

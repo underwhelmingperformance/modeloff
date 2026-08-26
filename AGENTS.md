@@ -1321,6 +1321,15 @@ is given and not argued for. It is immutable, and it is the revision a
 reset selects. Its text is kept on the lineage as `Baseline` as well,
 so the text a reset restores can be read without walking to the root.
 
+Revision zero's description is the persona template resolved for the
+instance at ADDMODEL time, and the lineage records where that text came
+from: the template's id, its origin and a hash of its description, so an
+operator can tell which pool row an instance started from after the pool
+row itself has been edited. A lineage created before those columns
+existed carries none of it, and neither does one written from
+operator-supplied text or with no persona available, so an absent
+provenance is read as unrecorded and not as an absent template.
+
 A reset, a rollback and an operator edit each move the current-revision
 pointer through the one compare-and-swap in `movePersonaRevisionTx`,
 which updates the lineage only while it still names the revision the

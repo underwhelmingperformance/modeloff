@@ -1469,6 +1469,7 @@ func (s *Session) registerModelAs(
 	modelID domain.ModelID,
 	nick domain.Nick,
 	persona string,
+	template *domain.PersonaTemplateProvenance,
 ) (*domain.Instance, error) {
 	var inst *domain.Instance
 
@@ -1493,7 +1494,9 @@ func (s *Session) registerModelAs(
 			nil,
 		)
 
-		if err := s.store.SaveInstance(ctx, inst); err != nil {
+		if err := s.store.SaveModelInstance(ctx, inst, store.PersonaFoundation{
+			Template: template, CreatedAt: s.now(),
+		}); err != nil {
 			return fmt.Errorf("save instance: %w", err)
 		}
 

@@ -2320,6 +2320,29 @@ func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domai
 // `instances` row. Registering the handle in the canonical map
 // ensures a subsequent `GetInstanceByID` returns the same pointer.
 func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) error {
+	return s.saveInstance(ctx, inst, nil)
+}
+
+// SaveModelInstance records a newly prepared model instance, its persona
+// lineage and its revision zero in one transaction, so a failure leaves
+// neither the instance nor a lineage without one.
+func (s *SQLiteStore) SaveModelInstance(
+	ctx context.Context,
+	inst *domain.Instance,
+	foundation PersonaFoundation,
+) error {
+	if !inst.IsModel() {
+		return errors.New("save model instance: instance has no model")
+	}
+
+	return s.saveInstance(ctx, inst, &foundation)
+}
+
+func (s *SQLiteStore) saveInstance(
+	ctx context.Context,
+	inst *domain.Instance,
+	foundation *PersonaFoundation,
+) error {
 	// One snapshot answers every read this save makes: the span
 	// attribute, the INSERT columns, the marshaled data blob and the
 	// persona revision zero is created with. Reading the live instance
@@ -2357,7 +2380,9 @@ func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) e
 			}
 
 			if saved.IsModel() {
-				if err := ensurePersonaLineageTx(ctx, tx, saved.ID(), saved.Persona()); err != nil {
+				if err := ensurePersonaLineageTx(
+					ctx, tx, saved.ID(), saved.Persona(), foundation,
+				); err != nil {
 					return err
 				}
 			}

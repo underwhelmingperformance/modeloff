@@ -65,6 +65,47 @@ func TestSQLiteStore_creates_immutable_revision_zero_with_a_model_instance(t *te
 	})
 }
 
+func TestSQLiteStore_records_revision_zero_template_provenance_atomically(t *testing.T) {
+	stored := storetest.NewMemoryStore(t)
+	instance := domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "careful and curious", nil,
+	)
+	createdAt := time.Date(2026, 8, 27, 16, 0, 0, 0, time.UTC)
+	template := domain.PersonaTemplateProvenance{
+		ID: "careful-reader", Origin: domain.PersonaUser,
+		DescriptionHash: "sha256:copied-description",
+	}
+
+	require.NoError(t, stored.SaveModelInstance(
+		t.Context(), instance,
+		storemod.PersonaFoundation{Template: &template, CreatedAt: createdAt},
+	))
+	state, err := stored.PersonaLineage(t.Context(), instance.ID())
+	require.NoError(t, err)
+	revision, err := stored.PersonaRevision(t.Context(), state.CurrentRevisionID)
+	require.NoError(t, err)
+
+	require.Equal(t, personaFoundationState{
+		Lineage: domain.PersonaLineage{
+			InstanceID: instance.ID(), Baseline: "careful and curious",
+			Template: &domain.PersonaTemplateProvenance{
+				ID: "careful-reader", Origin: domain.PersonaUser,
+				DescriptionHash: "sha256:copied-description",
+			},
+			CurrentRevisionID: state.CurrentRevisionID,
+			CreatedAt:         createdAt,
+		},
+		Revision: domain.PersonaRevision{
+			ID: state.CurrentRevisionID, InstanceID: instance.ID(),
+			Description:         "careful and curious",
+			DescriptionEvidence: []domain.ExperienceID{},
+			ExperienceIDs:       []domain.ExperienceID{},
+			AmendmentIDs:        []domain.PersonaAmendmentID{},
+			CreatedAt:           createdAt,
+		},
+	}, personaFoundationState{Lineage: state, Revision: revision})
+}
+
 func TestSQLiteStore_instance_deletion_removes_persona_lineage(t *testing.T) {
 	store := storetest.NewMemoryStore(t)
 	instance := domain.NewModelInstance(

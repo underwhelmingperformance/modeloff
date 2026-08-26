@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 16
+const SchemaVersion = 17
 
 type schemaTooNewError struct {
 	Found     int
@@ -629,6 +629,23 @@ var migrations = []migration{
 					ON reflection_events (instance_id, sequence)
 			`); err != nil {
 				return fmt.Errorf("index reflection events: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 17,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			statements := []migrationStatement{
+				{"add persona template id", `ALTER TABLE persona_lineages ADD COLUMN template_id TEXT`},
+				{"add persona template origin", `ALTER TABLE persona_lineages ADD COLUMN template_origin TEXT`},
+				{"add persona template hash", `ALTER TABLE persona_lineages ADD COLUMN template_hash TEXT`},
+			}
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+					return fmt.Errorf("%s: %w", statement.name, err)
+				}
 			}
 
 			return nil

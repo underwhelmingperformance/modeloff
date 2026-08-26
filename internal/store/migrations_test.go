@@ -131,12 +131,15 @@ func TestApplyMigrations_fresh_database_records_current_version(t *testing.T) {
 }
 
 type personaBackfillState struct {
-	InstanceID  domain.InstanceID
-	Baseline    string
-	Description string
-	ParentID    *int64
-	Checkpoint  int64
-	CreatedAt   string
+	InstanceID     domain.InstanceID
+	Baseline       string
+	Description    string
+	TemplateID     *string
+	TemplateOrigin *string
+	TemplateHash   *string
+	ParentID       *int64
+	Checkpoint     int64
+	CreatedAt      string
 }
 
 func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.T) {
@@ -176,6 +179,7 @@ func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.
 	var got personaBackfillState
 	require.NoError(t, db.QueryRowContext(ctx, `
 		SELECT state.instance_id, state.baseline, revision.description,
+		       state.template_id, state.template_origin, state.template_hash,
 		       revision.parent_id,
 		       state.checkpoint, state.created_at
 		FROM persona_lineages AS state
@@ -185,6 +189,9 @@ func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.
 		&got.InstanceID,
 		&got.Baseline,
 		&got.Description,
+		&got.TemplateID,
+		&got.TemplateOrigin,
+		&got.TemplateHash,
 		&got.ParentID,
 		&got.Checkpoint,
 		&got.CreatedAt,

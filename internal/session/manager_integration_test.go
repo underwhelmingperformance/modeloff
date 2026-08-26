@@ -69,6 +69,12 @@ type transientDMHistoryStore struct {
 	err            error
 }
 
+type personaRegistrationState struct {
+	Baseline  string
+	Template  *domain.PersonaTemplateProvenance
+	CreatedAt bool
+}
+
 func (s *transientDMHistoryStore) DMEventsBefore(
 	ctx context.Context,
 	self domain.InstanceID,
@@ -349,7 +355,19 @@ func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(
 
 	inst, err := eventStore.ResolveNick(ctx, "careful-reader")
 	require.NoError(t, err)
-	require.Equal(t, "checks the source before reaching a conclusion", inst.Persona())
+	state, err := eventStore.PersonaLineage(ctx, inst.ID())
+	require.NoError(t, err)
+	require.Equal(t, personaRegistrationState{
+		Baseline: "checks the source before reaching a conclusion",
+		Template: &domain.PersonaTemplateProvenance{
+			ID: personaID, Origin: domain.PersonaUser,
+			DescriptionHash: "da042dab335afd71b1dbd0c857aa0dd5f87028ba80412154adcc180729697204",
+		},
+		CreatedAt: true,
+	}, personaRegistrationState{
+		Baseline: state.Baseline, Template: state.Template,
+		CreatedAt: !state.CreatedAt.IsZero(),
+	})
 }
 
 func TestSession_AddModel_does_not_admit_a_client_killed_during_attach(t *testing.T) {

@@ -114,6 +114,7 @@ type Store interface {
 	ListInstances(ctx context.Context) ([]*domain.Instance, error)
 	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 	SaveInstance(ctx context.Context, inst *domain.Instance) error
+	SaveModelInstance(ctx context.Context, inst *domain.Instance, foundation store.PersonaFoundation) error
 	DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error
 	MarkInstancePendingDeletion(ctx context.Context, id domain.InstanceID) error
 
@@ -1092,6 +1093,10 @@ type PreparedInstance struct {
 	// matched template's description, unmatched literal text from the
 	// requester, or one drawn from the pool.
 	Persona string
+
+	// PersonaTemplate identifies the template copied into Persona. It is nil
+	// when the operator supplied literal text or no persona was available.
+	PersonaTemplate *domain.PersonaTemplateProvenance
 
 	// Warnings describes, for the operator, each part of the
 	// preparation that fell short without failing the command. A

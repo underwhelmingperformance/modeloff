@@ -62,6 +62,10 @@ func TestPrepareInstance_assigns_a_pool_persona_without_warning(t *testing.T) {
 	require.Equal(t, session.PreparedInstance{
 		Nick:    "gpt-5-4",
 		Persona: "a terse reviewer",
+		PersonaTemplate: &domain.PersonaTemplateProvenance{
+			ID: "p1", Origin: domain.PersonaGenerated,
+			DescriptionHash: "a5d1a15a189842e2e80250db9a52d0ec8d3cbf35a10fd28ae78e7cd494582e36",
+		},
 	}, prepared)
 }
 
@@ -100,6 +104,10 @@ func TestPrepareInstance_copies_a_requested_persona_template(t *testing.T) {
 	require.Equal(t, session.PreparedInstance{
 		Nick:    "gpt-5-4",
 		Persona: "checks the source before reaching a conclusion",
+		PersonaTemplate: &domain.PersonaTemplateProvenance{
+			ID: "careful-reader", Origin: domain.PersonaUser,
+			DescriptionHash: "da042dab335afd71b1dbd0c857aa0dd5f87028ba80412154adcc180729697204",
+		},
 	}, prepared)
 }
 
@@ -138,6 +146,10 @@ func TestPrepareInstance_copies_an_empty_persona_template(t *testing.T) {
 
 	require.Equal(t, session.PreparedInstance{
 		Nick: "gpt-5-4",
+		PersonaTemplate: &domain.PersonaTemplateProvenance{
+			ID: "blank-slate", Origin: domain.PersonaUser,
+			DescriptionHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		},
 	}, prepared)
 }
 

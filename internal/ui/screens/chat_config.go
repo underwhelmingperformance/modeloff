@@ -125,6 +125,20 @@ func formatPersonaResult(result chatcmd.PersonaResult) string {
 		)
 	}
 	fmt.Fprintf(&text, "\nReset baseline: %s", inspection.Lineage.Baseline)
+	if inspection.Lineage.Template == nil {
+		// Not "none". A null provenance means the lineage predates the
+		// column, or was written from operator-supplied text, or had no
+		// persona available, and the row does not say which. An instance
+		// migrated from before the column may well have come from a pool
+		// row, so claiming it started from nothing would be false.
+		text.WriteString("\nTemplate: not recorded")
+	} else {
+		fmt.Fprintf(
+			&text, "\nTemplate: %s (%s; sha256 %s)",
+			inspection.Lineage.Template.ID, inspection.Lineage.Template.Origin,
+			inspection.Lineage.Template.DescriptionHash,
+		)
+	}
 
 	text.WriteString("\nExperiences:")
 	if len(inspection.Experiences) == 0 {
