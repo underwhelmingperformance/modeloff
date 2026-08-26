@@ -201,3 +201,28 @@ type PersonaTransition struct {
 	Kind           PersonaTransitionKind
 	At             time.Time
 }
+
+// PersonaCounterpart gives an operator the current display name for an actor
+// that persona lineage names: the subject of an experience, or the counterpart
+// of a relationship-scoped amendment.
+type PersonaCounterpart struct {
+	InstanceID InstanceID
+	Nick       Nick
+}
+
+// PersonaInspection is the bounded operator view of one instance's
+// active persona revision and recent reflection diagnostics.
+//
+// Parent is the revision the active one was derived from, which is what
+// makes the change at this revision readable. It is nil for revision zero.
+type PersonaInspection struct {
+	Nick         Nick
+	Lineage      PersonaLineage
+	Revision     PersonaRevision
+	Parent       *PersonaRevision
+	Experiences  []Experience
+	Amendments   []PersonaAmendment
+	Counterparts []PersonaCounterpart
+	RecentRuns   []ReflectionRun
+	Transitions  []PersonaTransition
+}

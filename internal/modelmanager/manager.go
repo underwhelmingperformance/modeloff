@@ -69,6 +69,40 @@ type Store interface {
 		ctx context.Context,
 		instanceID domain.InstanceID,
 	) (store.PersonaSnapshot, error)
+	PersonaInspection(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		runs, transitions int,
+	) (store.PersonaInspectionSnapshot, error)
+	ReflectionRuns(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		limit int,
+	) ([]domain.ReflectionRun, error)
+	PersonaTransitions(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+	) ([]domain.PersonaTransition, error)
+	ResetPersona(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		expectedRevision domain.PersonaRevisionID,
+		at time.Time,
+	) (domain.PersonaLineage, error)
+	RollbackPersona(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		expectedRevision domain.PersonaRevisionID,
+		targetRevision domain.PersonaRevisionID,
+		at time.Time,
+	) (domain.PersonaLineage, error)
+	WritePersonaDescription(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		expectedRevision domain.PersonaRevisionID,
+		description string,
+		at time.Time,
+	) (domain.PersonaLineage, error)
 }
 
 // Config is the construction-time configuration for a [Manager].

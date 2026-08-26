@@ -15,8 +15,13 @@ var ErrReflectionRunConflict = errors.New("reflection run conflicts with recorde
 // ErrNoReflectionRun reports that a reflection run does not exist.
 var ErrNoReflectionRun = errors.New("no reflection run")
 
-// RecordReflectionRun stores a bounded diagnostic outcome without changing the
-// persona revision or checkpoint. Repeating the same run is idempotent.
+// RecordReflectionRun stores a bounded diagnostic outcome without changing
+// the persona revision or checkpoint.
+//
+// Repeating the same run is idempotent, and repeating a run id with
+// different metadata is refused with [ErrReflectionRunConflict], both for
+// as long as the row survives retention. A repeat arriving after
+// `reflectionRunRetentionHeadroom` later attempts records a new run.
 func (s *SQLiteStore) RecordReflectionRun(
 	ctx context.Context,
 	run domain.ReflectionRun,
@@ -80,6 +85,59 @@ func (s *SQLiteStore) ReflectionRun(
 	}
 
 	return run, nil
+}
+
+// ReflectionRuns returns the most recently finished reflection diagnostics for
+// one instance. A non-positive limit returns an empty slice.
+func (s *SQLiteStore) ReflectionRuns(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	limit int,
+) ([]domain.ReflectionRun, error) {
+	return reflectionRunsTx(ctx, s.db, instanceID, limit)
+}
+
+// reflectionRunsTx reads an instance's newest runs through whichever of
+// the database and a transaction the caller holds, so an inspection can
+// take them in the same read as the persona state.
+func reflectionRunsTx(
+	ctx context.Context,
+	queryer rowsQueryer,
+	instanceID domain.InstanceID,
+	limit int,
+) ([]domain.ReflectionRun, error) {
+	if limit <= 0 {
+		return []domain.ReflectionRun{}, nil
+	}
+
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT id, instance_id, base_revision_id, prior_checkpoint,
+		       high_water_mark, result_revision_id, model_id, outcome,
+		       rejection_reason, proposed_experiences, accepted_experiences,
+		       proposed_amendments, accepted_amendments, started_at, finished_at
+		FROM reflection_runs
+		WHERE instance_id = ?
+		ORDER BY finished_at DESC, id DESC
+		LIMIT ?
+	`, instanceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read reflection runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	runs := make([]domain.ReflectionRun, 0, limit)
+	for rows.Next() {
+		run, err := scanReflectionRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read reflection runs: %w", err)
+	}
+
+	return runs, nil
 }
 
 func sameReflectionRun(a, b domain.ReflectionRun) bool {

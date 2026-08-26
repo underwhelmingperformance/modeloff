@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -280,6 +281,85 @@ func (s *SQLiteStore) PersonaTransitions(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read persona transitions: %w", err)
 	}
+
+	return transitions, nil
+}
+
+type personaTransitionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanPersonaTransition(
+	scanner personaTransitionScanner,
+) (domain.PersonaTransition, error) {
+	var transition domain.PersonaTransition
+	var at string
+	if err := scanner.Scan(
+		&transition.ID,
+		&transition.InstanceID,
+		&transition.FromRevisionID,
+		&transition.ToRevisionID,
+		&transition.Kind,
+		&at,
+	); err != nil {
+		return domain.PersonaTransition{}, fmt.Errorf("scan persona transition: %w", err)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return domain.PersonaTransition{}, fmt.Errorf("parse persona transition time: %w", err)
+	}
+	transition.At = parsed
+
+	return transition, nil
+}
+
+// RecentPersonaTransitions returns the bounded newest suffix of an instance's
+// revision-pointer history in chronological order.
+func (s *SQLiteStore) RecentPersonaTransitions(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	limit int,
+) ([]domain.PersonaTransition, error) {
+	return recentPersonaTransitionsTx(ctx, s.db, instanceID, limit)
+}
+
+// recentPersonaTransitionsTx reads through whichever of the database and
+// a transaction the caller holds, so an inspection can take the
+// transitions in the same read as the persona state.
+func recentPersonaTransitionsTx(
+	ctx context.Context,
+	queryer rowsQueryer,
+	instanceID domain.InstanceID,
+	limit int,
+) ([]domain.PersonaTransition, error) {
+	if limit <= 0 {
+		return []domain.PersonaTransition{}, nil
+	}
+
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT id, instance_id, from_revision_id, to_revision_id, kind, at
+		FROM persona_transitions
+		WHERE instance_id = ?
+		ORDER BY id DESC
+		LIMIT ?
+	`, instanceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read recent persona transitions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	transitions := make([]domain.PersonaTransition, 0, limit)
+	for rows.Next() {
+		transition, err := scanPersonaTransition(rows)
+		if err != nil {
+			return nil, err
+		}
+		transitions = append(transitions, transition)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read recent persona transitions: %w", err)
+	}
+	slices.Reverse(transitions)
 
 	return transitions, nil
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
+const reflectionRunRetentionHeadroom = 100
+
 // ErrPersonaLineageChanged reports that a reflection result was based on an
 // older revision or checkpoint.
 var ErrPersonaLineageChanged = errors.New("persona lineage changed")
@@ -115,6 +117,14 @@ func (s *SQLiteStore) PersonaSnapshot(
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	return personaSnapshotTx(ctx, tx, instanceID)
+}
+
+func personaSnapshotTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	instanceID domain.InstanceID,
+) (PersonaSnapshot, error) {
 	state, err := personaLineageTx(ctx, tx, instanceID)
 	if err != nil {
 		return PersonaSnapshot{}, err
@@ -140,8 +150,16 @@ func (s *SQLiteStore) PersonaSnapshot(
 
 // CommitPersonaReflection atomically records accepted experiences and
 // amendments, creates the next revision when needed, and advances the
-// reflection checkpoint. Repeating one RunID returns the first committed
-// result.
+// reflection checkpoint.
+//
+// Repeating one RunID returns the first committed result, for as long as
+// that run is one of the newest `reflectionRunRetentionHeadroom` this
+// instance has recorded. Retention removes the row the answer is read
+// from, so a retry arriving after that many later attempts is a new
+// commit against a lineage that has moved, and is refused with
+// [ErrPersonaLineageChanged]. A retry follows its own attempt by
+// seconds, so what bounds the guarantee is the instance's own reflection
+// rate.
 func (s *SQLiteStore) CommitPersonaReflection(
 	ctx context.Context,
 	acceptance PersonaReflectionAcceptance,
@@ -877,6 +895,21 @@ func insertReflectionRunTx(
 	if err != nil {
 		return fmt.Errorf("insert reflection run: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY instance_id ORDER BY finished_at DESC, id DESC
+				) AS position
+			FROM reflection_runs
+			WHERE instance_id = ?
+		)
+		DELETE FROM reflection_runs WHERE id IN (
+			SELECT id FROM ranked WHERE position > ?
+		)
+	`, run.InstanceID, reflectionRunRetentionHeadroom); err != nil {
+		return fmt.Errorf("trim reflection runs: %w", err)
+	}
 
 	return nil
 }
@@ -944,36 +977,49 @@ func reflectionRunTx(
 	tx *sql.Tx,
 	runID domain.ReflectionRunID,
 ) (domain.ReflectionRun, bool, error) {
-	var run domain.ReflectionRun
-	var startedAt, finishedAt string
-	err := tx.QueryRowContext(ctx, `
+	run, err := scanReflectionRun(tx.QueryRowContext(ctx, `
 		SELECT id, instance_id, base_revision_id, prior_checkpoint,
 		       high_water_mark, result_revision_id, model_id, outcome,
 		       rejection_reason, proposed_experiences, accepted_experiences,
 		       proposed_amendments, accepted_amendments, started_at, finished_at
 		FROM reflection_runs WHERE id = ?
-	`, runID).Scan(
+	`, runID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ReflectionRun{}, false, nil
+	}
+	if err != nil {
+		return domain.ReflectionRun{}, false, err
+	}
+
+	return run, true, nil
+}
+
+type reflectionRunScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanReflectionRun(scanner reflectionRunScanner) (domain.ReflectionRun, error) {
+	var run domain.ReflectionRun
+	var startedAt, finishedAt string
+	err := scanner.Scan(
 		&run.ID, &run.InstanceID, &run.BaseRevisionID, &run.PriorCheckpoint,
 		&run.HighWaterMark, &run.ResultRevisionID, &run.ModelID, &run.Outcome,
 		&run.RejectionReason, &run.ProposedExperiences, &run.AcceptedExperiences,
 		&run.ProposedAmendments, &run.AcceptedAmendments, &startedAt, &finishedAt,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.ReflectionRun{}, false, nil
-	}
 	if err != nil {
-		return domain.ReflectionRun{}, false, fmt.Errorf("read reflection run: %w", err)
+		return domain.ReflectionRun{}, fmt.Errorf("read reflection run: %w", err)
 	}
 	run.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt)
 	if err != nil {
-		return domain.ReflectionRun{}, false, fmt.Errorf("parse reflection start: %w", err)
+		return domain.ReflectionRun{}, fmt.Errorf("parse reflection start: %w", err)
 	}
 	run.FinishedAt, err = time.Parse(time.RFC3339Nano, finishedAt)
 	if err != nil {
-		return domain.ReflectionRun{}, false, fmt.Errorf("parse reflection finish: %w", err)
+		return domain.ReflectionRun{}, fmt.Errorf("parse reflection finish: %w", err)
 	}
 
-	return run, true, nil
+	return run, nil
 }
 
 func personaExperiencesTx(

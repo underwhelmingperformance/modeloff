@@ -67,6 +67,25 @@ const cursorExclusion = `id NOT IN (
 	SELECT event_id FROM dm_last_read
 )`
 
+// retentionPass is one bound the store enforces, named by the attribute
+// and log key it reports under.
+type retentionPass struct {
+	name string
+	run  func(context.Context) (int64, error)
+}
+
+// retentionPasses is every per-table bound, in the order the pass runs
+// them. A new bounded table is one entry here.
+func (s *SQLiteStore) retentionPasses() []retentionPass {
+	return []retentionPass{
+		{"channel", s.pruneAllChannelEvents},
+		{"channel_scrollback", s.pruneChannelScrollback},
+		{"instance_replies", s.pruneInstanceReplies},
+		{"dm", s.pruneAllDMEvents},
+		{"model_turns", s.pruneModelTurns},
+	}
+}
+
 // pruneEvents runs the store's retention pass over the events table:
 // pruneOrphanChannelEvents first removes rows no consumer can reach
 // at all, then every live channel and every pair of DM
@@ -95,80 +114,44 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			return err
 		}
 
-		channelNames, err := queryRows(ctx, s.db, `SELECT name FROM channels ORDER BY name`, nil,
-			scalarColumn[domain.ChannelName]())
-		if err != nil {
-			return fmt.Errorf("list channels: %w", err)
-		}
-
-		var channelTrimmed int64
-		for _, name := range channelNames {
-			n, err := s.pruneChannelEvents(ctx, name)
+		trimmed := make(map[string]int64, len(s.retentionPasses()))
+		var total int64
+		for _, pass := range s.retentionPasses() {
+			removed, err := pass.run(ctx)
 			if err != nil {
-				return fmt.Errorf("prune channel %q events: %w", name, err)
+				return fmt.Errorf("prune %s: %w", pass.name, err)
 			}
-			channelTrimmed += n
+			trimmed[pass.name] = removed
+			total += removed
 		}
 
-		scrollbackTrimmed, err := s.pruneChannelScrollback(ctx)
-		if err != nil {
-			return fmt.Errorf("prune channel scrollback: %w", err)
-		}
-
-		repliesTrimmed, err := s.pruneInstanceReplies(ctx)
-		if err != nil {
-			return fmt.Errorf("prune instance replies: %w", err)
-		}
-
-		pairs, err := s.dmPairs(ctx)
-		if err != nil {
-			return fmt.Errorf("list dm pairs: %w", err)
-		}
-
-		var dmTrimmed int64
-		for _, pair := range pairs {
-			n, err := s.pruneDMEvents(ctx, pair)
-			if err != nil {
-				return fmt.Errorf("prune dm thread between %q and %q: %w", pair.self, pair.peer, err)
-			}
-			dmTrimmed += n
-		}
-
-		modelTurnsTrimmed, err := s.pruneModelTurns(ctx)
-		if err != nil {
-			return fmt.Errorf("prune model turns: %w", err)
-		}
-
-		span.SetAttributes(
+		attrs := []attribute.KeyValue{
 			attribute.Int64("modeloff.retention.orphaned_removed", orphans.channelEvents),
 			attribute.Int64("modeloff.retention.dm_orphaned_removed", orphans.dmEvents),
 			attribute.Int64("modeloff.retention.channel_scrollback_orphaned_removed", orphans.channelScrollback),
 			attribute.Int64("modeloff.retention.instance_replies_orphaned_removed", orphans.instanceReplies),
 			attribute.Int64("modeloff.retention.model_turns_orphaned_removed", orphans.modelTurns),
 			attribute.Int64("modeloff.retention.context_summaries_orphaned_removed", orphans.contextSummaries),
-			attribute.Int64("modeloff.retention.channel_trimmed", channelTrimmed),
-			attribute.Int64("modeloff.retention.channel_scrollback_trimmed", scrollbackTrimmed),
-			attribute.Int64("modeloff.retention.instance_replies_trimmed", repliesTrimmed),
-			attribute.Int64("modeloff.retention.dm_trimmed", dmTrimmed),
-			attribute.Int64("modeloff.retention.model_turns_trimmed", modelTurnsTrimmed),
-		)
+		}
+		fields := []any{
+			"component", "store.sqlite",
+			"orphaned_removed", orphans.channelEvents,
+			"dm_orphaned_removed", orphans.dmEvents,
+			"channel_scrollback_orphaned_removed", orphans.channelScrollback,
+			"instance_replies_orphaned_removed", orphans.instanceReplies,
+			"model_turns_orphaned_removed", orphans.modelTurns,
+			"context_summaries_orphaned_removed", orphans.contextSummaries,
+		}
+		for _, pass := range s.retentionPasses() {
+			attrs = append(attrs, attribute.Int64(
+				"modeloff.retention."+pass.name+"_trimmed", trimmed[pass.name],
+			))
+			fields = append(fields, pass.name+"_trimmed", trimmed[pass.name])
+		}
+		span.SetAttributes(attrs...)
 
-		if orphans.total()+
-			channelTrimmed+scrollbackTrimmed+repliesTrimmed+dmTrimmed+modelTurnsTrimmed > 0 {
-			slog.Default().InfoContext(ctx, "event retention pass",
-				"component", "store.sqlite",
-				"orphaned_removed", orphans.channelEvents,
-				"dm_orphaned_removed", orphans.dmEvents,
-				"channel_scrollback_orphaned_removed", orphans.channelScrollback,
-				"instance_replies_orphaned_removed", orphans.instanceReplies,
-				"model_turns_orphaned_removed", orphans.modelTurns,
-				"context_summaries_orphaned_removed", orphans.contextSummaries,
-				"channel_trimmed", channelTrimmed,
-				"channel_scrollback_trimmed", scrollbackTrimmed,
-				"instance_replies_trimmed", repliesTrimmed,
-				"dm_trimmed", dmTrimmed,
-				"model_turns_trimmed", modelTurnsTrimmed,
-			)
+		if orphans.total()+total > 0 {
+			slog.Default().InfoContext(ctx, "event retention pass", fields...)
 		}
 
 		// A no-op against a database that predates auto_vacuum(incremental)
@@ -182,6 +165,47 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 
 		return nil
 	})
+}
+
+// pruneAllChannelEvents trims every channel's event log, which is bounded
+// per channel rather than per instance.
+func (s *SQLiteStore) pruneAllChannelEvents(ctx context.Context) (int64, error) {
+	names, err := queryRows(ctx, s.db, `SELECT name FROM channels ORDER BY name`, nil,
+		scalarColumn[domain.ChannelName]())
+	if err != nil {
+		return 0, fmt.Errorf("list channels: %w", err)
+	}
+
+	var trimmed int64
+	for _, name := range names {
+		removed, err := s.pruneChannelEvents(ctx, name)
+		if err != nil {
+			return 0, fmt.Errorf("channel %q: %w", name, err)
+		}
+		trimmed += removed
+	}
+
+	return trimmed, nil
+}
+
+// pruneAllDMEvents trims every direct-message thread, which is bounded per
+// pair of correspondents.
+func (s *SQLiteStore) pruneAllDMEvents(ctx context.Context) (int64, error) {
+	pairs, err := s.dmPairs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list dm pairs: %w", err)
+	}
+
+	var trimmed int64
+	for _, pair := range pairs {
+		removed, err := s.pruneDMEvents(ctx, pair)
+		if err != nil {
+			return 0, fmt.Errorf("thread between %q and %q: %w", pair.self, pair.peer, err)
+		}
+		trimmed += removed
+	}
+
+	return trimmed, nil
 }
 
 type orphanRetention struct {
