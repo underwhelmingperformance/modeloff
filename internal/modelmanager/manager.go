@@ -65,6 +65,10 @@ type Store interface {
 		candidates []store.ReflectionEventCandidate,
 		createdAt time.Time,
 	) error
+	PersonaSnapshot(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+	) (store.PersonaSnapshot, error)
 }
 
 // Config is the construction-time configuration for a [Manager].
@@ -930,6 +934,7 @@ func (m *Manager) Attach(
 		Journal:         sess,
 		Contexts:        sess,
 		Reflections:     m.reflectionInbox(),
+		Personas:        m.store,
 		Now:             m.now,
 	})
 	attaching := &clientAttachment{done: make(chan struct{})}

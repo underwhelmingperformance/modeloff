@@ -184,7 +184,8 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 
 			return observability.ErrWithKind(err, observability.ErrorKindClientState)
 		}
-		prompt := buildSystemPrompt(turn.window, nick, inst.Persona())
+		persona := mc.personaSnapshot(ctx, inst)
+		prompt := buildSystemPrompt(turn.window, nick, activePersona(inst, persona))
 
 		var mem MemoryExecutor
 		if mc.memStore != nil {
@@ -206,6 +207,9 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 		)
 		relevantMemoryContext := slices.Concat(rawRecent, turn.events)
 		contextLines := contextReplies(turn.window, memories, relevantMemoryContext)
+		contextLines = append(contextLines, mc.personaContextLines(
+			ctx, persona, inst, turn.window.Target(), relevantMemoryContext, projection,
+		)...)
 		projectedRecent := renderTurnHistory(
 			turn.history, turn.replies, nil, projection,
 		)
@@ -323,6 +327,78 @@ func recordPromptRejection(client api.Client, modelID domain.ModelID, budget Con
 	}
 
 	estimator.RecordPromptRejection(modelID, budget.RequestBytes, budget.PromptLimit)
+}
+
+// personaSnapshot reads the instance's active persona revision and its
+// bounded state. It returns nil for an instance with no persona lineage and for
+// a read that failed, which leaves the turn running under the persona on the
+// instance's connection record and without the people block.
+func (mc *ModelClient) personaSnapshot(
+	ctx context.Context,
+	instance *domain.Instance,
+) *store.PersonaSnapshot {
+	if mc.personas == nil {
+		return nil
+	}
+	snapshot, err := mc.personas.PersonaSnapshot(ctx, instance.ID())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "read persona lineage",
+			"component", "modelclient",
+			"instance_id", instance.ID(),
+			"error", err,
+		)
+
+		return nil
+	}
+
+	return &snapshot
+}
+
+// activePersona is the description the turn speaks under. An instance with
+// persona lineage speaks under its active revision; one without speaks under
+// the persona its connection record carries.
+func activePersona(instance *domain.Instance, snapshot *store.PersonaSnapshot) string {
+	if snapshot == nil {
+		return instance.Persona()
+	}
+
+	return snapshot.Revision.Description
+}
+
+// personaContextLines renders the people block for this turn. It returns
+// no line for an instance with no persona lineage, and none for a render
+// that failed: the turn runs without the block and keeps the active
+// persona, which a failed render never reaches. A failed snapshot read
+// costs more, because the persona itself comes from the snapshot, and the
+// turn falls back to the description on the connection record.
+func (mc *ModelClient) personaContextLines(
+	ctx context.Context,
+	snapshot *store.PersonaSnapshot,
+	instance *domain.Instance,
+	target protocol.WindowTarget,
+	relevant []protocol.IRCMessage,
+	projection providerTargetProjection,
+) []protocol.IRCMessage {
+	if snapshot == nil {
+		return nil
+	}
+	reply, present, err := personaContextReply(
+		target, *snapshot, relevant, projection, mc.now(),
+	)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "render persona context",
+			"component", "modelclient",
+			"instance_id", instance.ID(),
+			"error", err,
+		)
+
+		return nil
+	}
+	if !present {
+		return nil
+	}
+
+	return []protocol.IRCMessage{reply}
 }
 
 func contextPlanErrorKind(err error) string {

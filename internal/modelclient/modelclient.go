@@ -104,6 +104,7 @@ type ModelClient struct {
 	journal      TurnJournal
 	contexts     ContextStore
 	reflections  ReflectionInbox
+	personas     PersonaLineageStore
 	now          func() time.Time
 
 	dispatchContext context.Context
@@ -171,6 +172,14 @@ type ReflectionInbox interface {
 	) error
 }
 
+// PersonaLineageStore supplies one coherent active persona snapshot for a turn.
+type PersonaLineageStore interface {
+	PersonaSnapshot(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+	) (store.PersonaSnapshot, error)
+}
+
 // Config contains the lifetime dependencies of a [ModelClient].
 type Config struct {
 	Instance        *domain.Instance
@@ -187,6 +196,7 @@ type Config struct {
 	Journal         TurnJournal
 	Contexts        ContextStore
 	Reflections     ReflectionInbox
+	Personas        PersonaLineageStore
 	Now             func() time.Time
 }
 
@@ -249,6 +259,7 @@ func New(cfg Config) *ModelClient {
 		journal:         cfg.Journal,
 		contexts:        cfg.Contexts,
 		reflections:     cfg.Reflections,
+		personas:        cfg.Personas,
 		now:             cfg.Now,
 		dispatchContext: dispatchContext,
 		journalQueue:    newJournalQueue(cfg.JournalContext),
