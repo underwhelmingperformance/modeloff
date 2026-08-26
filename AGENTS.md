@@ -1265,6 +1265,25 @@ With reflection disabled the manager records nothing, so a default
 configuration pays no store write per dispatch batch, and enabling
 reflection starts the stream from that point.
 
+### Reflection
+
+Reflection runs in a background worker, one goroutine per instance,
+woken by the manager once an inbox append has committed. A run is due
+when the instance has at least `reflectionSubstantiveThreshold`
+substantive events past its checkpoint and `reflectionCooldown` has
+passed since the last run finished, whatever that run's outcome was.
+The worker takes a bounded snapshot of the persona state and of the
+oldest `reflectionInputEventLimit` pending events, and reflects on
+that.
+
+The worker sits outside the window-guard authority model. It runs on
+no turn and holds no guard, so nothing it does is scoped to a window.
+What bounds it instead is that every store method it can reach is
+scoped to its own instance id, and every one of them is read-only
+apart from the single commit at the end of a run. Anything added to
+the worker's reach has to keep that property, because there is no
+guard to catch a call that reads another actor's rows.
+
 ## External libraries
 
 - [Bubble Tea] for the TUI framework.

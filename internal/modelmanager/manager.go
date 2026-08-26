@@ -120,6 +120,7 @@ type Manager struct {
 	now              func() time.Time
 	tracer           trace.TracerProvider
 	pacer            *modelclient.Pacer
+	reflections      *reflectionScheduler
 
 	mu         sync.RWMutex
 	api        api.Client
@@ -232,8 +233,47 @@ func New(cfg Config) *Manager {
 		pendingMemoryDeletes: make(map[protocol.ClientID]struct{}),
 	}
 	manager.sizeCompletions(cfg.APIClient)
+	if reflectionStore, ok := cfg.Store.(reflectionSnapshotStore); ok {
+		manager.reflections = newReflectionScheduler(
+			lifecycleContext, reflectionStore, now, manager.observeReflectionSnapshot,
+		)
+	}
 
 	return manager
+}
+
+// AppendReflectionEvents records reflection candidates and notifies the
+// per-instance scheduler after the transaction commits.
+func (m *Manager) AppendReflectionEvents(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	candidates []store.ReflectionEventCandidate,
+	createdAt time.Time,
+) error {
+	if err := m.store.AppendReflectionEvents(
+		ctx, instanceID, candidates, createdAt,
+	); err != nil {
+		return err
+	}
+	if m.reflections != nil {
+		m.reflections.notify(instanceID)
+	}
+
+	return nil
+}
+
+func (m *Manager) observeReflectionSnapshot(
+	ctx context.Context,
+	snapshot store.PendingReflectionSnapshot,
+) {
+	slog.Default().InfoContext(ctx, "reflection eligible",
+		"component", "modelmanager",
+		"instance_id", snapshot.Persona.Lineage.InstanceID,
+		"checkpoint", snapshot.Status.Checkpoint,
+		"high_water_mark", snapshot.Status.HighWaterMark,
+		"event_count", snapshot.Status.PendingEvents,
+		"substantive_event_count", snapshot.Status.SubstantiveEvents,
+	)
 }
 
 // WithTracerProvider returns m with its tracer provider replaced
@@ -888,7 +928,7 @@ func (m *Manager) Attach(
 		Pacer:           m.pacer,
 		Journal:         sess,
 		Contexts:        sess,
-		Reflections:     m.store,
+		Reflections:     m.reflectionInbox(),
 		Now:             m.now,
 	})
 	attaching := &clientAttachment{done: make(chan struct{})}
@@ -925,6 +965,14 @@ func (m *Manager) Attach(
 	}
 
 	return attaching.client, attaching.err
+}
+
+func (m *Manager) reflectionInbox() modelclient.ReflectionInbox {
+	if m.store == nil {
+		return nil
+	}
+
+	return m
 }
 
 // InterruptTurn cancels the current provider turn for `id` without
@@ -974,6 +1022,13 @@ func (m *Manager) InstanceDeleted(id protocol.ClientID) {
 		entry.forget = true
 	}
 	m.clientsMu.Unlock()
+
+	m.mu.RLock()
+	reflections := m.reflections
+	m.mu.RUnlock()
+	if reflections != nil {
+		reflections.forget(domain.InstanceID(id))
+	}
 
 	if deleteNow {
 		m.Forget(id)
@@ -1071,6 +1126,22 @@ func (m *Manager) Forget(id protocol.ClientID) {
 	ctx, cancel := m.memoryDeletionContext()
 	defer cancel()
 
+	// A reflection cancelled by the deletion can still be writing its
+	// own derived state, the semantic index among it, from a snapshot
+	// read before the row went. Waiting here and not at the deletion is
+	// what keeps that off the command a person is waiting on.
+	m.mu.RLock()
+	reflections := m.reflections
+	m.mu.RUnlock()
+	if reflections != nil {
+		// Cancelling here as well as at the deletion is what makes this
+		// safe for a caller that reaches it without one, which
+		// `DetachAndForget` does. A worker already forgotten is left
+		// alone and its finish signal is still waited for.
+		reflections.forget(domain.InstanceID(id))
+		reflections.awaitForgotten(ctx, domain.InstanceID(id))
+	}
+
 	if err := m.finishMemoryDeletion(ctx, domain.InstanceID(id)); err != nil {
 		slog.Default().WarnContext(ctx, "delete memory collection",
 			"component", "modelmanager",
@@ -1139,6 +1210,11 @@ func (m *Manager) DetachAll(ctx context.Context) error {
 		m.Forget(id)
 	}
 
+	var reflectionErr error
+	if m.reflections != nil {
+		reflectionErr = m.reflections.stop(ctx)
+	}
+
 	pending := make(map[protocol.ClientID]struct{}, len(clients))
 	joined := make(chan protocol.ClientID, len(clients))
 	for id, entry := range clients {
@@ -1156,11 +1232,14 @@ func (m *Manager) DetachAll(ctx context.Context) error {
 			delete(pending, id)
 		case <-ctx.Done():
 			m.abandonDrains(pending, clients)
-			return &DrainTimeoutError{Abandoned: slices.Sorted(maps.Keys(pending)), Err: ctx.Err()}
+			return errors.Join(
+				reflectionErr,
+				&DrainTimeoutError{Abandoned: slices.Sorted(maps.Keys(pending)), Err: ctx.Err()},
+			)
 		}
 	}
 
-	return nil
+	return reflectionErr
 }
 
 // beginAllDrains moves every attached client into the draining set

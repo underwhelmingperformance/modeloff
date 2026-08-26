@@ -18,6 +18,13 @@ type reflectionInboxSnapshot struct {
 	Status storemod.ReflectionInboxStatus
 }
 
+type pendingReflectionSnapshot struct {
+	Persona storemod.PersonaSnapshot
+	Events  []storemod.ReflectionEvent
+	Range   storemod.ReflectionRange
+	Status  storemod.ReflectionInboxStatus
+}
+
 type deletedReflectionInboxState struct {
 	Events         []storemod.ReflectionEvent
 	StateIsMissing bool
@@ -265,8 +272,82 @@ func TestSQLiteStore_reflection_inbox_uses_the_persona_checkpoint(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, storemod.ReflectionInboxStatus{
 		Checkpoint: status.HighWaterMark, HighWaterMark: status.HighWaterMark,
-		ReflectedAt: &finishedAt,
+		LastAttemptAt: &finishedAt,
 	}, got)
+}
+
+func TestSQLiteStore_captures_one_bounded_reflection_snapshot(t *testing.T) {
+	stored := storetest.NewMemoryStore(t)
+	instance := domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "careful and curious", nil,
+	)
+	recordedAt := time.Date(2026, 8, 26, 17, 0, 0, 0, time.UTC)
+	recent := recordedAt.Add(-time.Minute)
+	require.NoError(t, stored.SaveInstance(t.Context(), instance))
+	require.NoError(t, stored.AppendReflectionEvents(
+		t.Context(), instance.ID(), []storemod.ReflectionEventCandidate{
+			{
+				Source: protocol.ChannelHistoryRef(31, "#dev"),
+				Message: protocol.IRCMessage{
+					Kind:   protocol.KindPrivMsg,
+					Source: domain.ClientSource("inst-alice", "alice"),
+					Target: "#dev", Body: "first", At: recent,
+				},
+				Substantive: true,
+			},
+			{
+				Source: protocol.ChannelHistoryRef(32, "#dev"),
+				Message: protocol.IRCMessage{
+					Kind:   protocol.KindPrivMsg,
+					Source: domain.ClientSource("inst-bob", "bob"),
+					Target: "#dev", Body: "second", At: recordedAt,
+				},
+				Substantive: true,
+			},
+		}, recordedAt,
+	))
+
+	got, err := stored.PendingReflectionSnapshot(t.Context(), instance.ID(), 1)
+	require.NoError(t, err)
+
+	want := pendingReflectionSnapshot{
+		Persona: storemod.PersonaSnapshot{
+			Lineage: domain.PersonaLineage{
+				InstanceID: instance.ID(), Baseline: "careful and curious",
+				CurrentRevisionID: 1,
+			},
+			Revision: domain.PersonaRevision{
+				ID: 1, InstanceID: instance.ID(),
+				Description:         "careful and curious",
+				DescriptionEvidence: []domain.ExperienceID{},
+				ExperienceIDs:       []domain.ExperienceID{},
+				AmendmentIDs:        []domain.PersonaAmendmentID{},
+			},
+			Experiences: []domain.Experience{},
+			Amendments:  []domain.PersonaAmendment{},
+		},
+		Events: []storemod.ReflectionEvent{
+			{
+				Sequence: 1, InstanceID: instance.ID(),
+				Source: protocol.ChannelHistoryRef(31, "#dev"),
+				Message: protocol.IRCMessage{
+					Kind:   protocol.KindPrivMsg,
+					Source: domain.ClientSource("inst-alice", "alice"),
+					Target: "#dev", Body: "first", At: recent,
+				},
+				Substantive: true, CreatedAt: recordedAt,
+			},
+		},
+		Range: storemod.ReflectionRange{Through: 1},
+		Status: storemod.ReflectionInboxStatus{
+			HighWaterMark: 2,
+			PendingEvents: 2, SubstantiveEvents: 2,
+		},
+	}
+	require.Equal(t, want, pendingReflectionSnapshot{
+		Persona: got.Persona, Events: got.Events,
+		Range: got.Range, Status: got.Status,
+	})
 }
 
 func TestSQLiteStore_instance_deletion_removes_the_reflection_inbox(t *testing.T) {
