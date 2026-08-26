@@ -1217,9 +1217,30 @@ checkpoint and the baseline.
 
 Revision zero is the root of the tree: no parent, the description the
 instance was created with, and no citations, because that description
-is given and not argued for. It is immutable. Its text is kept on the
-lineage as `Baseline` as well, so it can be read without walking the
-tree to its root.
+is given and not argued for. It is immutable, and it is the revision a
+reset selects. Its text is kept on the lineage as `Baseline` as well,
+so the text a reset restores can be read without walking to the root.
+
+A reset, a rollback and an operator edit each move the current-revision
+pointer through the one compare-and-swap in `movePersonaRevisionTx`,
+which updates the lineage only while it still names the revision the
+caller read. A reflection moves it inside its own acceptance
+transaction, under a compare-and-swap on the revision and the checkpoint
+together. Both paths append a row to `persona_transitions` saying which
+of `reflection`, `reset`, `rollback` or `operator` moved the pointer. A rollback target must be an
+ancestor of the current revision. Reset and rollback both leave the
+checkpoint where it is, so moving the pointer does not make an event
+range pending again.
+
+Under a revision sit its experiences and its tendencies. An experience
+is one thing that happened, citing the reflection events it was drawn
+from. A tendency is a regularity in what the instance does, scoped
+either to everybody or to one counterpart, citing the experiences
+behind it and expiring on its own after a period its confidence sets.
+A tendency leaves the active set three ways: a retraction, a
+supersession by a newer tendency, or consolidation into an accepted
+description. All three keep the row and its citations, so the trail
+from a description back to what it was built from survives.
 
 ## External libraries
 

@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 14
+const SchemaVersion = 15
 
 type schemaTooNewError struct {
 	Found     int
@@ -59,6 +59,11 @@ func (e *missingMigrationError) Error() string {
 type migration struct {
 	Version int
 	Apply   func(ctx context.Context, tx *sql.Tx) error
+}
+
+type migrationStatement struct {
+	name string
+	sql  string
 }
 
 // migrations is the ordered registry of forward-only steps. v1 is
@@ -475,6 +480,122 @@ var migrations = []migration{
 				ORDER BY instance_id
 			`, zeroTime); err != nil {
 				return fmt.Errorf("backfill persona lineages: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 15,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			statements := []migrationStatement{
+				{"create persona experiences", `
+					CREATE TABLE persona_experiences (
+						id          INTEGER PRIMARY KEY,
+						instance_id TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+						kind        TEXT NOT NULL,
+						summary     TEXT NOT NULL,
+						subject_id  TEXT,
+						confidence  TEXT NOT NULL,
+						occurred_at TEXT NOT NULL,
+						created_at  TEXT NOT NULL
+					)
+				`},
+				{"index persona experiences", `
+					CREATE INDEX idx_persona_experiences_instance
+						ON persona_experiences (instance_id, id)
+				`},
+				{"create persona experience sources", `
+					CREATE TABLE persona_experience_sources (
+						experience_id INTEGER NOT NULL REFERENCES persona_experiences(id) ON DELETE CASCADE,
+						sequence      INTEGER NOT NULL,
+						PRIMARY KEY (experience_id, sequence)
+					)
+				`},
+				{"create persona amendments", `
+					CREATE TABLE persona_amendments (
+						id            INTEGER PRIMARY KEY,
+						instance_id   TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+						scope         TEXT NOT NULL,
+						counterpart_id TEXT,
+						tendency      TEXT NOT NULL,
+						confidence    TEXT NOT NULL,
+						created_at    TEXT NOT NULL,
+						expires_at    TEXT,
+						supersedes_id INTEGER REFERENCES persona_amendments(id),
+						consolidated_at TEXT
+					)
+				`},
+				{"index persona amendments", `
+					CREATE INDEX idx_persona_amendments_instance
+						ON persona_amendments (instance_id, id)
+				`},
+				{"create persona amendment evidence", `
+					CREATE TABLE persona_amendment_evidence (
+						amendment_id INTEGER NOT NULL REFERENCES persona_amendments(id) ON DELETE CASCADE,
+						experience_id INTEGER NOT NULL REFERENCES persona_experiences(id),
+						PRIMARY KEY (amendment_id, experience_id)
+					)
+				`},
+				{"create persona description evidence", `
+					CREATE TABLE persona_description_evidence (
+						revision_id INTEGER NOT NULL REFERENCES persona_revisions(id) ON DELETE CASCADE,
+						experience_id INTEGER NOT NULL REFERENCES persona_experiences(id),
+						PRIMARY KEY (revision_id, experience_id)
+					)
+				`},
+				{"create persona revision experiences", `
+					CREATE TABLE persona_revision_experiences (
+						revision_id INTEGER NOT NULL REFERENCES persona_revisions(id) ON DELETE CASCADE,
+						experience_id INTEGER NOT NULL REFERENCES persona_experiences(id),
+						PRIMARY KEY (revision_id, experience_id)
+					)
+				`},
+				{"create persona revision amendments", `
+					CREATE TABLE persona_revision_amendments (
+						revision_id INTEGER NOT NULL REFERENCES persona_revisions(id) ON DELETE CASCADE,
+						amendment_id INTEGER NOT NULL REFERENCES persona_amendments(id),
+						PRIMARY KEY (revision_id, amendment_id)
+					)
+				`},
+				{"create persona transitions", `
+					CREATE TABLE persona_transitions (
+						id               INTEGER PRIMARY KEY,
+						instance_id      TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+						from_revision_id INTEGER NOT NULL REFERENCES persona_revisions(id),
+						to_revision_id   INTEGER NOT NULL REFERENCES persona_revisions(id),
+						kind             TEXT NOT NULL,
+						at               TEXT NOT NULL
+					)
+				`},
+				{"create reflection runs", `
+					CREATE TABLE reflection_runs (
+						id                   TEXT PRIMARY KEY,
+						instance_id          TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+						base_revision_id     INTEGER NOT NULL REFERENCES persona_revisions(id),
+						prior_checkpoint     INTEGER NOT NULL,
+						high_water_mark      INTEGER NOT NULL,
+						result_revision_id   INTEGER NOT NULL REFERENCES persona_revisions(id),
+						model_id             TEXT NOT NULL,
+						outcome              TEXT NOT NULL,
+						rejection_reason     TEXT NOT NULL,
+						proposed_experiences INTEGER NOT NULL,
+						accepted_experiences INTEGER NOT NULL,
+						proposed_amendments  INTEGER NOT NULL,
+						accepted_amendments  INTEGER NOT NULL,
+						started_at           TEXT NOT NULL,
+						finished_at          TEXT NOT NULL
+					)
+				`},
+				{"index reflection runs", `
+					CREATE INDEX idx_reflection_runs_instance
+						ON reflection_runs (instance_id, finished_at, id)
+				`},
+			}
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+					return fmt.Errorf("%s: %w", statement.name, err)
+				}
 			}
 
 			return nil

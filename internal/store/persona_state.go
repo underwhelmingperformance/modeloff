@@ -13,6 +13,12 @@ import (
 // ErrNoPersonaLineage reports that an instance has no persona-lineage record.
 var ErrNoPersonaLineage = errors.New("no persona lineage")
 
+// ErrNoPersonaRevision reports a revision id no revision answers to. An
+// instance with a lineage can still name one, through a stale id an
+// earlier read handed the caller, so this is not the same condition as
+// [ErrNoPersonaLineage] and the scheduler must not read it as one.
+var ErrNoPersonaRevision = errors.New("no persona revision")
+
 func ensurePersonaLineageTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -60,40 +66,13 @@ func (s *SQLiteStore) PersonaLineage(
 	ctx context.Context,
 	instanceID domain.InstanceID,
 ) (domain.PersonaLineage, error) {
-	var state domain.PersonaLineage
-	var createdAt string
-	var reflectedAt sql.NullString
-	err := s.db.QueryRowContext(ctx, `
-		SELECT instance_id, baseline, current_revision_id, checkpoint,
-		       created_at, reflected_at
-		FROM persona_lineages WHERE instance_id = ?
-	`, instanceID).Scan(
-		&state.InstanceID,
-		&state.Baseline,
-		&state.CurrentRevisionID,
-		&state.Checkpoint,
-		&createdAt,
-		&reflectedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.PersonaLineage{}, ErrNoPersonaLineage
-	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return domain.PersonaLineage{}, fmt.Errorf("read persona lineage: %w", err)
+		return domain.PersonaLineage{}, fmt.Errorf("begin persona lineage read: %w", err)
 	}
-	state.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return domain.PersonaLineage{}, fmt.Errorf("parse persona lineage creation time: %w", err)
-	}
-	if reflectedAt.Valid {
-		at, err := time.Parse(time.RFC3339Nano, reflectedAt.String)
-		if err != nil {
-			return domain.PersonaLineage{}, fmt.Errorf("parse persona reflection time: %w", err)
-		}
-		state.ReflectedAt = &at
-	}
+	defer func() { _ = tx.Rollback() }()
 
-	return state, nil
+	return personaLineageTx(ctx, tx, instanceID)
 }
 
 // PersonaRevision returns one immutable persona revision.
@@ -101,35 +80,11 @@ func (s *SQLiteStore) PersonaRevision(
 	ctx context.Context,
 	revisionID domain.PersonaRevisionID,
 ) (domain.PersonaRevision, error) {
-	var revision domain.PersonaRevision
-	var parentID sql.NullInt64
-	var createdAt string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, instance_id, parent_id, description, created_at
-		FROM persona_revisions WHERE id = ?
-	`, revisionID).Scan(
-		&revision.ID,
-		&revision.InstanceID,
-		&parentID,
-		&revision.Description,
-		&createdAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.PersonaRevision{}, ErrNoPersonaLineage
-	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return domain.PersonaRevision{}, fmt.Errorf("read persona revision: %w", err)
+		return domain.PersonaRevision{}, fmt.Errorf("begin persona revision read: %w", err)
 	}
-	if parentID.Valid {
-		parent := domain.PersonaRevisionID(parentID.Int64)
-		revision.ParentID = &parent
-	}
-	revision.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return domain.PersonaRevision{}, fmt.Errorf("parse persona revision creation time: %w", err)
-	}
-	revision.ExperienceIDs = []domain.ExperienceID{}
-	revision.AmendmentIDs = []domain.PersonaAmendmentID{}
+	defer func() { _ = tx.Rollback() }()
 
-	return revision, nil
+	return personaRevisionTx(ctx, tx, revisionID)
 }
