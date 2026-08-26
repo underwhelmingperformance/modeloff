@@ -1422,15 +1422,23 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 		// operator's status window; an operator subscription receives
 		// them across every window, channel and DM alike.
 		return c.HasMode(domain.ModeOperator)
+	case domain.SystemNotice:
+		_ = e
+		// A notice reaching this filter reports server-side work no
+		// client issued, so it is addressed the same way a dispatch
+		// failure is. A notice answering a command reaches its issuer
+		// through [Session.deliverToClient] or the command's
+		// `Response.Events`, neither of which consults this filter.
+		return c.HasMode(domain.ModeOperator)
 	}
 
 	// Server handshake numerics (Welcome, Reconnected) and the
 	// point-to-point command replies the session emits (Whois,
-	// ListReply, ListEnd, the invite-failure SystemNotice) reach the
-	// issuing client through [Session.deliverToClient] or the
-	// command's `Response.Events`. Help, UsageHint, PersonasList and
-	// CommandError are chat-screen-local control signals the session
-	// never puts on this bus.
+	// ListReply, ListEnd) reach the issuing client through
+	// [Session.deliverToClient] or the command's `Response.Events`.
+	// Help, UsageHint, PersonasList and CommandError are
+	// chat-screen-local control signals the session never puts on this
+	// bus.
 	return false
 }
 

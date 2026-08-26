@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -102,6 +103,18 @@ func (s ChatScreen) handleCommand(msg components.CommandSubmitMsg) tea.Cmd {
 		"raw", raw,
 		"channel", string(s.activeName()),
 	)
+
+	// `caps:"operator"` authorises, the way the dispatcher's gate does
+	// for KILL and ADDMODEL. Filtering the command out of completion,
+	// help and the tool registry hides it; nothing there stops a line
+	// the user types anyway.
+	if required := invocation.RequiredCapabilities(); !command.Holds(s.client.Caps(), required) {
+		return commandResultCmd(issuingWindow, issuingRevision, func() tea.Msg {
+			return errorEvent(s.activeName(), "command", domain.NotOperatorError{
+				Command: invocation.Selected().Path(), At: s.sess.Now(),
+			})
+		})
+	}
 
 	rc := s.runContext()
 	rc.Invocation = invocation

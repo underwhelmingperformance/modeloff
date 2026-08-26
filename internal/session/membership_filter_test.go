@@ -75,3 +75,32 @@ func TestServerClient_modelUnavailableError_is_operator_scoped(t *testing.T) {
 		})
 	}
 }
+
+// A notice the session raises for server-side work nobody asked for
+// reaches the operator's bus. Its counterpart, a notice answering a
+// command, reaches its issuer point to point and never through this
+// filter.
+func TestSession_NoticeOperators_reaches_the_operator(t *testing.T) {
+	sess, s := newTestSession(t)
+	ctx := t.Context()
+
+	require.NoError(t, userJoin(ctx, t, sess, "#joined"))
+
+	botty := seedInstance(t, sess, s, instanceSpec{
+		Nick:     "botty",
+		ModelID:  "test/model",
+		Channels: testChannels("#joined"),
+	})
+	model := fakeServerClient(t, botty)
+
+	notice := domain.SystemNotice{
+		Target: domain.StatusChannelName,
+		Text:   "Reflection for botty accepted a revision.",
+		At:     fixedTime,
+	}
+	sess.NoticeOperators(ctx, notice)
+
+	require.Equal(t, []domain.SystemNotice{notice},
+		eventsOfType[domain.SystemNotice](collectEmittedEvents(t, sess)))
+	require.False(t, model.canReceive(notice, nil))
+}

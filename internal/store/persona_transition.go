@@ -260,21 +260,9 @@ func (s *SQLiteStore) PersonaTransitions(
 	defer func() { _ = rows.Close() }()
 	transitions := []domain.PersonaTransition{}
 	for rows.Next() {
-		var transition domain.PersonaTransition
-		var at string
-		if err := rows.Scan(
-			&transition.ID,
-			&transition.InstanceID,
-			&transition.FromRevisionID,
-			&transition.ToRevisionID,
-			&transition.Kind,
-			&at,
-		); err != nil {
-			return nil, fmt.Errorf("scan persona transition: %w", err)
-		}
-		transition.At, err = time.Parse(time.RFC3339Nano, at)
+		transition, err := scanPersonaTransition(rows)
 		if err != nil {
-			return nil, fmt.Errorf("parse persona transition time: %w", err)
+			return nil, err
 		}
 		transitions = append(transitions, transition)
 	}

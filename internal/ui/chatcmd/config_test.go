@@ -23,15 +23,27 @@ type fakeManagerAPI struct {
 	hasAPIKey bool
 
 	structuredOutputErr error
+	toolCapableErr      error
 
 	embeddingSearchable bool
 	embeddingProbeErr   error
 
-	lastSmallModel domain.ModelID
+	lastSmallModel      domain.ModelID
+	reflectionModes     []config.ReflectionMode
+	lastReflectionModel domain.ModelID
 }
 
 func (f *fakeManagerAPI) SetAPIKey(context.Context, string, string) error { return nil }
 func (f *fakeManagerAPI) SetBaseURL(context.Context, string) error        { return nil }
+func (f *fakeManagerAPI) SetReflectionMode(_ context.Context, mode config.ReflectionMode) error {
+	f.reflectionModes = append(f.reflectionModes, mode)
+
+	return nil
+}
+
+func (f *fakeManagerAPI) SetReflectionModel(modelID domain.ModelID) {
+	f.lastReflectionModel = modelID
+}
 
 func (f *fakeManagerAPI) SetSmallModel(_ context.Context, modelID domain.ModelID) {
 	f.lastSmallModel = modelID
@@ -47,10 +59,44 @@ func (f *fakeManagerAPI) RegeneratePersonas(context.Context) ([]domain.Persona, 
 
 func (f *fakeManagerAPI) ResetPersonas(context.Context) (int, error) { return 0, nil }
 
+func (f *fakeManagerAPI) InspectPersona(
+	context.Context,
+	domain.Nick,
+) (domain.PersonaInspection, error) {
+	return domain.PersonaInspection{}, nil
+}
+
+func (f *fakeManagerAPI) ResetPersona(
+	context.Context,
+	domain.Nick,
+) (domain.PersonaInspection, error) {
+	return domain.PersonaInspection{}, nil
+}
+
+func (f *fakeManagerAPI) RollbackPersona(
+	context.Context,
+	domain.Nick,
+	domain.PersonaRevisionID,
+) (domain.PersonaInspection, error) {
+	return domain.PersonaInspection{}, nil
+}
+
+func (f *fakeManagerAPI) SetInstancePersona(
+	context.Context,
+	domain.Nick,
+	string,
+) (domain.PersonaInspection, error) {
+	return domain.PersonaInspection{}, nil
+}
+
 func (f *fakeManagerAPI) HasAPIKey() bool { return f.hasAPIKey }
 
 func (f *fakeManagerAPI) EnsureStructuredOutputModel(context.Context, domain.ModelID) error {
 	return f.structuredOutputErr
+}
+
+func (f *fakeManagerAPI) EnsureToolCapableModel(context.Context, domain.ModelID) error {
+	return f.toolCapableErr
 }
 
 func (f *fakeManagerAPI) EmbeddingSearchable() (bool, error) {
@@ -210,6 +256,90 @@ func TestConfigCommand_Run_bareMasksAPIKeyAndShowsUnsetState(t *testing.T) {
 	msg := runConfigCmd(t, rc, "/config")
 
 	requireSystemNotice(t, msg, "#test", loadGolden(t, "config_show_unset.golden.txt"))
+}
+
+type reflectionConfigEffect struct {
+	Message      tea.Msg
+	Config       config.Config
+	ManagerModes []config.ReflectionMode
+	ManagerModel domain.ModelID
+}
+
+type reflectionConfigResetEffect struct {
+	ModeMessage  tea.Msg
+	ModelMessage tea.Msg
+	Config       config.Config
+	ManagerModes []config.ReflectionMode
+	ManagerModel domain.ModelID
+}
+
+func TestReflectionModeConfig_updates_runtime_and_persisted_state(t *testing.T) {
+	manager := &fakeManagerAPI{}
+	rc, stored := newConfigTestContext(t, manager)
+	want, err := stored.Load(t.Context())
+	require.NoError(t, err)
+	want.ReflectionMode = config.ReflectionShadow
+
+	message := runConfigCmd(t, rc, "/config reflection-mode shadow")
+	got, err := stored.Load(t.Context())
+	require.NoError(t, err)
+
+	require.Equal(t, reflectionConfigEffect{
+		Message: ReflectionModeSetResult{Mode: config.ReflectionShadow},
+		Config:  want, ManagerModes: []config.ReflectionMode{config.ReflectionShadow},
+	}, reflectionConfigEffect{
+		Message: message, Config: got, ManagerModes: manager.reflectionModes,
+		ManagerModel: manager.lastReflectionModel,
+	})
+}
+
+func TestReflectionModelConfig_updates_runtime_and_persisted_state(t *testing.T) {
+	manager := &fakeManagerAPI{hasAPIKey: true}
+	rc, stored := newConfigTestContext(t, manager)
+	want, err := stored.Load(t.Context())
+	require.NoError(t, err)
+	want.ReflectionModel = "test/reflection"
+
+	message := runConfigCmd(t, rc, "/config reflection-model test/reflection")
+	got, err := stored.Load(t.Context())
+	require.NoError(t, err)
+
+	require.Equal(t, reflectionConfigEffect{
+		Message: ReflectionModelSetResult{ModelID: "test/reflection"},
+		Config:  want, ManagerModel: "test/reflection",
+	}, reflectionConfigEffect{
+		Message: message, Config: got, ManagerModes: manager.reflectionModes,
+		ManagerModel: manager.lastReflectionModel,
+	})
+}
+
+func TestReflectionConfig_reset_restores_the_default_mode_and_follows_the_small_model(t *testing.T) {
+	manager := &fakeManagerAPI{}
+	rc, stored := newConfigTestContext(t, manager)
+	want, err := stored.Load(t.Context())
+	require.NoError(t, err)
+	seed := want
+	seed.ReflectionMode = config.ReflectionActive
+	seed.ReflectionModel = "test/reflection"
+	require.NoError(t, stored.Save(t.Context(), seed))
+
+	modeMessage := runConfigCmd(t, rc, "/config --reset reflection-mode")
+	modelMessage := runConfigCmd(t, rc, "/config --reset reflection-model")
+	got, err := stored.Load(t.Context())
+	require.NoError(t, err)
+
+	require.Equal(t, reflectionConfigResetEffect{
+		ModeMessage: ReflectionModeSetResult{
+			Mode: config.ReflectionUnset, Reset: true,
+		},
+		ModelMessage: ReflectionModelSetResult{Reset: true},
+		Config:       want,
+		ManagerModes: []config.ReflectionMode{config.ReflectionUnset},
+	}, reflectionConfigResetEffect{
+		ModeMessage: modeMessage, ModelMessage: modelMessage, Config: got,
+		ManagerModes: manager.reflectionModes,
+		ManagerModel: manager.lastReflectionModel,
+	})
 }
 
 func TestAPIKeyConfig_Run(t *testing.T) {

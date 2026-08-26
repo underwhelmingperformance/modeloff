@@ -422,6 +422,16 @@ func TestSQLiteStore_rollback_and_reset_select_exact_immutable_revisions(t *test
 			FromRevisionID: first.Revision.ID, ToRevisionID: base.CurrentRevisionID,
 			Kind: domain.PersonaTransitionReset, At: resetAt},
 	}, transitions)
+	recent, err := store.RecentPersonaTransitions(t.Context(), instance.ID(), 2)
+	require.NoError(t, err)
+	require.Equal(t, []domain.PersonaTransition{
+		{ID: 3, InstanceID: instance.ID(),
+			FromRevisionID: second.Revision.ID, ToRevisionID: first.Revision.ID,
+			Kind: domain.PersonaTransitionRollback, At: rollbackAt},
+		{ID: 4, InstanceID: instance.ID(),
+			FromRevisionID: first.Revision.ID, ToRevisionID: base.CurrentRevisionID,
+			Kind: domain.PersonaTransitionReset, At: resetAt},
+	}, recent)
 }
 
 func appendReflectionSources(

@@ -1124,6 +1124,17 @@ func (s *Session) EmitModelFailure(
 	s.fanOutProtocol(ctx, protocolEmission{event: event, scope: operatorsScope{}, window: window}, 0)
 }
 
+// NoticeOperators reports server-side work to connected operators.
+//
+// Reflection runs on the manager's own schedule, so its outcomes
+// belong to no client's command and have no reply to travel back on.
+// The operator gate is what already decides who may be told about
+// work nobody asked for, so the notice goes to the clients holding
+// `+o`.
+func (s *Session) NoticeOperators(ctx context.Context, notice domain.SystemNotice) {
+	s.emitScoped(ctx, notice, operatorsScope{})
+}
+
 // ResolveInstanceByID returns the current nick of the connected client
 // with `id`. A stored instance whose connection is inactive is not
 // addressable and therefore does not resolve.

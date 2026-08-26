@@ -103,7 +103,7 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "kill",
 		"msg", "query", "close", "nick", "me", "whois", "config",
-		"personas", "regenerate-personas",
+		"personas", "persona", "regenerate-personas",
 		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
@@ -114,7 +114,7 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "close", "nick", "topic", "mode", "me", "whois", "config",
-		"personas", "regenerate-personas",
+		"personas", "persona", "regenerate-personas",
 		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
@@ -130,7 +130,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "close", "nick", "topic", "mode", "me", "whois", "config",
-		"personas", "regenerate-personas",
+		"personas", "persona", "regenerate-personas",
 		"help", "clear", "poke", "quit", "pass",
 	}, names)
 
@@ -690,7 +690,8 @@ func TestComplete_config_suggests_subcommands(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval", "drain-timeout",
-		"small-model", "embedding-model", "highlight", "default-modes", "timestamp-format", "persona", "--reset",
+		"small-model", "embedding-model", "reflection-mode", "reflection-model",
+		"highlight", "default-modes", "timestamp-format", "persona", "--reset",
 	}, suggestionValues(c))
 }
 
@@ -714,8 +715,16 @@ func TestComplete_config_reset_before_subcommand(t *testing.T) {
 	require.True(t, c.Visible)
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval", "drain-timeout",
-		"small-model", "embedding-model", "highlight", "default-modes", "timestamp-format", "persona",
+		"small-model", "embedding-model", "reflection-mode", "reflection-model",
+		"highlight", "default-modes", "timestamp-format", "persona",
 	}, suggestionValues(c))
+}
+
+func TestComplete_config_reflection_mode_suggests_the_closed_set(t *testing.T) {
+	c := complete(t, "/config reflection-mode ")
+
+	require.True(t, c.Visible)
+	require.Equal(t, []string{"disabled", "shadow", "active"}, suggestionValues(c))
 }
 
 func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing.T) {

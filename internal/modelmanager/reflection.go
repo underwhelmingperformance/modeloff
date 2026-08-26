@@ -5,26 +5,115 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
 
-// ReflectionMode controls whether scheduled reflection is disabled, recorded
-// without mutation, or committed after validation.
-type ReflectionMode uint8
+// ReflectionMode is the configured persona-reflection mode.
+type ReflectionMode = config.ReflectionMode
 
 const (
-	// ReflectionDisabled records candidates without scheduling provider work.
-	ReflectionDisabled ReflectionMode = iota
+	// ReflectionDisabled records candidates and schedules no provider work.
+	ReflectionDisabled = config.ReflectionDisabled
 	// ReflectionShadow validates and records proposals without changing state.
-	ReflectionShadow
+	ReflectionShadow = config.ReflectionShadow
 	// ReflectionActive commits proposals that pass deterministic validation.
-	ReflectionActive
+	ReflectionActive = config.ReflectionActive
 )
+
+// InvalidReflectionModeError reports an unsupported configured mode.
+type InvalidReflectionModeError = config.InvalidReflectionModeError
+
+// ParseReflectionMode parses the persisted and command-line spelling of a mode.
+func ParseReflectionMode(value string) (ReflectionMode, error) {
+	return config.ParseReflectionMode(value)
+}
+
+// SetReflectionMode changes whether reflection work is scheduled and whether
+// validated proposals may mutate persona lineage.
+func (m *Manager) SetReflectionMode(ctx context.Context, mode ReflectionMode) error {
+	mode = mode.Resolved()
+
+	m.mu.Lock()
+	previous := m.reflections
+	if mode == ReflectionDisabled {
+		m.reflections = nil
+	} else if m.reflections == nil {
+		stored, ok := m.store.(reflectionStateStore)
+		if !ok {
+			m.mu.Unlock()
+			return errors.New("persona reflection store is unavailable")
+		}
+		m.reflections = newReflectionScheduler(
+			m.lifecycleContext, stored, m.now, m.runReflection,
+		)
+	}
+	m.reflectionMode = mode
+	scheduler := m.reflections
+	m.mu.Unlock()
+
+	if mode == ReflectionDisabled {
+		if previous != nil {
+			return previous.stop(ctx)
+		}
+
+		return nil
+	}
+
+	return m.wakeStoredInstances(ctx, scheduler)
+}
+
+// wakeStoredInstances starts a worker for every model instance the store
+// holds. It runs when reflection is enabled and when the manager starts,
+// which are the two moments a backlog can already be waiting.
+//
+// The candidate stream is recorded whatever the mode, so an operator
+// turning reflection on has history to work from. A worker exists only
+// once something wakes it, and nothing else does until the instance's
+// next delivery, so without this an instance already over its threshold
+// would sit there until somebody spoke to it. An instance on no channel
+// has no delivery coming at all.
+func (m *Manager) wakeStoredInstances(ctx context.Context, scheduler *reflectionScheduler) error {
+	if scheduler == nil {
+		return nil
+	}
+
+	instances, err := m.store.ListInstances(ctx)
+	if err != nil {
+		return fmt.Errorf("list instances to schedule reflection: %w", err)
+	}
+
+	for _, instance := range instances {
+		if instance.IsModel() {
+			scheduler.notify(instance.ID())
+		}
+	}
+
+	return nil
+}
+
+// SetReflectionModel changes the model used by future reflection attempts.
+// Empty selects the configured small model at the start of each attempt.
+func (m *Manager) SetReflectionModel(modelID domain.ModelID) {
+	m.mu.Lock()
+	m.reflectionModel = domain.ModelID(strings.TrimSpace(string(modelID)))
+	m.mu.Unlock()
+}
+
+// ReflectionSettings returns the current mode and the configured model. An
+// empty model means reflection follows the small-model setting.
+func (m *Manager) ReflectionSettings() (ReflectionMode, domain.ModelID) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.reflectionMode, m.reflectionModel
+}
 
 const (
 	reflectionFailureNoClient     = "api_client_unavailable"
@@ -33,6 +122,7 @@ const (
 	reflectionFailureUpstream     = "upstream_failed"
 	reflectionFailureResponse     = "response_unreadable"
 	reflectionFailureStore        = "store_failed"
+	reflectionDiscardDisabled     = "reflection_disabled"
 )
 
 // reflectionRecordTimeout bounds the write that records a terminal
@@ -49,7 +139,7 @@ func (m *Manager) runReflection(
 	if !ok {
 		return
 	}
-	modelID := m.reflectionModel
+	startMode, modelID := m.ReflectionSettings()
 	if modelID == "" {
 		modelID = m.SmallModel()
 	}
@@ -108,15 +198,20 @@ func (m *Manager) runReflection(
 		return
 	}
 
-	if m.reflectionMode == ReflectionShadow {
+	currentMode, _ := m.ReflectionSettings()
+	if startMode == ReflectionShadow || currentMode == ReflectionShadow {
 		baseRun.Outcome = domain.ReflectionShadow
 		m.recordReflectionRun(ctx, stored, baseRun)
 		return
 	}
-	if m.reflectionMode != ReflectionActive {
+	if startMode != ReflectionActive || currentMode != ReflectionActive {
+		baseRun.Outcome = domain.ReflectionDiscarded
+		baseRun.RejectionReason = reflectionDiscardDisabled
+		m.recordReflectionRun(ctx, stored, baseRun)
 		return
 	}
-	if _, err := stored.CommitPersonaReflection(ctx, acceptance); err != nil {
+	commit, err := stored.CommitPersonaReflection(ctx, acceptance)
+	if err != nil {
 		if errors.Is(err, store.ErrPersonaLineageChanged) {
 			baseRun.Outcome = domain.ReflectionStale
 			baseRun.RejectionReason = "persona_lineage_changed"
@@ -135,7 +230,11 @@ func (m *Manager) runReflection(
 			return
 		}
 		m.recordFailedReflection(ctx, stored, baseRun, reflectionFailureStore)
+
+		return
 	}
+
+	m.noticeReflectionRun(ctx, commit.Run)
 }
 
 // reflect runs one reflection end to end: the instance explores its own
@@ -329,4 +428,85 @@ func (m *Manager) recordReflectionRun(
 			"error", err,
 		)
 	}
+
+	m.noticeReflectionRun(ctx, run)
+}
+
+// noticeReflectionRun reports one run's terminal outcome to the
+// operators. `reflection_runs` is the durable record, and nothing
+// reads it until somebody runs `/persona` against the instance, so
+// without this an operator watching models change has no line to
+// connect the change to.
+func (m *Manager) noticeReflectionRun(ctx context.Context, run domain.ReflectionRun) {
+	m.operatorNotices().NoticeOperators(ctx, domain.SystemNotice{
+		Target: domain.StatusChannelName,
+		Text:   reflectionRunNotice(m.reflectionActorName(ctx, run.InstanceID), run),
+		At:     run.FinishedAt,
+	})
+}
+
+// reflectionActorName is what the notice calls the reflecting
+// instance. An instance that has quit since the run started has no
+// row to read a nick from, so it is named by its identifier, which is
+// what `reflection_runs` is keyed by.
+func (m *Manager) reflectionActorName(ctx context.Context, id domain.InstanceID) string {
+	instances, err := m.store.ListInstances(ctx)
+	if err != nil {
+		return string(id)
+	}
+	for _, instance := range instances {
+		if instance.ID() == id {
+			return string(instance.Nick())
+		}
+	}
+
+	return string(id)
+}
+
+// reflectionRunNotice renders one terminal outcome for the operator's
+// status window. It uses the vocabulary `/persona` renders a run
+// under: revisions, experiences and tendencies.
+func reflectionRunNotice(actor string, run domain.ReflectionRun) string {
+	var text strings.Builder
+	fmt.Fprintf(&text, "Reflection for %s %s", actor, reflectionOutcomeSummary(run.Outcome))
+	switch run.Outcome {
+	case domain.ReflectionAccepted:
+		fmt.Fprintf(&text, ": revision %d -> %d, %d experience(s), %d tendency change(s)",
+			run.BaseRevisionID, run.ResultRevisionID,
+			run.AcceptedExperiences, run.AcceptedAmendments,
+		)
+	case domain.ReflectionShadow:
+		fmt.Fprintf(&text, ": %d experience(s) and %d tendency change(s) proposed",
+			run.ProposedExperiences, run.ProposedAmendments,
+		)
+	}
+	if run.RejectionReason != "" {
+		fmt.Fprintf(&text, " (%s)", run.RejectionReason)
+	}
+	text.WriteString(".")
+
+	return text.String()
+}
+
+// reflectionOutcomeSummary describes what became of one run's
+// proposal, in the operator's terms.
+func reflectionOutcomeSummary(outcome domain.ReflectionOutcome) string {
+	switch outcome {
+	case domain.ReflectionAccepted:
+		return "accepted a revision"
+	case domain.ReflectionNoChange:
+		return "found nothing to record"
+	case domain.ReflectionShadow:
+		return "validated a proposal in shadow mode"
+	case domain.ReflectionRejected:
+		return "had its proposal refused"
+	case domain.ReflectionStale:
+		return "lost its proposal to a concurrent persona change"
+	case domain.ReflectionDiscarded:
+		return "discarded its proposal"
+	case domain.ReflectionFailed:
+		return "failed"
+	}
+
+	return string(outcome)
 }

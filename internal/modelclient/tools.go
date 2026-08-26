@@ -8,6 +8,7 @@ import (
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/command"
+	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
@@ -32,10 +33,30 @@ type ManagerAPI interface {
 	SetAPIKey(ctx context.Context, apiKey, baseURL string) error
 	SetBaseURL(ctx context.Context, baseURL string) error
 	SetSmallModel(ctx context.Context, modelID domain.ModelID)
+	SetReflectionMode(ctx context.Context, mode config.ReflectionMode) error
+	SetReflectionModel(modelID domain.ModelID)
 	SetPersona(ctx context.Context, id string, description string) error
 	ListPersonas(ctx context.Context) ([]domain.Persona, error)
 	RegeneratePersonas(ctx context.Context) ([]domain.Persona, error)
 	ResetPersonas(ctx context.Context) (int, error)
+	InspectPersona(
+		ctx context.Context,
+		nick domain.Nick,
+	) (domain.PersonaInspection, error)
+	ResetPersona(
+		ctx context.Context,
+		nick domain.Nick,
+	) (domain.PersonaInspection, error)
+	RollbackPersona(
+		ctx context.Context,
+		nick domain.Nick,
+		target domain.PersonaRevisionID,
+	) (domain.PersonaInspection, error)
+	SetInstancePersona(
+		ctx context.Context,
+		nick domain.Nick,
+		description string,
+	) (domain.PersonaInspection, error)
 
 	// HasAPIKey reports whether an API key is configured. `/config`
 	// small-model validation uses it to decide between validating
@@ -47,6 +68,12 @@ type ManagerAPI interface {
 	// the model catalogue if needed. It is a no-op returning nil
 	// when no API key is configured.
 	EnsureStructuredOutputModel(ctx context.Context, modelID domain.ModelID) error
+
+	// EnsureToolCapableModel validates that modelID supports tool
+	// calling, on the same terms. `/config reflection-model` uses it:
+	// a reflection run explores with the recall tools before it
+	// proposes, so a model without them fails every attempt.
+	EnsureToolCapableModel(ctx context.Context, modelID domain.ModelID) error
 
 	// EmbeddingSearchable reports whether the memory store's
 	// embedding endpoint is currently reachable, and the error from

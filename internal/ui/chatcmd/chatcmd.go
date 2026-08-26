@@ -155,6 +155,19 @@ type EmbeddingModelSetResult struct {
 	Reset   bool
 }
 
+// ReflectionModeSetResult signals that the reflection mode was updated.
+type ReflectionModeSetResult struct {
+	Mode  config.ReflectionMode
+	Reset bool
+}
+
+// ReflectionModelSetResult signals that the reflection model was updated.
+// An empty model means reflection follows the small-model setting.
+type ReflectionModelSetResult struct {
+	ModelID domain.ModelID
+	Reset   bool
+}
+
 // TimestampFormatSetResult signals that the timestamp format was
 // updated.
 type TimestampFormatSetResult struct {
@@ -181,6 +194,28 @@ type PersonaSetResult struct {
 // PersonaResetResult signals that user-defined personas were removed.
 type PersonaResetResult struct {
 	Count int
+}
+
+// PersonaAction identifies the operation reported by a [PersonaResult].
+type PersonaAction string
+
+const (
+	// PersonaInspected reports a read-only inspection.
+	PersonaInspected PersonaAction = "inspected"
+	// PersonaReset reports a reset to revision zero.
+	PersonaReset PersonaAction = "reset"
+	// PersonaRolledBack reports a move to an ancestor revision.
+	PersonaRolledBack PersonaAction = "rolled_back"
+	// PersonaDescribed reports a revision an operator wrote by giving the
+	// instance a replacement description.
+	PersonaDescribed PersonaAction = "described"
+)
+
+// PersonaResult carries one complete operator inspection after the
+// requested action.
+type PersonaResult struct {
+	Action     PersonaAction
+	Inspection domain.PersonaInspection
 }
 
 // errorEvent builds the failure payload for a command run from this context.

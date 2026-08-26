@@ -771,6 +771,12 @@ point-to-point events include INVITE, `Inviting`, `TopicInfo`,
 session addresses to one client. Every value the session emits implements
 `domain.ProtocolEvent`, sealed via `isProtocolEvent()`.
 
+A `SystemNotice` has one further delivery scope.
+`Session.NoticeOperators` fans one out to every client holding
+operator authority, under `operatorsScope`, which is how a reflection
+outcome reaches an operator without being addressed to the members of
+a particular window.
+
 Chat-screen-local control signals — `domain.ErrorEvent` wrapping a
 backend error from a UI-issued command, and the `Help`, `UsageHint`,
 `PersonasList` and `CommandError` events the chat-screen builds and
@@ -905,8 +911,14 @@ have a wire counterpart: `/join`, `/part`, `/list`, `/add-model`,
 `protocol.List` and `WhoisCommand` returns `protocol.Whois`). The
 remaining commands are purely UI-side, have no wire counterpart, and
 do not implement `ToCommand`: `/config`, `/query`, `/personas`,
-`/regenerate-personas`, `/help`, `/clear`, `/poke`, and the tool-only
-`pass`.
+`/persona`, `/regenerate-personas`, `/help`, `/clear`, `/poke`, and
+the tool-only `pass`.
+
+Whether a command becomes a model-callable tool is a separate question
+from whether it has a wire counterpart, and `internal/command` answers
+it from the presence of the `tool:` tag alone. `/persona` deliberately
+carries none, so no model can reach an instance's persona; see
+Operator controls below.
 
 `/close` (aliases `/wc`, `/unquery`) is the one command whose wire
 counterpart depends on the window it is run in, so it has no
@@ -1281,16 +1293,18 @@ the reflection prompt carries it. Code cannot make that judgement, and
 a rule that guessed at it by hunting for action verbs would be
 pattern-matching presented as a guarantee, which is worse than no
 guarantee because a reader trusts it. The reflecting model is in a
-much better position to judge the clause than a validator is.
+much better position to judge the clause than a validator is, and the
+operator's per-revision diff in `/persona` is the backstop.
 
 The persona is the current revision. Revision zero is the immutable
-reset target, and every revision is diffable and reversible. The
-acting model holds no tool that reaches any of it: reflection is
-quarantined to the background worker, and nothing in a model's tool
-registry reads or writes a persona lineage. That separation is what
-the whole arrangement rests on. An instance's only path into its own
-character is a reflection that cites evidence, lands as a revision,
-and can be rolled back.
+reset target, an operator edit is a revision like any other, and every
+revision is diffable and reversible. The acting model holds no tool
+that reaches any of it: `/persona` carries no `tool:` tag, so it is in
+no model's tool registry, and reflection is quarantined to the
+background worker. That separation is what the whole arrangement
+rests on. An instance's only path into its own character is a
+reflection that cites evidence, lands as a revision, and can be rolled
+back.
 
 ### The persona lineage
 
@@ -1440,6 +1454,47 @@ demanding a strict schema as a precondition would buy parsing
 convenience at the cost of every model without it. A response that
 will not parse and a proposal the validator refuses are both terminal
 outcomes that record a run, so the cooldown paces them.
+
+### Operator controls
+
+`/persona <nick>` shows an instance's lineage: the current revision
+and its description, the experiences the description was built from,
+the parent revision's text where it differs, the baseline a reset
+restores, the active experiences and tendencies, the recent reflection
+runs, and the transitions between revisions. Showing the parent's text
+beside the current one is the per-revision diff, and that is where an
+operator judges whether reflection is behaving.
+
+The same command writes. A description positional writes an
+operator-authored revision, `--reset` selects revision zero, and
+`--rollback <revision>` selects an ancestor. The three are mutually
+exclusive. All of them move the pointer through the compare-and-swap a
+reflection commit uses and record their own transition kind, so an
+operator edit is a revision like any other and stays distinguishable
+from a reflection in the history. `--rollback` takes a pointer so that
+`--rollback 0` is a usage error and not an inspection.
+
+`/persona` is operator-gated and carries no `tool:` tag.
+`internal/command` builds the tool registry from the presence of that
+tag, so leaving it off keeps the command out of every model's tools.
+That is the write-authority split the four levels rest on.
+
+Two `/config` settings control reflection. `reflection-mode` takes
+`disabled`, `shadow` or `active`, and an installation that has never
+written it runs `active`: an instance that never reflects keeps the
+description it was created with. The empty setting is absence and not
+a mode, so `/config --reset reflection-mode` returns the installation
+to whatever the current default is.
+`reflection-model` names the model the worker runs on and defaults to
+the small model. Both are validated before they are written: a
+`reflection-mode` value the parser does not recognise is refused, and
+`reflection-model` must name a model the catalogue says supports
+structured outputs.
+
+A terminal reflection outcome is announced to operators as a
+`domain.SystemNotice` in `&modeloff`, naming the instance, the
+outcome, and for an accepted run the revision it moved to and the
+counts behind it.
 
 ## External libraries
 

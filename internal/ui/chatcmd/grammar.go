@@ -25,6 +25,7 @@ type Grammar struct {
 	Whois              WhoisCommand              `cmd:"" tool:"" help:"Show details about a model instance."`
 	Config             ConfigCommand             `cmd:"" help:"Update runtime configuration."`
 	Personas           PersonasCommand           `cmd:"" help:"List all defined personas."`
+	Persona            PersonaCommand            `cmd:"" caps:"operator" help:"Show, write, reset or roll back an instance's persona."`
 	RegeneratePersonas RegeneratePersonasCommand `cmd:"" name:"regenerate-personas" help:"Regenerate AI-created personas."`
 	Help               HelpCommand               `cmd:"" aliases:"?" tool:"" help:"Show available commands."`
 	Clear              ClearCommand              `cmd:"" help:"Clear the current window."`

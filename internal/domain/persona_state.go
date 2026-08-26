@@ -75,6 +75,9 @@ const (
 	// ReflectionShadow records a validated proposal without changing persona
 	// state.
 	ReflectionShadow ReflectionOutcome = "shadow"
+	// ReflectionDiscarded records a validated proposal the server did not
+	// apply because reflection stopped being active before it committed.
+	ReflectionDiscarded ReflectionOutcome = "discarded"
 )
 
 // PersonaTransitionKind describes why the active revision pointer changed.

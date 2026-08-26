@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/laney/modeloff/internal/api"
+	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
@@ -32,6 +34,157 @@ type reflectionWorkerState struct {
 type managerReflectionEffect struct {
 	Run    reflectionRunRange
 	Status store.ReflectionInboxStatus
+}
+
+type reflectionDisableEffect struct {
+	StartedMode ReflectionMode
+	StoppedMode ReflectionMode
+	ModelID     domain.ModelID
+	Cancelled   bool
+	Before      store.PersonaSnapshot
+	After       store.PersonaSnapshot
+}
+
+type recordingReflectionStore struct {
+	*store.SQLiteStore
+
+	recorded chan domain.ReflectionRun
+}
+
+func (s *recordingReflectionStore) RecordReflectionRun(
+	ctx context.Context,
+	run domain.ReflectionRun,
+) error {
+	if err := s.SQLiteStore.RecordReflectionRun(ctx, run); err != nil {
+		return err
+	}
+	s.recorded <- run
+
+	return nil
+}
+
+type reflectionModeEscalationEffect struct {
+	Run    domain.ReflectionRun
+	Before store.PersonaSnapshot
+	After  store.PersonaSnapshot
+}
+
+func TestManager_reflection_mode_starts_and_stops_scheduled_work(t *testing.T) {
+	stored, instance := reflectionSchedulerStore(t)
+	fixed := time.Date(2026, 8, 27, 16, 0, 0, 0, time.UTC)
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return []api.ModelInfo{{
+				ID:                  "test/reflection",
+				SupportedParameters: []string{"tools", "structured_outputs"},
+			}}, nil
+		},
+		ReflectPersonaFn: func(
+			ctx context.Context,
+			_ domain.ModelID,
+			_ domain.InstanceID,
+			_ api.ReflectionInput,
+			_ ...api.ToolDefinition,
+		) (api.ReflectionExploration, error) {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+
+			return api.ReflectionExploration{}, ctx.Err()
+		},
+	}
+	manager := New(Config{
+		Store: stored, APIClient: client, InitialAPIKey: "configured",
+		BaseContext: t.Context, Now: func() time.Time { return fixed },
+		ReflectionModel: "test/reflection",
+	})
+	before, err := stored.PersonaSnapshot(t.Context(), instance.ID())
+	require.NoError(t, err)
+	require.NoError(t, manager.SetReflectionMode(t.Context(), ReflectionActive))
+	startedMode, modelID := manager.ReflectionSettings()
+	require.NoError(t, manager.AppendReflectionEvents(
+		t.Context(), instance.ID(),
+		reflectionCandidates(1, reflectionSubstantiveThreshold, fixed), fixed,
+	))
+	<-started
+	require.NoError(t, manager.SetReflectionMode(t.Context(), ReflectionDisabled))
+	<-cancelled
+	stoppedMode, _ := manager.ReflectionSettings()
+	after, err := stored.PersonaSnapshot(t.Context(), instance.ID())
+	require.NoError(t, err)
+
+	require.Equal(t, reflectionDisableEffect{
+		StartedMode: ReflectionActive, StoppedMode: ReflectionDisabled,
+		ModelID: "test/reflection", Cancelled: true, Before: before, After: before,
+	}, reflectionDisableEffect{
+		StartedMode: startedMode, StoppedMode: stoppedMode, ModelID: modelID,
+		Cancelled: true, Before: before, After: after,
+	})
+	require.NoError(t, manager.DetachAll(t.Context()))
+}
+
+func TestManager_does_not_activate_a_reflection_started_in_shadow_mode(t *testing.T) {
+	backing, instance := reflectionSchedulerStore(t)
+	stored := &recordingReflectionStore{
+		SQLiteStore: backing, recorded: make(chan domain.ReflectionRun, 1),
+	}
+	fixed := time.Date(2026, 8, 27, 16, 30, 0, 0, time.UTC)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return []api.ModelInfo{{
+				ID:                  "test/reflection",
+				SupportedParameters: []string{"tools", "structured_outputs"},
+			}}, nil
+		},
+		ReflectPersonaFn: func(
+			context.Context,
+			domain.ModelID,
+			domain.InstanceID,
+			api.ReflectionInput,
+			...api.ToolDefinition,
+		) (api.ReflectionExploration, error) {
+			close(started)
+			<-release
+
+			return api.ReflectionExploration{}, nil
+		},
+	}
+	manager := New(Config{
+		Store: stored, APIClient: client, InitialAPIKey: "configured",
+		BaseContext: t.Context, Now: func() time.Time { return fixed },
+		ReflectionMode: ReflectionShadow, ReflectionModel: "test/reflection",
+		ReflectionRunID: func() domain.ReflectionRunID { return "shadow-1" },
+	})
+	before, err := stored.PersonaSnapshot(t.Context(), instance.ID())
+	require.NoError(t, err)
+	require.NoError(t, manager.AppendReflectionEvents(
+		t.Context(), instance.ID(),
+		reflectionCandidates(1, reflectionSubstantiveThreshold, fixed), fixed,
+	))
+	<-started
+	require.NoError(t, manager.SetReflectionMode(t.Context(), ReflectionActive))
+	close(release)
+	run := <-stored.recorded
+	after, err := stored.PersonaSnapshot(t.Context(), instance.ID())
+	require.NoError(t, err)
+
+	require.Equal(t, reflectionModeEscalationEffect{
+		Run: domain.ReflectionRun{
+			ID: "shadow-1", InstanceID: instance.ID(),
+			BaseRevisionID:   before.Revision.ID,
+			PriorCheckpoint:  0,
+			HighWaterMark:    reflectionSubstantiveThreshold,
+			ResultRevisionID: before.Revision.ID,
+			ModelID:          "test/reflection", Outcome: domain.ReflectionShadow,
+			StartedAt: fixed, FinishedAt: fixed,
+		},
+		Before: before, After: before,
+	}, reflectionModeEscalationEffect{Run: run, Before: before, After: after})
+	require.NoError(t, manager.DetachAll(t.Context()))
 }
 
 func TestManager_schedules_committed_reflection_candidates(t *testing.T) {
@@ -410,5 +563,66 @@ func TestReflectionScheduler_runs_again_past_the_input_event_limit(t *testing.T)
 				},
 			},
 		}, reflectionWorkerState{Runs: append(first, second...)})
+	})
+}
+
+// recordedInboxEffect is what the inbox holds after a dispatch batch, and
+// whether the scheduler that would act on it exists, and what enabling
+// reflection then does with the backlog.
+type recordedInboxEffect struct {
+	Mode      ReflectionMode
+	Status    store.ReflectionInboxStatus
+	Scheduled bool
+	Woken     int
+}
+
+// TestManager_records_reflection_candidates_while_reflection_is_disabled pins
+// that the candidate stream does not follow the mode, and that turning
+// reflection on acts on what is already there.
+//
+// A worker exists only once something wakes it, and the next thing that
+// would is the instance's next delivery. Without a wake at the mode
+// change, an instance already over its threshold waits for somebody to
+// speak to it before the history it has accumulated is looked at.
+func TestManager_records_reflection_candidates_while_reflection_is_disabled(t *testing.T) {
+	stored, instance := reflectionSchedulerStore(t)
+	at := time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC)
+	manager := New(Config{
+		Store: stored, BaseContext: t.Context,
+		Now:            func() time.Time { return at },
+		ReflectionMode: ReflectionDisabled,
+	})
+
+	require.NoError(t, manager.AppendReflectionEvents(
+		t.Context(), instance.ID(),
+		reflectionCandidates(1, reflectionSubstantiveThreshold, at), at,
+	))
+	status, err := stored.ReflectionInboxStatus(t.Context(), instance.ID())
+	require.NoError(t, err)
+	mode, _ := manager.ReflectionSettings()
+	scheduled := manager.reflections != nil
+
+	require.NoError(t, manager.SetReflectionMode(t.Context(), ReflectionShadow))
+	// `notify` registers the worker before it returns, so the count is
+	// settled here and says the stored instance was picked up without
+	// waiting for a delivery.
+	manager.mu.Lock()
+	scheduler := manager.reflections
+	manager.mu.Unlock()
+	scheduler.mu.Lock()
+	woken := len(scheduler.workers)
+	scheduler.mu.Unlock()
+	require.NoError(t, manager.DetachAll(t.Context()))
+
+	require.Equal(t, recordedInboxEffect{
+		Mode: ReflectionDisabled,
+		Status: store.ReflectionInboxStatus{
+			HighWaterMark:     domain.ReflectionSequence(reflectionSubstantiveThreshold),
+			PendingEvents:     reflectionSubstantiveThreshold,
+			SubstantiveEvents: reflectionSubstantiveThreshold,
+		},
+		Woken: 1,
+	}, recordedInboxEffect{
+		Mode: mode, Status: status, Scheduled: scheduled, Woken: woken,
 	})
 }

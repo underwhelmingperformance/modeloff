@@ -81,6 +81,22 @@ func (i Invocation[K]) Selected() *Node[K] {
 	return i.Path[len(i.Path)-1].Node
 }
 
+// RequiredCapabilities is everything the selected command's path
+// requires. A capability declared on a group applies to every command
+// under it, so an authorisation check reads the whole path and not the
+// leaf alone.
+func (i Invocation[K]) RequiredCapabilities() []Capability {
+	var required []Capability
+	for _, entry := range i.Path {
+		if entry.Node == nil {
+			continue
+		}
+		required = append(required, entry.Node.RequiredCapabilities...)
+	}
+
+	return required
+}
+
 // Leaf returns the parsed value for the selected leaf node.
 func (i Invocation[K]) Leaf() any {
 	if len(i.Path) == 0 {

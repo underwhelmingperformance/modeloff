@@ -79,9 +79,10 @@ type Store interface {
 		instanceID domain.InstanceID,
 		limit int,
 	) ([]domain.ReflectionRun, error)
-	PersonaTransitions(
+	RecentPersonaTransitions(
 		ctx context.Context,
 		instanceID domain.InstanceID,
+		limit int,
 	) ([]domain.PersonaTransition, error)
 	ResetPersona(
 		ctx context.Context,
@@ -164,6 +165,7 @@ type Manager struct {
 	reflections      *reflectionScheduler
 
 	mu              sync.RWMutex
+	notices         operatorNoticeSink
 	api             api.Client
 	apiKey          string
 	smallModel      domain.ModelID
@@ -224,6 +226,31 @@ type drainingClient struct {
 	done      chan struct{}
 }
 
+// operatorNoticeSink delivers a server notice to the clients holding
+// operator authority. `*session.Session` satisfies it, and
+// [Manager.Start] is where a manager is joined to the session it
+// reports through.
+type operatorNoticeSink interface {
+	NoticeOperators(ctx context.Context, notice domain.SystemNotice)
+}
+
+// discardedNotices is the sink of a manager with no session behind it,
+// which is the state between [New] and [Manager.Start]. Reflection
+// schedules its first work from a dispatch batch, and dispatch needs
+// an attached client, so no run can reach a discarded notice in
+// production.
+type discardedNotices struct{}
+
+func (discardedNotices) NoticeOperators(context.Context, domain.SystemNotice) {}
+
+// operatorNotices returns the sink server-side work reports through.
+func (m *Manager) operatorNotices() operatorNoticeSink {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.notices
+}
+
 // New constructs a [Manager] from cfg. The returned value is ready
 // to be passed as the `factory` argument to `session.New`; call
 // [Manager.Start] once the session is built to attach any stored
@@ -271,13 +298,14 @@ func New(cfg Config) *Manager {
 		apiKey:               strings.TrimSpace(cfg.InitialAPIKey),
 		smallModel:           smallModel,
 		reflectionModel:      cfg.ReflectionModel,
-		reflectionMode:       cfg.ReflectionMode,
+		reflectionMode:       cfg.ReflectionMode.Resolved(),
 		reflectionRunID:      cfg.ReflectionRunID,
 		factory:              cfg.APIFactory,
 		clients:              make(map[protocol.ClientID]*modelclient.ModelClient),
 		attaching:            make(map[protocol.ClientID]*clientAttachment),
 		draining:             make(map[protocol.ClientID]*drainingClient),
 		pendingMemoryDeletes: make(map[protocol.ClientID]struct{}),
+		notices:              discardedNotices{},
 	}
 	if manager.reflectionRunID == nil {
 		manager.reflectionRunID = func() domain.ReflectionRunID {
@@ -286,7 +314,7 @@ func New(cfg Config) *Manager {
 	}
 	manager.sizeCompletions(cfg.APIClient)
 	if reflectionStore, ok := cfg.Store.(reflectionStateStore); ok &&
-		cfg.ReflectionMode != ReflectionDisabled {
+		manager.reflectionMode != ReflectionDisabled {
 		manager.reflections = newReflectionScheduler(
 			lifecycleContext, reflectionStore, now, manager.runReflection,
 		)
@@ -297,6 +325,11 @@ func New(cfg Config) *Manager {
 
 // AppendReflectionEvents records reflection candidates and notifies the
 // per-instance scheduler after the transaction commits.
+//
+// The candidate stream is recorded whatever the mode, so an operator who
+// turns reflection on has the history behind that decision to work from.
+// Only the scheduler follows the mode, and it is nil while reflection is
+// disabled.
 func (m *Manager) AppendReflectionEvents(
 	ctx context.Context,
 	instanceID domain.InstanceID,
@@ -308,8 +341,11 @@ func (m *Manager) AppendReflectionEvents(
 	); err != nil {
 		return err
 	}
-	if m.reflections != nil {
-		m.reflections.notify(instanceID)
+	m.mu.RLock()
+	reflections := m.reflections
+	m.mu.RUnlock()
+	if reflections != nil {
+		reflections.notify(instanceID)
 	}
 
 	return nil
@@ -839,36 +875,56 @@ func (m *Manager) resolvePersona(ctx context.Context, requested string) (string,
 // attempt their attach. [StartError] distinguishes cleanup failures from an
 // attachment failure that leaves stored membership without a live client.
 func (m *Manager) Start(ctx context.Context, sess *session.Session) error {
+	m.mu.Lock()
+	m.notices = sess
+	m.mu.Unlock()
+
 	cleanupErr := m.deletePendingInstances(ctx)
 	if err := m.deletePendingMemoryCollections(ctx); cleanupErr == nil {
 		cleanupErr = err
 	}
 
 	attachmentErr := sess.StartModelClients(ctx)
-	if cleanupErr == nil && attachmentErr == nil {
+
+	// A run that ended with a backlog left it in the store, and an
+	// instance's next delivery is what would otherwise wake its worker.
+	// An instance on no channel has none coming.
+	m.mu.Lock()
+	scheduler := m.reflections
+	m.mu.Unlock()
+	scheduleErr := m.wakeStoredInstances(ctx, scheduler)
+
+	if cleanupErr == nil && attachmentErr == nil && scheduleErr == nil {
 		return nil
 	}
 
-	return &StartError{cleanup: cleanupErr, attachment: attachmentErr}
+	return &StartError{
+		cleanup: cleanupErr, attachment: attachmentErr, schedule: scheduleErr,
+	}
 }
 
 // StartError reports partial failures from [Manager.Start]. Cleanup failures
 // leave usable attached clients in place. An attachment failure leaves a stored
-// actor without the live client required by its channel membership.
+// actor without the live client required by its channel membership. A
+// scheduling failure leaves a recorded reflection backlog waiting for the
+// instance's next delivery, which an instance on no channel has none of.
 type StartError struct {
 	cleanup    error
 	attachment error
+	schedule   error
 }
 
 func (e *StartError) Error() string {
-	return errors.Join(e.cleanup, e.attachment).Error()
+	return errors.Join(e.cleanup, e.attachment, e.schedule).Error()
 }
 
 func (e *StartError) Unwrap() []error {
-	return []error{e.cleanup, e.attachment}
+	return []error{e.cleanup, e.attachment, e.schedule}
 }
 
 // AttachmentFailed reports whether startup left a stored actor unattached.
+// A scheduling failure is not one: it leaves a recorded backlog waiting
+// for the instance's next delivery, and every client is attached.
 func (e *StartError) AttachmentFailed() bool {
 	return e.attachment != nil
 }
@@ -1250,9 +1306,14 @@ func (m *Manager) DetachAll(ctx context.Context) error {
 		m.Forget(id)
 	}
 
+	m.mu.Lock()
+	reflections := m.reflections
+	m.reflections = nil
+	m.reflectionMode = ReflectionDisabled
+	m.mu.Unlock()
 	var reflectionErr error
-	if m.reflections != nil {
-		reflectionErr = m.reflections.stop(ctx)
+	if reflections != nil {
+		reflectionErr = reflections.stop(ctx)
 	}
 
 	pending := make(map[protocol.ClientID]struct{}, len(clients))

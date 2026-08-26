@@ -13,6 +13,7 @@ import (
 
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/modelmanager"
 )
 
 // stubConfigStore is a [config.Store] that returns a fixed config and
@@ -319,4 +320,52 @@ func TestNewAPIClient(t *testing.T) {
 			require.NotNil(t, client)
 		})
 	}
+}
+
+// reflectionModeCase is one persisted `reflection_mode` value.
+type reflectionModeCase struct {
+	name string
+	cfg  config.Config
+}
+
+// reflectionModeEffect is the mode the application starts under.
+type reflectionModeEffect struct {
+	Mode modelmanager.ReflectionMode
+}
+
+// TestReflectionModeFromConfig pins that a hand-edited config.json
+// holding a mode this build does not recognise still starts the
+// application, so `/config reflection-mode` can repair the value from
+// inside the TUI. An absent and an unreadable setting both run the
+// built-in default.
+func TestReflectionModeFromConfig(t *testing.T) {
+	cases := []reflectionModeCase{
+		{
+			name: "an unset mode runs the default",
+			cfg:  config.Config{},
+		},
+		{
+			name: "a recognised mode is used as written",
+			cfg:  config.Config{ReflectionMode: config.ReflectionShadow},
+		},
+		{
+			name: "a mode this build does not recognise falls back",
+			cfg:  config.Config{ReflectionMode: "supervised"},
+		},
+	}
+
+	want := []reflectionModeEffect{
+		{Mode: config.DefaultReflectionMode},
+		{Mode: config.ReflectionShadow},
+		{Mode: config.DefaultReflectionMode},
+	}
+
+	got := make([]reflectionModeEffect, 0, len(cases))
+	for _, tc := range cases {
+		t.Run(tc.name, func(*testing.T) {
+			got = append(got, reflectionModeEffect{Mode: reflectionModeFromConfig(tc.cfg)})
+		})
+	}
+
+	require.Equal(t, want, got)
 }

@@ -58,14 +58,16 @@ const DefaultChannelModesSpec = "+nt"
 
 // Config holds all application settings.
 type Config struct {
-	APIKey         string         `json:"api_key"`
-	BaseURL        string         `json:"base_url,omitempty"`
-	UserNick       string         `json:"user_nick"`
-	PokeInterval   time.Duration  `json:"poke_interval"`
-	DrainTimeout   time.Duration  `json:"drain_timeout"`
-	SmallModel     domain.ModelID `json:"small_model"`
-	EmbeddingModel domain.ModelID `json:"embedding_model"`
-	HighlightWords []string       `json:"highlight_words"`
+	APIKey          string         `json:"api_key"`
+	BaseURL         string         `json:"base_url,omitempty"`
+	UserNick        string         `json:"user_nick"`
+	PokeInterval    time.Duration  `json:"poke_interval"`
+	DrainTimeout    time.Duration  `json:"drain_timeout"`
+	SmallModel      domain.ModelID `json:"small_model"`
+	EmbeddingModel  domain.ModelID `json:"embedding_model"`
+	ReflectionMode  ReflectionMode `json:"reflection_mode,omitempty"`
+	ReflectionModel domain.ModelID `json:"reflection_model,omitempty"`
+	HighlightWords  []string       `json:"highlight_words"`
 
 	// DefaultChannelModes sets the modes a freshly created channel
 	// starts with, in [domain.ChannelModes.IRCString] form (e.g.

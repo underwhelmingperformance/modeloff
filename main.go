@@ -89,6 +89,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error building tool registry: %v\n", err)
 		os.Exit(1)
 	}
+	reflectionMode := reflectionModeFromConfig(cfg)
 
 	mgr := modelmanager.New(modelmanager.Config{
 		Store:     dataStore,
@@ -97,10 +98,12 @@ func main() {
 		APIFactory: func(apiKey, baseURL string) (api.Client, error) {
 			return api.NewOpenRouterClient(apiKey, baseURL, nil), nil
 		},
-		InitialAPIKey: cfg.APIKey,
-		SmallModel:    cfg.SmallModel,
-		Tools:         toolRegistry,
-		BaseContext:   baseContext,
+		InitialAPIKey:   cfg.APIKey,
+		SmallModel:      cfg.SmallModel,
+		ReflectionMode:  reflectionMode,
+		ReflectionModel: cfg.ReflectionModel,
+		Tools:           toolRegistry,
+		BaseContext:     baseContext,
 	})
 
 	defaultChannelModes, err := defaultChannelModesFromConfig(cfg, cfgStore)
@@ -248,6 +251,28 @@ func drainTimeout(cfg config.Config) time.Duration {
 	)
 
 	return config.DefaultDrainTimeout
+}
+
+// reflectionModeFromConfig returns the reflection mode the manager
+// starts under, which is [config.DefaultReflectionMode] where the
+// setting is absent or unreadable.
+//
+// `/config reflection-mode` validates what it writes, but config.json
+// is hand-editable. Refusing to start on a value this build does not
+// recognise would take away the one place it can be repaired, since
+// `/config` runs inside the TUI.
+func reflectionModeFromConfig(cfg config.Config) modelmanager.ReflectionMode {
+	mode, err := modelmanager.ParseReflectionMode(string(cfg.ReflectionMode))
+	if err != nil {
+		slog.Warn("parse configured reflection mode, using the built-in default",
+			"component", "main",
+			"configured", string(cfg.ReflectionMode),
+			"reflection_mode", mode.String(),
+			"error", err,
+		)
+	}
+
+	return mode.Resolved()
 }
 
 // newAPIClient builds the OpenRouter client the manager starts with,

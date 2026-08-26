@@ -2,6 +2,7 @@ package screens
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,12 @@ func (s ChatScreen) routeConfigResults(
 	case chatcmd.EmbeddingModelSetResult:
 		return s, s.notice(issuingWindow, settingNotice("Embedding model", string(msg.ModelID), msg.Reset)), true
 
+	case chatcmd.ReflectionModeSetResult:
+		return s, s.notice(issuingWindow, settingNotice("Reflection mode", msg.Mode.String(), msg.Reset)), true
+
+	case chatcmd.ReflectionModelSetResult:
+		return s, s.notice(issuingWindow, settingNotice("Reflection model", reflectionModelNotice(msg.ModelID), msg.Reset)), true
+
 	case chatcmd.BaseURLSetResult:
 		return s, s.notice(issuingWindow, settingNotice("Base URL", msg.URL, msg.Reset)), true
 
@@ -71,9 +78,187 @@ func (s ChatScreen) routeConfigResults(
 
 	case chatcmd.PersonaResetResult:
 		return s, s.notice(issuingWindow, fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count)), true
+
+	case chatcmd.PersonaResult:
+		return s, s.notice(issuingWindow, formatPersonaResult(msg)), true
 	}
 
 	return s, nil, false
+}
+
+func reflectionModelNotice(modelID domain.ModelID) string {
+	if modelID == "" {
+		return "small-model"
+	}
+
+	return string(modelID)
+}
+
+func formatPersonaResult(result chatcmd.PersonaResult) string {
+	inspection := result.Inspection
+	var text strings.Builder
+	fmt.Fprintf(&text, "Persona for %s", inspection.Nick)
+	switch result.Action {
+	case chatcmd.PersonaReset:
+		text.WriteString(" reset")
+	case chatcmd.PersonaRolledBack:
+		text.WriteString(" rolled back")
+	case chatcmd.PersonaDescribed:
+		text.WriteString(" described")
+	case chatcmd.PersonaInspected:
+	}
+	fmt.Fprintf(
+		&text, ": revision %d; checkpoint %d.\nPersona: %s",
+		inspection.Revision.ID, inspection.Lineage.Checkpoint,
+		inspection.Revision.Description,
+	)
+	if len(inspection.Revision.DescriptionEvidence) > 0 {
+		fmt.Fprintf(
+			&text, "\nBuilt from experiences: %s",
+			formatExperienceIDs(inspection.Revision.DescriptionEvidence),
+		)
+	}
+	if parent := inspection.Parent; parent != nil &&
+		parent.Description != inspection.Revision.Description {
+		fmt.Fprintf(
+			&text, "\nRevision %d said: %s", parent.ID, parent.Description,
+		)
+	}
+	fmt.Fprintf(&text, "\nReset baseline: %s", inspection.Lineage.Baseline)
+
+	text.WriteString("\nExperiences:")
+	if len(inspection.Experiences) == 0 {
+		text.WriteString(" none")
+	}
+	for _, experience := range inspection.Experiences {
+		fmt.Fprintf(
+			&text, "\n- #%d [%s/%s; sources %s] %s",
+			experience.ID, formatExperienceKind(experience, inspection.Counterparts),
+			experience.Confidence,
+			formatReflectionSources(experience.Sources), experience.Summary,
+		)
+	}
+
+	text.WriteString("\nTendencies:")
+	if len(inspection.Amendments) == 0 {
+		text.WriteString(" none")
+	}
+	for _, amendment := range inspection.Amendments {
+		fmt.Fprintf(
+			&text, "\n- #%d [%s/%s; evidence %s] %s",
+			amendment.ID, formatAmendmentScope(amendment, inspection.Counterparts),
+			amendment.Confidence, formatExperienceIDs(amendment.Evidence),
+			amendment.Tendency,
+		)
+	}
+
+	text.WriteString("\nRecent reflections:")
+	if len(inspection.RecentRuns) == 0 {
+		text.WriteString(" none")
+	}
+	for _, run := range inspection.RecentRuns {
+		experiences, tendencies := reflectionRunCounts(run)
+		fmt.Fprintf(
+			&text,
+			"\n- %s: %s via %s, revision %d -> %d, %s, %s, finished %s",
+			run.ID, run.Outcome, run.ModelID, run.BaseRevisionID,
+			run.ResultRevisionID, experiences, tendencies,
+			run.FinishedAt.Format(time.RFC3339),
+		)
+		if run.RejectionReason != "" {
+			fmt.Fprintf(&text, " (%s)", run.RejectionReason)
+		}
+	}
+
+	text.WriteString("\nRevision transitions:")
+	if len(inspection.Transitions) == 0 {
+		text.WriteString(" none")
+	}
+	for _, transition := range inspection.Transitions {
+		fmt.Fprintf(
+			&text, "\n- %s: %d -> %d at %s",
+			transition.Kind, transition.FromRevisionID, transition.ToRevisionID,
+			transition.At.Format(time.RFC3339),
+		)
+	}
+
+	return text.String()
+}
+
+func formatReflectionSources(sources []domain.ReflectionEventRef) string {
+	values := make([]string, 0, len(sources))
+	for _, source := range sources {
+		values = append(values, strconv.FormatInt(int64(source.Sequence), 10))
+	}
+
+	return strings.Join(values, ", ")
+}
+
+func formatExperienceIDs(ids []domain.ExperienceID) string {
+	values := make([]string, 0, len(ids))
+	for _, id := range ids {
+		values = append(values, strconv.FormatInt(int64(id), 10))
+	}
+
+	return strings.Join(values, ", ")
+}
+
+// formatExperienceKind renders an experience's kind with the actor its subject
+// names, and a preposition saying how that actor relates to the experience: an
+// assertion is a claim the subject made, a relationship experience concerns
+// the subject, and any other kind carrying a subject is about them. An
+// experience with no subject renders its kind alone.
+func formatExperienceKind(
+	experience domain.Experience,
+	counterparts []domain.PersonaCounterpart,
+) string {
+	if experience.SubjectID == nil {
+		return string(experience.Kind)
+	}
+
+	preposition := "about"
+	switch experience.Kind {
+	case domain.ExperienceAssertion:
+		preposition = "by"
+	case domain.ExperienceRelationship:
+		preposition = "with"
+	case domain.ExperienceObservation, domain.ExperienceInterpretation:
+	}
+
+	return fmt.Sprintf(
+		"%s %s %s", experience.Kind, preposition,
+		counterpartNick(*experience.SubjectID, counterparts),
+	)
+}
+
+// counterpartNick gives the current nick for an actor the persona lineage
+// names. An actor that has quit has no instance row left, so the inspection
+// carries no counterpart for it.
+func counterpartNick(
+	id domain.InstanceID,
+	counterparts []domain.PersonaCounterpart,
+) string {
+	for _, counterpart := range counterparts {
+		if counterpart.InstanceID == id {
+			return string(counterpart.Nick)
+		}
+	}
+
+	return "departed counterpart"
+}
+
+func formatAmendmentScope(
+	amendment domain.PersonaAmendment,
+	counterparts []domain.PersonaCounterpart,
+) string {
+	if amendment.Scope != domain.AmendmentRelationship || amendment.Counterpart == nil {
+		return string(amendment.Scope)
+	}
+
+	return fmt.Sprintf(
+		"relationship with %s",
+		counterpartNick(*amendment.Counterpart, counterparts),
+	)
 }
 
 // notice renders a one-line confirmation in the window the command was
@@ -240,4 +425,33 @@ func humanWordList(words []string) string {
 	}
 
 	return strings.Join(words, ", ")
+}
+
+// reflectionRunCounts describes what one run produced.
+//
+// A shadow run accepts nothing by design, so reporting its accepted
+// counts shows an operator nothing happening. Shadow is the mode an
+// operator picks to watch reflection before letting it commit, so a
+// shadow run reports what it proposed.
+func reflectionRunCounts(run domain.ReflectionRun) (string, string) {
+	experiences, tendencies := run.AcceptedExperiences, run.AcceptedAmendments
+	if run.Outcome == domain.ReflectionShadow {
+		experiences, tendencies = run.ProposedExperiences, run.ProposedAmendments
+
+		return pluralise(experiences, "experience proposed", "experiences proposed"),
+			pluralise(tendencies, "tendency change proposed", "tendency changes proposed")
+	}
+
+	return pluralise(experiences, "experience", "experiences"),
+		pluralise(tendencies, "tendency change", "tendency changes")
+}
+
+// pluralise renders a count with the word that agrees with it, so an
+// operator never reads "1 experience(s)".
+func pluralise(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, singular)
+	}
+
+	return fmt.Sprintf("%d %s", count, plural)
 }

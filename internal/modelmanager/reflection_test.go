@@ -432,6 +432,72 @@ func TestManager_records_a_failed_reflection_after_its_context_is_cancelled(t *t
 	}, run)
 }
 
+type discardedReflectionEffect struct {
+	Run     domain.ReflectionRun
+	Persona store.PersonaSnapshot
+}
+
+func TestManager_records_a_reflection_disabled_before_it_committed(t *testing.T) {
+	stored, instance := reflectionSchedulerStore(t)
+	fixed := time.Date(2026, 8, 26, 21, 15, 0, 0, time.UTC)
+	require.NoError(t, stored.AppendReflectionEvents(
+		t.Context(), instance.ID(),
+		reflectionCandidates(1, reflectionSubstantiveThreshold, fixed), fixed,
+	))
+	snapshot, err := stored.PendingReflectionSnapshot(
+		t.Context(), instance.ID(), reflectionInputEventLimit,
+	)
+	require.NoError(t, err)
+	runCtx, withdraw := context.WithCancel(t.Context())
+	var manager *Manager
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return []api.ModelInfo{{
+				ID:                  "test/reflection",
+				SupportedParameters: []string{"tools", "structured_outputs"},
+			}}, nil
+		},
+		ReflectPersonaFn: func(
+			context.Context,
+			domain.ModelID,
+			domain.InstanceID,
+			api.ReflectionInput,
+			...api.ToolDefinition,
+		) (api.ReflectionExploration, error) {
+			require.NoError(t, manager.SetReflectionMode(t.Context(), ReflectionDisabled))
+			withdraw()
+
+			return api.ReflectionExploration{}, nil
+		},
+	}
+	manager = New(Config{
+		Store: stored, APIClient: client, InitialAPIKey: "configured",
+		BaseContext: t.Context, Now: func() time.Time { return fixed },
+		ReflectionMode: ReflectionActive, ReflectionModel: "test/reflection",
+		ReflectionRunID: func() domain.ReflectionRunID { return "discarded-1" },
+	})
+
+	manager.runReflection(runCtx, snapshot)
+	run, err := stored.ReflectionRun(t.Context(), "discarded-1")
+	require.NoError(t, err)
+	persona, err := stored.PersonaSnapshot(t.Context(), instance.ID())
+	require.NoError(t, err)
+	require.NoError(t, manager.DetachAll(t.Context()))
+
+	require.Equal(t, discardedReflectionEffect{
+		Run: domain.ReflectionRun{
+			ID: "discarded-1", InstanceID: instance.ID(),
+			BaseRevisionID: 1, PriorCheckpoint: 0,
+			HighWaterMark:    reflectionSubstantiveThreshold,
+			ResultRevisionID: 1, ModelID: "test/reflection",
+			Outcome:         domain.ReflectionDiscarded,
+			RejectionReason: reflectionDiscardDisabled,
+			StartedAt:       fixed, FinishedAt: fixed,
+		},
+		Persona: snapshot.Persona,
+	}, discardedReflectionEffect{Run: run, Persona: persona})
+}
+
 type supersededAmendmentEffect struct {
 	Amendments []domain.PersonaAmendment
 	Run        domain.ReflectionRun

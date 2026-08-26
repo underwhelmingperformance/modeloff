@@ -23,10 +23,138 @@ type ConfigCommand struct {
 	DrainTimeout    DrainTimeoutConfig    `cmd:"" name:"drain-timeout" help:"Bound the time /quit waits for in-flight LLM dispatches to drain on exit."`
 	SmallModel      SmallModelConfig      `cmd:"" name:"small-model" help:"Set the model used for lightweight tasks."`
 	EmbeddingModel  EmbeddingModelConfig  `cmd:"" name:"embedding-model" help:"Set the embedding model."`
+	ReflectionMode  ReflectionModeConfig  `cmd:"" name:"reflection-mode" help:"Disable reflection, validate it in shadow mode, or activate it."`
+	ReflectionModel ReflectionModelConfig `cmd:"" name:"reflection-model" help:"Set the model used for persona reflection."`
 	Highlight       HighlightConfig       `cmd:"" help:"Set words that trigger visual highlighting."`
 	DefaultModes    DefaultModesConfig    `cmd:"" name:"default-modes" help:"Set the modes a freshly created channel starts with."`
 	TimestampFormat TimestampFormatConfig `cmd:"" name:"timestamp-format" help:"Set or disable timestamp formatting."`
 	Persona         PersonaConfig         `cmd:"" help:"Define a custom persona."`
+}
+
+// ReflectionModeConfig represents `/config reflection-mode <mode>`.
+type ReflectionModeConfig struct {
+	Mode string `arg:"" optional:"" help:"Reflection mode: disabled, shadow, or active"`
+}
+
+// Sources implements command.Completer.
+func (ReflectionModeConfig) Sources() map[string]command.SuggestionSource[CompletionContext] {
+	return map[string]command.SuggestionSource[CompletionContext]{
+		"mode": command.LiteralSource[CompletionContext](
+			command.Suggestion{Value: "disabled", Label: "disabled", Detail: "Record candidates only"},
+			command.Suggestion{Value: "shadow", Label: "shadow", Detail: "Validate without changing state"},
+			command.Suggestion{Value: "active", Label: "active", Detail: "Commit validated reflection"},
+		),
+	}
+}
+
+// Run implements Command.
+func (c ReflectionModeConfig) Run(ctx context.Context, rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return setReflectionModeCmd(ctx, rc, config.ReflectionUnset, true)
+	}
+	if strings.TrimSpace(c.Mode) == "" {
+		return func() tea.Msg {
+			cfg, err := rc.Config.Load(ctx)
+			if err != nil {
+				return rc.errorEvent("config reflection-mode", err)
+			}
+
+			return configNotice(rc, configLine("reflection-mode", cfg.ReflectionMode.String()))
+		}
+	}
+	mode, err := config.ParseReflectionMode(c.Mode)
+	if err != nil {
+		return func() tea.Msg { return rc.errorEvent("config reflection-mode", err) }
+	}
+
+	return setReflectionModeCmd(ctx, rc, mode, false)
+}
+
+func setReflectionModeCmd(
+	ctx context.Context,
+	rc Context,
+	mode config.ReflectionMode,
+	reset bool,
+) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
+			cfg.ReflectionMode = mode
+			return cfg
+		}); err != nil {
+			return rc.errorEvent("config reflection-mode", err)
+		}
+		if err := rc.Manager.SetReflectionMode(ctx, mode); err != nil {
+			return rc.errorEvent("config reflection-mode", err)
+		}
+
+		return ReflectionModeSetResult{Mode: mode, Reset: reset}
+	}
+}
+
+// ReflectionModelConfig represents `/config reflection-model <model-id>`.
+type ReflectionModelConfig struct {
+	ModelID string `arg:"" optional:"" help:"Model ID for persona reflection"`
+}
+
+// Run implements Command.
+func (c ReflectionModelConfig) Run(ctx context.Context, rc Context) tea.Cmd {
+	if rc.configResetRequested() {
+		return setReflectionModelCmd(ctx, rc, "", true)
+	}
+	if strings.TrimSpace(c.ModelID) == "" {
+		return func() tea.Msg {
+			cfg, err := rc.Config.Load(ctx)
+			if err != nil {
+				return rc.errorEvent("config reflection-model", err)
+			}
+			value := string(cfg.ReflectionModel)
+			if value == "" {
+				value = "small-model"
+			}
+
+			return configNotice(rc, configLine("reflection-model", value))
+		}
+	}
+
+	modelID := domain.ModelID(strings.TrimSpace(c.ModelID))
+
+	return func() tea.Msg {
+		// A run explores with the recall tools before it proposes, so tool
+		// support is what it cannot do without. Structured output is
+		// requested where the model has it and the validator is the
+		// guarantee either way, so a model without it still reflects.
+		if err := rc.Manager.EnsureToolCapableModel(ctx, modelID); err != nil {
+			return rc.errorEvent("config reflection-model", err)
+		}
+
+		return setReflectionModel(ctx, rc, modelID, false)
+	}
+}
+
+func setReflectionModelCmd(
+	ctx context.Context,
+	rc Context,
+	modelID domain.ModelID,
+	reset bool,
+) tea.Cmd {
+	return func() tea.Msg { return setReflectionModel(ctx, rc, modelID, reset) }
+}
+
+func setReflectionModel(
+	ctx context.Context,
+	rc Context,
+	modelID domain.ModelID,
+	reset bool,
+) tea.Msg {
+	if _, err := rc.Config.Update(ctx, func(cfg config.Config) config.Config {
+		cfg.ReflectionModel = modelID
+		return cfg
+	}); err != nil {
+		return rc.errorEvent("config reflection-model", err)
+	}
+	rc.Manager.SetReflectionModel(modelID)
+
+	return ReflectionModelSetResult{ModelID: modelID, Reset: reset}
 }
 
 // Run implements Command. A bare `/config` invocation, with no
@@ -750,10 +878,20 @@ func configSettings(cfg config.Config) []configSetting {
 		{"drain-timeout", cfg.DrainTimeout.String()},
 		{"small-model", string(cfg.SmallModel)},
 		{"embedding-model", string(cfg.EmbeddingModel)},
+		{"reflection-mode", cfg.ReflectionMode.String()},
+		{"reflection-model", reflectionModelSetting(cfg.ReflectionModel)},
 		{"highlight", formatWords(cfg.HighlightWords)},
 		{"default-modes", cfg.DefaultChannelModes},
 		{"timestamp-format", formatTimestampFormat(cfg.TimestampFormat)},
 	}
+}
+
+func reflectionModelSetting(modelID domain.ModelID) string {
+	if modelID == "" {
+		return "small-model"
+	}
+
+	return string(modelID)
 }
 
 // renderConfig formats every setting as one "key = value" line per
