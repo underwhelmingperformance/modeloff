@@ -48,20 +48,17 @@ func TestManager_DetachAll_ends_the_background_lifecycle_after_a_clean_drain(t *
 	before := mgr.lifecycleContext.Err()
 	drainErr := mgr.DetachAll(t.Context())
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		BaseContextCalls int
 		Before           error
 		DrainErr         error
 		After            error
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		BaseContextCalls: 1,
 		After:            context.Canceled,
-	}, struct {
-		BaseContextCalls int
-		Before           error
-		DrainErr         error
-		After            error
-	}{
+	}, assertionSnapshot{
 		BaseContextCalls: baseContextCalls,
 		Before:           before,
 		DrainErr:         drainErr,
@@ -79,19 +76,17 @@ func TestManager_DetachAll_ends_the_background_lifecycle_on_timeout(t *testing.T
 	err := mgr.DetachAll(drainContext)
 	var drainErr *DrainTimeoutError
 	require.ErrorAs(t, err, &drainErr)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Abandoned []protocol.ClientID
 		Cause     error
 		Lifecycle error
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Abandoned: []protocol.ClientID{id},
 		Cause:     context.Canceled,
 		Lifecycle: context.Canceled,
-	}, struct {
-		Abandoned []protocol.ClientID
-		Cause     error
-		Lifecycle error
-	}{
+	}, assertionSnapshot{
 		Abandoned: drainErr.Abandoned,
 		Cause:     drainErr.Err,
 		Lifecycle: mgr.lifecycleContext.Err(),
@@ -111,21 +106,18 @@ func TestManager_DetachAll_does_not_rejoin_an_abandoned_finaliser(t *testing.T) 
 
 	var drainErr *DrainTimeoutError
 	require.ErrorAs(t, firstErr, &drainErr)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Abandoned      []protocol.ClientID
 		EntryAbandoned bool
 		StillDraining  map[protocol.ClientID]*drainingClient
 		SecondErr      error
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Abandoned:      []protocol.ClientID{id},
 		EntryAbandoned: true,
 		StillDraining:  map[protocol.ClientID]*drainingClient{id: entry},
-	}, struct {
-		Abandoned      []protocol.ClientID
-		EntryAbandoned bool
-		StillDraining  map[protocol.ClientID]*drainingClient
-		SecondErr      error
-	}{
+	}, assertionSnapshot{
 		Abandoned:      drainErr.Abandoned,
 		EntryAbandoned: entry.abandoned,
 		StillDraining:  mgr.draining,
@@ -145,7 +137,9 @@ func TestManager_abandoned_finaliser_does_not_delete_memory(t *testing.T) {
 	}
 	require.NoError(t, backing.SaveInstance(ctx, inst))
 	require.NoError(t, backing.DeleteInstanceByID(ctx, id))
-	require.NoError(t, backing.WriteMemory(ctx, id, restored.Key, restored.Content, restored.At))
+	require.NoError(t, backing.WriteMemory(
+		ctx, id, restored.Key, restored.Content, restored.At, restored.Pinned,
+	))
 
 	mgr := New(Config{
 		Store:       backing,
@@ -167,19 +161,17 @@ func TestManager_abandoned_finaliser_does_not_delete_memory(t *testing.T) {
 	require.NoError(t, err)
 	pending, err := backing.ListPendingMemoryDeletions(ctx)
 	require.NoError(t, err)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Memories []storemod.MemoryEntry
 		Pending  []domain.InstanceID
 		Draining map[protocol.ClientID]*drainingClient
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Memories: []storemod.MemoryEntry{restored},
 		Pending:  []domain.InstanceID{id},
 		Draining: map[protocol.ClientID]*drainingClient{},
-	}, struct {
-		Memories []storemod.MemoryEntry
-		Pending  []domain.InstanceID
-		Draining map[protocol.ClientID]*drainingClient
-	}{
+	}, assertionSnapshot{
 		Memories: memories,
 		Pending:  pending,
 		Draining: mgr.draining,

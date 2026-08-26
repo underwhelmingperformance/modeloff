@@ -209,7 +209,7 @@ func testSessionQuitCommitsRecipientProjectionWithDeletion(t *testing.T, anonymo
 		wantProjection := append(slices.Clone(projectionBefore), domain.StoredEvent{
 			ID: projectionBefore[len(projectionBefore)-1].ID + 1, Event: projectedEvent,
 		})
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Result          quitResult
 			SeparateAppend  bool
 			PendingRecords  []storemod.ChannelScrollbackRecord
@@ -219,24 +219,16 @@ func testSessionQuitCommitsRecipientProjectionWithDeletion(t *testing.T, anonymo
 			ProjectionError error
 			Projection      []domain.StoredEvent
 			Deliveries      []protocol.Delivery
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			ActorDeleted: true,
 			Audit:        wantAudit,
 			Projection:   wantProjection,
 			Deliveries: []protocol.Delivery{{
 				Event: deliveryEvent, Targets: deliveryTargets,
 			}},
-		}, struct {
-			Result          quitResult
-			SeparateAppend  bool
-			PendingRecords  []storemod.ChannelScrollbackRecord
-			ActorDeleted    bool
-			AuditError      error
-			Audit           []domain.StoredEvent
-			ProjectionError error
-			Projection      []domain.StoredEvent
-			Deliveries      []protocol.Delivery
-		}{
+		}, assertionSnapshot{
 			Result:          actualResult,
 			SeparateAppend:  separateAppend,
 			PendingRecords:  pendingRecords,
@@ -312,13 +304,15 @@ func TestSession_quit_serialises_committed_projection_with_replay(t *testing.T) 
 		quit := domain.Quit{
 			Source: domain.ClientSource(actor.ID(), actor.Nick()), Message: "gone", At: fixedTime,
 		}
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Result             quitResult
 			ProjectionUnlocked bool
 			SnapshotError      error
 			Snapshot           []protocol.ScrollbackEntry
 			Deliveries         []protocol.Delivery
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Snapshot: []protocol.ScrollbackEntry{},
 			Deliveries: []protocol.Delivery{
 				{Event: peerJoin},
@@ -329,13 +323,7 @@ func TestSession_quit_serialises_committed_projection_with_replay(t *testing.T) 
 				{Event: actorJoin},
 				{Event: quit, Targets: []domain.ChannelName{"#dev"}},
 			},
-		}, struct {
-			Result             quitResult
-			ProjectionUnlocked bool
-			SnapshotError      error
-			Snapshot           []protocol.ScrollbackEntry
-			Deliveries         []protocol.Delivery
-		}{
+		}, assertionSnapshot{
 			Result:             actualResult,
 			ProjectionUnlocked: projectionUnlocked,
 			SnapshotError:      snapshotErr,
@@ -370,23 +358,19 @@ func TestWindowGuard_rechecks_command_authority_on_the_writer(t *testing.T) {
 
 	response, sendErr := guard.Send(ctx, client, protocol.Nick{New: "renamed"})
 	stored, storedErr := backing.GetInstanceByID(ctx, botty.ID())
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Response         protocol.Response
 		AuthorityChanged bool
 		LiveNick         domain.Nick
 		StoredError      error
 		StoredNick       domain.Nick
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		AuthorityChanged: true,
 		LiveNick:         "botty",
 		StoredNick:       "botty",
-	}, struct {
-		Response         protocol.Response
-		AuthorityChanged bool
-		LiveNick         domain.Nick
-		StoredError      error
-		StoredNick       domain.Nick
-	}{
+	}, assertionSnapshot{
 		Response:         response,
 		AuthorityChanged: errors.Is(sendErr, protocol.ErrWindowAuthorityChanged),
 		LiveNick:         botty.Nick(),
@@ -694,21 +678,17 @@ func TestSession_peer_deletion_closes_direct_turn_admission_before_quit_propagat
 
 	var unknown domain.UnknownNickError
 	require.ErrorAs(t, gotGuard.Err, &unknown)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Guard      protocol.WindowGuard
 		Response   protocol.Response
 		KillError  error
 		Entries    []storemod.ModelTurnEntry
 		EntriesErr error
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Response: protocol.Response{},
-	}, struct {
-		Guard      protocol.WindowGuard
-		Response   protocol.Response
-		KillError  error
-		Entries    []storemod.ModelTurnEntry
-		EntriesErr error
-	}{
+	}, assertionSnapshot{
 		Guard:      gotGuard.Guard,
 		Response:   result.Response,
 		KillError:  result.Err,
@@ -775,21 +755,17 @@ func TestSession_last_member_deletion_closes_invitation_turn_admission(t *testin
 
 	require.ErrorAs(t, begin.Err, &notOnChannel)
 	require.ErrorIs(t, channelErr, storemod.ErrNoSuchChannel)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		RecorderPresent bool
 		Response        protocol.Response
 		QuitError       error
 		Entries         []storemod.ModelTurnEntry
 		EntriesError    error
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Response: protocol.Response{},
-	}, struct {
-		RecorderPresent bool
-		Response        protocol.Response
-		QuitError       error
-		Entries         []storemod.ModelTurnEntry
-		EntriesError    error
-	}{
+	}, assertionSnapshot{
 		RecorderPresent: begin.Recorder != nil,
 		Response:        quitResult.Response,
 		QuitError:       quitResult.Err,
@@ -847,7 +823,7 @@ func TestSession_invitation_turn_admission_orders_with_channel_revocation(t *tes
 	entries, entriesErr := sqliteStore.ModelTurnEntries(ctx, 1)
 	_, channelErr := sqliteStore.GetWindow(ctx, "#solo")
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		RecorderPresent                   bool
 		BeginError                        error
 		ChannelStateLockedDuringAdmission bool
@@ -856,20 +832,13 @@ func TestSession_invitation_turn_admission_orders_with_channel_revocation(t *tes
 		EntriesError                      error
 		ChannelAbsent                     bool
 		GuardValid                        bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		RecorderPresent:                   true,
 		ChannelStateLockedDuringAdmission: true,
 		ChannelAbsent:                     true,
-	}, struct {
-		RecorderPresent                   bool
-		BeginError                        error
-		ChannelStateLockedDuringAdmission bool
-		PartError                         error
-		Entries                           []storemod.ModelTurnEntry
-		EntriesError                      error
-		ChannelAbsent                     bool
-		GuardValid                        bool
-	}{
+	}, assertionSnapshot{
 		RecorderPresent:                   begin.Recorder != nil,
 		BeginError:                        begin.Err,
 		ChannelStateLockedDuringAdmission: !channelStateUnlocked,
@@ -967,7 +936,7 @@ func TestSession_instance_deletion_orders_with_direct_turn_admission(t *testing.
 				kill := <-killed
 				entries, entriesErr := sqliteStore.ModelTurnEntries(ctx, 1)
 				var unknown domain.UnknownNickError
-				require.Equal(t, struct {
+				type assertionSnapshot struct {
 					RecorderPresent bool
 					BeginClosed     bool
 					BeginPeerGone   bool
@@ -975,19 +944,13 @@ func TestSession_instance_deletion_orders_with_direct_turn_admission(t *testing.
 					KillError       error
 					Entries         []storemod.ModelTurnEntry
 					EntriesError    error
-				}{
+				}
+
+				require.Equal(t, assertionSnapshot{
 					BeginClosed:   tt.wantClosed,
 					BeginPeerGone: tt.wantGone,
 					Response:      protocol.Response{},
-				}, struct {
-					RecorderPresent bool
-					BeginClosed     bool
-					BeginPeerGone   bool
-					Response        protocol.Response
-					KillError       error
-					Entries         []storemod.ModelTurnEntry
-					EntriesError    error
-				}{
+				}, assertionSnapshot{
 					RecorderPresent: begin.Recorder != nil,
 					BeginClosed:     errors.Is(begin.Err, protocol.ErrSubscriptionClosed),
 					BeginPeerGone:   errors.As(begin.Err, &unknown),
@@ -1092,7 +1055,7 @@ func TestSession_invitation_turn_transfers_to_the_joined_membership(t *testing.T
 	})
 	closedEntries, closedEntriesErr := sqliteStore.ModelTurnEntries(ctx, 1)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		JoinedGuardValid bool
 		AppendErr        error
 		Entries          []storemod.ModelTurnEntry
@@ -1101,21 +1064,14 @@ func TestSession_invitation_turn_transfers_to_the_joined_membership(t *testing.T
 		ClosedAppendErr  error
 		ClosedEntries    []storemod.ModelTurnEntry
 		ClosedEntriesErr error
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		JoinedGuardValid: joinedGuardValid,
 		Entries:          []storemod.ModelTurnEntry{input, toolResult},
 		ClosedAppendErr:  storemod.ErrModelTurnClosed,
 		ClosedEntries:    []storemod.ModelTurnEntry{input, toolResult},
-	}, struct {
-		JoinedGuardValid bool
-		AppendErr        error
-		Entries          []storemod.ModelTurnEntry
-		EntriesErr       error
-		PartedGuardValid bool
-		ClosedAppendErr  error
-		ClosedEntries    []storemod.ModelTurnEntry
-		ClosedEntriesErr error
-	}{
+	}, assertionSnapshot{
 		JoinedGuardValid: true,
 		AppendErr:        appendErr,
 		Entries:          entries,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -31,6 +32,21 @@ var chatcmdToolRegistry = func() *modelclient.ToolRegistry {
 	}
 	return r
 }()
+
+func currentChannelStateMessage(
+	channel domain.ChannelName,
+	modes string,
+	members ...string,
+) protocol.IRCMessage {
+	return protocol.IRCMessage{
+		Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+		Target: string(channel),
+		Body: fmt.Sprintf(
+			"current state for %s: modes %s; members %s",
+			channel, modes, strings.Join(members, " "),
+		),
+	}
+}
 
 // msgToolCalls builds a [api.CompletionResult] whose PendingToolCalls
 // invoke `msg` once. Each body becomes a separate IRC message in

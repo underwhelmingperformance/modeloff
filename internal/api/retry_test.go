@@ -120,16 +120,15 @@ func TestRetryAfter(t *testing.T) {
 
 			got, ok := RetryAfter(tc.err(t), now)
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Delay time.Duration
 				OK    bool
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Delay: tc.want,
 				OK:    tc.ok,
-			}, struct {
-				Delay time.Duration
-				OK    bool
-			}{
+			}, assertionSnapshot{
 				Delay: got,
 				OK:    ok,
 			})

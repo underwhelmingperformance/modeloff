@@ -224,23 +224,19 @@ func TestSession_failed_add_releases_the_client_when_instance_deletion_fails(t *
 		_, err = userSendMessage(t.Context(), t, sess, "#general", "after failed add")
 		require.NoError(t, err)
 		synctest.Wait()
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			dispatches       int32
 			deletedInstances []protocol.ClientID
 			attached         []protocol.ClientID
 			active           []domain.InstanceID
 			members          []domain.Nick
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			attached: []protocol.ClientID{},
 			active:   []domain.InstanceID{protocol.UserClientID},
 			members:  []domain.Nick{"testuser"},
-		}, struct {
-			dispatches       int32
-			deletedInstances []protocol.ClientID
-			attached         []protocol.ClientID
-			active           []domain.InstanceID
-			members          []domain.Nick
-		}{
+		}, assertionSnapshot{
 			dispatches:       dispatches.Load(),
 			deletedInstances: factory.deletedInstances(),
 			attached:         factory.attached(),

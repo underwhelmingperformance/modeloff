@@ -541,7 +541,7 @@ func TestUserClient_partial_join_updates_state_before_returning_an_execution_err
 			require.ErrorAs(t, response.Err, &responseErr)
 			responseErr.At = time.Time{}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Events                 []protocol.Event
 				ResponseError          domain.ChannelInviteOnlyError
 				ExecutionChannel       domain.ChannelName
@@ -557,7 +557,9 @@ func TestUserClient_partial_join_updates_state_before_returning_an_execution_err
 				StoredInstanceUnjoined bool
 				RetryResponse          protocol.Response
 				RetryOK                bool
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Events: []protocol.Event{
 					domain.JoinedChannel{Channel: "#general"},
 					domain.ChannelInviteOnlyError{Channel: "#locked"},
@@ -574,23 +576,7 @@ func TestUserClient_partial_join_updates_state_before_returning_an_execution_err
 					domain.JoinedChannel{Channel: "#broken"},
 				}},
 				RetryOK: true,
-			}, struct {
-				Events                 []protocol.Event
-				ResponseError          domain.ChannelInviteOnlyError
-				ExecutionChannel       domain.ChannelName
-				Autojoin               []domain.ChannelName
-				GeneralUnread          int
-				LockedUnread           int
-				InGeneral              bool
-				InLocked               bool
-				InBrokenBeforeRetry    bool
-				BrokenWindow           protocol.WindowTarget
-				BrokenWindowOK         bool
-				StoredWindowAbsent     bool
-				StoredInstanceUnjoined bool
-				RetryResponse          protocol.Response
-				RetryOK                bool
-			}{
+			}, assertionSnapshot{
 				Events:              events,
 				ResponseError:       responseErr,
 				ExecutionChannel:    joinExecutionErr.Channel,
@@ -678,27 +664,22 @@ func TestUserClient_Drain_waits_for_cancelled_command_bookkeeping(t *testing.T) 
 			Channels: []domain.ChannelName{"#other"},
 		})
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			CommandResponse protocol.Response
 			CommandError    error
 			DrainError      error
 			Autojoin        []domain.ChannelName
 			ClosedResponse  protocol.Response
 			ClosedError     error
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			CommandResponse: protocol.Response{Events: []protocol.Event{
 				domain.JoinedChannel{Channel: "#general"},
 			}},
 			Autojoin:    []domain.ChannelName{"#general"},
 			ClosedError: protocol.ErrSubscriptionClosed,
-		}, struct {
-			CommandResponse protocol.Response
-			CommandError    error
-			DrainError      error
-			Autojoin        []domain.ChannelName
-			ClosedResponse  protocol.Response
-			ClosedError     error
-		}{
+		}, assertionSnapshot{
 			CommandResponse: result.Response,
 			CommandError:    result.Error,
 			DrainError:      drainErr,
@@ -761,20 +742,17 @@ func TestUserClient_Drain_waits_for_autojoin_restore_bookkeeping(t *testing.T) {
 		autojoin, err := backing.ListAutojoinChannels(ctx)
 		require.NoError(t, err)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			DrainWaited  bool
 			RestoreError error
 			DrainError   error
 			Autojoin     []domain.ChannelName
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			DrainWaited: true,
 			Autojoin:    []domain.ChannelName{"#general"},
-		}, struct {
-			DrainWaited  bool
-			RestoreError error
-			DrainError   error
-			Autojoin     []domain.ChannelName
-		}{
+		}, assertionSnapshot{
 			DrainWaited:  earlyDrain == nil,
 			RestoreError: restoreErr,
 			DrainError:   drainErr,
@@ -833,23 +811,19 @@ func TestUserClient_Drain_waits_for_dm_window_bookkeeping(t *testing.T) {
 		require.NoError(t, err)
 		closedErr := user.RecordDMWindowOpen("inst-helper").Wait()
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			DrainWaited bool
 			WriteError  error
 			DrainError  error
 			Open        []domain.InstanceID
 			ClosedError error
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			DrainWaited: true,
 			Open:        []domain.InstanceID{"inst-botty"},
 			ClosedError: protocol.ErrSubscriptionClosed,
-		}, struct {
-			DrainWaited bool
-			WriteError  error
-			DrainError  error
-			Open        []domain.InstanceID
-			ClosedError error
-		}{
+		}, assertionSnapshot{
 			DrainWaited: earlyDrain == nil,
 			WriteError:  writeErr,
 			DrainError:  drainErr,
@@ -880,17 +854,15 @@ func TestUserClient_UI_state_writes_finish_in_acceptance_order(t *testing.T) {
 	open, err := backing.ListDMWindows(t.Context())
 	require.NoError(t, err)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		CloseError error
 		OpenError  error
 		Open       []domain.InstanceID
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Open: []domain.InstanceID{"inst-botty"},
-	}, struct {
-		CloseError error
-		OpenError  error
-		Open       []domain.InstanceID
-	}{
+	}, assertionSnapshot{
 		CloseError: closeErr,
 		OpenError:  openErr,
 		Open:       open,
@@ -913,7 +885,7 @@ func TestUserClient_UI_state_writes_begin_in_acceptance_order(t *testing.T) {
 	open, openReadErr := backing.ListDMWindows(t.Context())
 	last, lastErr := backing.GetLastWindow(t.Context())
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		OpenWriteError  error
 		FocusWriteError error
 		OpenReadError   error
@@ -921,19 +893,13 @@ func TestUserClient_UI_state_writes_begin_in_acceptance_order(t *testing.T) {
 		LastReadError   error
 		Last            domain.Window
 		Effects         []string
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Open:    []domain.InstanceID{"inst-botty"},
 		Last:    domain.WindowKey(domain.StatusChannelName),
 		Effects: []string{"open inst-botty", "focus " + string(domain.StatusChannelName)},
-	}, struct {
-		OpenWriteError  error
-		FocusWriteError error
-		OpenReadError   error
-		Open            []domain.InstanceID
-		LastReadError   error
-		Last            domain.Window
-		Effects         []string
-	}{
+	}, assertionSnapshot{
 		OpenWriteError:  openWriteErr,
 		FocusWriteError: focusWriteErr,
 		OpenReadError:   openReadErr,
@@ -1031,7 +997,7 @@ func TestUserClient_JoinAutojoinChannels_counts_only_unconfirmed_targets(t *test
 	require.NoError(t, err)
 	span := oteltest.FindSpan(t, recorder, "userclient.autojoin")
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Autojoin  []domain.ChannelName
 		InGeneral bool
 		InLocked  bool
@@ -1040,7 +1006,9 @@ func TestUserClient_JoinAutojoinChannels_counts_only_unconfirmed_targets(t *test
 		Failed    string
 		Channels  string
 		Logs      []map[string]any
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Autojoin:  []domain.ChannelName{"#general"},
 		InGeneral: true,
 		Count:     "3",
@@ -1063,16 +1031,7 @@ func TestUserClient_JoinAutojoinChannels_counts_only_unconfirmed_targets(t *test
 				"msg":                  "autojoin channels",
 			},
 		},
-	}, struct {
-		Autojoin  []domain.ChannelName
-		InGeneral bool
-		InLocked  bool
-		InBroken  bool
-		Count     string
-		Failed    string
-		Channels  string
-		Logs      []map[string]any
-	}{
+	}, assertionSnapshot{
 		Autojoin:  autojoin,
 		InGeneral: user.InChannel("#general"),
 		InLocked:  user.InChannel("#locked"),

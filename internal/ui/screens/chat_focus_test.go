@@ -169,20 +169,17 @@ func TestChatScreen_stale_query_opens_without_replacing_newer_focus(t *testing.T
 	collectMsgs(queryCmd)
 
 	dm, open := screen.windowByName("inst-botty")
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active     domain.ChannelName
 		FocusAt    time.Time
 		DMOpen     bool
 		DMActivity bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active: "#newer", FocusAt: intentAt.Add(time.Minute),
 		DMOpen: true, DMActivity: true,
-	}, struct {
-		Active     domain.ChannelName
-		FocusAt    time.Time
-		DMOpen     bool
-		DMActivity bool
-	}{
+	}, assertionSnapshot{
 		Active:     screen.activeName(),
 		FocusAt:    screen.focusAt,
 		DMOpen:     open,
@@ -218,20 +215,17 @@ func TestChatScreen_delayed_part_preserves_fallback_focus_time(t *testing.T) {
 	})
 	collectMsgs(competingCmd)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active           domain.ChannelName
 		FocusAt          time.Time
 		FallbackUserTime time.Time
 		CompetingActive  bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active: "#a", FocusAt: focusedAt, FallbackUserTime: focusedAt,
 		CompetingActive: true,
-	}, struct {
-		Active           domain.ChannelName
-		FocusAt          time.Time
-		FallbackUserTime time.Time
-		CompetingActive  bool
-	}{
+	}, assertionSnapshot{
 		Active:           screen.activeName(),
 		FocusAt:          screen.focusAt,
 		FallbackUserTime: fallback.UserTime,
@@ -290,7 +284,7 @@ func TestChatScreen_join_focus_keeps_the_original_intent_time(t *testing.T) {
 		joinedTopic = joinedChannel.Topic
 		joinedMembers = slices.Collect(joinedChannel.Members.All())
 	}
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active           domain.ChannelName
 		FocusAt          time.Time
 		JoinedOpen       bool
@@ -299,7 +293,9 @@ func TestChatScreen_join_focus_keeps_the_original_intent_time(t *testing.T) {
 		JoinedMembers    []domain.Member
 		PendingJoinFocus map[domain.ChannelName]time.Time
 		JoinReplyDone    map[domain.ChannelName]bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active:         "#newer",
 		FocusAt:        navigatedAt,
 		JoinedOpen:     true,
@@ -311,16 +307,7 @@ func TestChatScreen_join_focus_keeps_the_original_intent_time(t *testing.T) {
 		},
 		PendingJoinFocus: map[domain.ChannelName]time.Time{"#joined": intentAt},
 		JoinReplyDone:    map[domain.ChannelName]bool{"#joined": false},
-	}, struct {
-		Active           domain.ChannelName
-		FocusAt          time.Time
-		JoinedOpen       bool
-		JoinedActivity   bool
-		JoinedTopic      string
-		JoinedMembers    []domain.Member
-		PendingJoinFocus map[domain.ChannelName]time.Time
-		JoinReplyDone    map[domain.ChannelName]bool
-	}{
+	}, assertionSnapshot{
 		Active:           screen.activeName(),
 		FocusAt:          screen.focusAt,
 		JoinedOpen:       open,
@@ -337,16 +324,7 @@ func TestChatScreen_join_focus_keeps_the_original_intent_time(t *testing.T) {
 	}})
 	collectMsgs(endCmd)
 
-	require.Equal(t, struct {
-		Active           domain.ChannelName
-		FocusAt          time.Time
-		JoinedOpen       bool
-		JoinedActivity   bool
-		JoinedTopic      string
-		JoinedMembers    []domain.Member
-		PendingJoinFocus map[domain.ChannelName]time.Time
-		JoinReplyDone    map[domain.ChannelName]bool
-	}{
+	require.Equal(t, assertionSnapshot{
 		Active:         "#newer",
 		FocusAt:        navigatedAt,
 		JoinedOpen:     true,
@@ -358,16 +336,7 @@ func TestChatScreen_join_focus_keeps_the_original_intent_time(t *testing.T) {
 		},
 		PendingJoinFocus: map[domain.ChannelName]time.Time{},
 		JoinReplyDone:    map[domain.ChannelName]bool{"#joined": true},
-	}, struct {
-		Active           domain.ChannelName
-		FocusAt          time.Time
-		JoinedOpen       bool
-		JoinedActivity   bool
-		JoinedTopic      string
-		JoinedMembers    []domain.Member
-		PendingJoinFocus map[domain.ChannelName]time.Time
-		JoinReplyDone    map[domain.ChannelName]bool
-	}{
+	}, assertionSnapshot{
 		Active:           screen.activeName(),
 		FocusAt:          screen.focusAt,
 		JoinedOpen:       open,
@@ -407,19 +376,17 @@ func TestChatScreen_dm_restore_failure_uses_the_channel_fallback(t *testing.T) {
 	}
 
 	_, generalOpen := screen.windowByName("#general")
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active        domain.ChannelName
 		DMRestoreDone bool
 		GeneralOpen   bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active:        "#general",
 		DMRestoreDone: true,
 		GeneralOpen:   true,
-	}, struct {
-		Active        domain.ChannelName
-		DMRestoreDone bool
-		GeneralOpen   bool
-	}{
+	}, assertionSnapshot{
 		Active:        screen.activeName(),
 		DMRestoreDone: screen.dmRestoreDone,
 		GeneralOpen:   generalOpen,
@@ -427,6 +394,18 @@ func TestChatScreen_dm_restore_failure_uses_the_channel_fallback(t *testing.T) {
 }
 
 func TestChatScreen_startup_waits_for_all_autojoin_channels_before_focusing(t *testing.T) {
+	type startupState struct {
+		Active          domain.ChannelName
+		DMRestoreDone   bool
+		AutojoinPending bool
+	}
+	type assertionSnapshot struct {
+		BeforeAutojoin startupState
+		Active         domain.ChannelName
+		SavedOpen      bool
+		SavedActivity  bool
+	}
+
 	screen := newScreenFixture(t)
 	connection := NewConnectionScreen(ConnectionConfig{Session: fakeConnector{}}, screen)
 	require.IsType(t, ChatScreen{}, connection.chatScreen)
@@ -444,11 +423,7 @@ func TestChatScreen_startup_waits_for_all_autojoin_channels_before_focusing(t *t
 		screen, _, _ = screen.routeWindows(message)
 	}
 
-	beforeAutojoin := struct {
-		Active          domain.ChannelName
-		DMRestoreDone   bool
-		AutojoinPending bool
-	}{
+	beforeAutojoin := startupState{
 		Active:          screen.activeName(),
 		DMRestoreDone:   screen.dmRestoreDone,
 		AutojoinPending: screen.autojoinPending,
@@ -465,36 +440,14 @@ func TestChatScreen_startup_waits_for_all_autojoin_channels_before_focusing(t *t
 	}
 
 	saved, savedOpen := screen.windowByName("#saved")
-	require.Equal(t, struct {
-		BeforeAutojoin struct {
-			Active          domain.ChannelName
-			DMRestoreDone   bool
-			AutojoinPending bool
-		}
-		Active        domain.ChannelName
-		SavedOpen     bool
-		SavedActivity bool
-	}{
-		BeforeAutojoin: struct {
-			Active          domain.ChannelName
-			DMRestoreDone   bool
-			AutojoinPending bool
-		}{
+	require.Equal(t, assertionSnapshot{
+		BeforeAutojoin: startupState{
 			DMRestoreDone:   true,
 			AutojoinPending: true,
 		},
 		Active:    "#saved",
 		SavedOpen: true,
-	}, struct {
-		BeforeAutojoin struct {
-			Active          domain.ChannelName
-			DMRestoreDone   bool
-			AutojoinPending bool
-		}
-		Active        domain.ChannelName
-		SavedOpen     bool
-		SavedActivity bool
-	}{
+	}, assertionSnapshot{
 		BeforeAutojoin: beforeAutojoin,
 		Active:         screen.activeName(),
 		SavedOpen:      savedOpen,
@@ -665,13 +618,15 @@ func TestChatScreen_own_nick_change_in_focused_self_DM_is_buffered_once(t *testi
 		}
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		SelfDM        windowState
 		SharedChannel windowState
 		Visible       components.WindowContent
 		ChecklistNick domain.Nick
 		Effects       []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		SelfDM: windowState{
 			DisplayName: "newnick",
 			Kind:        domain.KindDM,
@@ -703,13 +658,7 @@ func TestChatScreen_own_nick_change_in_focused_self_DM_is_buffered_once(t *testi
 			components.ChannelHasLifecycleMsg{Channel: "#general"},
 			components.ScrollbackUpdatedMsg{},
 		},
-	}, struct {
-		SelfDM        windowState
-		SharedChannel windowState
-		Visible       components.WindowContent
-		ChecklistNick domain.Nick
-		Effects       []tea.Msg
-	}{
+	}, assertionSnapshot{
 		SelfDM:        state(selfDM),
 		SharedChannel: state(channel),
 		Visible:       screen.visible.content(),

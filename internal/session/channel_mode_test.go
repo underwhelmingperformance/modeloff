@@ -122,25 +122,20 @@ func TestHandleChannelMode_failed_member_mode_write_preserves_permissions(t *tes
 	member, memberOK := window.Members.GetByInstance(botty)
 	gateErr := sess.requireChannelOp(botty, window, "INVITE", "#chan")
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Response       protocol.Response
 		SaveFailed     bool
 		WindowError    error
 		MemberPresent  bool
 		Modes          domain.MemberModes
 		GateStillFails bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		SaveFailed:     true,
 		MemberPresent:  true,
 		GateStillFails: true,
-	}, struct {
-		Response       protocol.Response
-		SaveFailed     bool
-		WindowError    error
-		MemberPresent  bool
-		Modes          domain.MemberModes
-		GateStillFails bool
-	}{
+	}, assertionSnapshot{
 		Response:       resp,
 		SaveFailed:     errors.Is(err, sentinel),
 		WindowError:    windowErr,

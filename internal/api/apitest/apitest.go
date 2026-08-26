@@ -37,11 +37,19 @@ type Fake struct {
 		conv *api.Conversation,
 		results []api.ToolResult,
 	) (api.RenderedEventRequest, error)
+	SummarizeContextFn func(
+		ctx context.Context,
+		modelID domain.ModelID,
+		selfInstanceID domain.InstanceID,
+		previous []string,
+		sources []protocol.IRCMessage,
+	) (api.ContextSummaryResult, error)
 	GenerateNickFn     func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
 	GeneratePersonasFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
 }
 
 var _ api.Client = (*Fake)(nil)
+var _ api.ContextSummarizer = (*Fake)(nil)
 
 // ListModels answers through [Fake.ListModelsFn], or nil results
 // with no error.
@@ -59,7 +67,7 @@ func (f *Fake) RenderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...api.ToolDefinition,
 ) (api.RenderedEventRequest, error) {
@@ -82,21 +90,54 @@ func (f *Fake) RenderToolResultRequest(
 	return api.RenderedEventRequest{}, nil
 }
 
+// RenderContextSummaryRequest returns the standard OpenRouter request
+// shape used by the test client.
+func (f *Fake) RenderContextSummaryRequest(
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	previous []string,
+	sources []protocol.IRCMessage,
+) (api.RenderedEventRequest, error) {
+	client := api.NewOpenRouterClient("", "https://example.invalid/v1", nil)
+
+	return client.RenderContextSummaryRequest(
+		modelID, selfInstanceID, previous, sources,
+	)
+}
+
+// SummarizeContext answers through [Fake.SummarizeContextFn], or a
+// fixed compact summary when no hook is configured.
+func (f *Fake) SummarizeContext(
+	ctx context.Context,
+	modelID domain.ModelID,
+	selfInstanceID domain.InstanceID,
+	previous []string,
+	sources []protocol.IRCMessage,
+) (api.ContextSummaryResult, error) {
+	if f.SummarizeContextFn != nil {
+		return f.SummarizeContextFn(ctx, modelID, selfInstanceID, previous, sources)
+	}
+
+	return api.ContextSummaryResult{Summary: "compacted context"}, nil
+}
+
 // SendEvents answers through [Fake.SendEventsFn], or an empty
 // [api.CompletionResult]. `tools` is not forwarded to the hook: no
 // caller across the test suite this double serves has needed to
-// inspect the tool list a dispatch turn offered.
+// inspect the tool list a dispatch turn offered. The hook receives
+// the transcript flattened into provider order, which is what a test
+// asserting on the prompt reads.
 func (f *Fake) SendEvents(
 	ctx context.Context,
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	if f.SendEventsFn != nil {
-		return f.SendEventsFn(ctx, modelID, selfInstanceID, systemPrompt, history, events)
+		return f.SendEventsFn(ctx, modelID, selfInstanceID, systemPrompt, history.Messages(), events)
 	}
 
 	return api.CompletionResult{}, nil

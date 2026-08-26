@@ -201,12 +201,14 @@ func TestChatScreen_clear_keeps_the_issuing_window_after_focus_changes(t *testin
 
 	screen, effects := screen.update(cmd())
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active  domain.ChannelName
 		General []domain.Event
 		Other   []domain.Event
 		Effects []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active: "#other",
 		Other: []domain.Event{domain.Message{
 			Source: domain.LegacyClientSource("bob"),
@@ -214,12 +216,7 @@ func TestChatScreen_clear_keeps_the_issuing_window_after_focus_changes(t *testin
 			Body:   "keep me",
 		}},
 		Effects: []tea.Msg{components.ScrollbackClearedMsg{Channel: "#general"}},
-	}, struct {
-		Active  domain.ChannelName
-		General []domain.Event
-		Other   []domain.Event
-		Effects []tea.Msg
-	}{
+	}, assertionSnapshot{
 		Active:  screen.active.Name(),
 		General: general.Scrollback.Events(),
 		Other:   other.Scrollback.Events(),

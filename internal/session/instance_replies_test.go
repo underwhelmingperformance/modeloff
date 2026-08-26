@@ -140,19 +140,17 @@ func TestSession_reply_commands_refuse_a_closed_issuing_window(t *testing.T) {
 			require.NoError(t, err)
 			replies, repliesErr := eventStore.InstanceRepliesBefore(ctx, asker.ID(), nil, 10)
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Response     protocol.Response
 				Replies      []storemod.InstanceReplyRecord
 				RepliesError error
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Response: protocol.Response{Err: domain.NotOnChannelError{
 					Channel: "#dev", Command: tt.command.Name(), At: fixedTime,
 				}},
-			}, struct {
-				Response     protocol.Response
-				Replies      []storemod.InstanceReplyRecord
-				RepliesError error
-			}{
+			}, assertionSnapshot{
 				Response: response, Replies: replies, RepliesError: repliesErr,
 			})
 		})
@@ -226,13 +224,15 @@ func TestSession_cross_channel_invite_persists_the_confirmation_in_the_issuing_w
 	require.NoError(t, err)
 	window, windowErr := store.GetWindow(ctx, "#dev")
 	channel, ok := window.(*domain.ChannelWindow)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Response    protocol.Response
 		Replies     []storemod.InstanceReplyRecord
 		WindowError error
 		Invited     bool
 		ChannelOK   bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Response: protocol.Response{Events: []protocol.Event{domain.Inviting{
 			Target: "#dev", Invitee: "target", At: fixedTime,
 		}}},
@@ -245,13 +245,7 @@ func TestSession_cross_channel_invite_persists_the_confirmation_in_the_issuing_w
 		}},
 		Invited:   true,
 		ChannelOK: true,
-	}, struct {
-		Response    protocol.Response
-		Replies     []storemod.InstanceReplyRecord
-		WindowError error
-		Invited     bool
-		ChannelOK   bool
-	}{
+	}, assertionSnapshot{
 		Response:    resp,
 		Replies:     replies,
 		WindowError: windowErr,
@@ -286,26 +280,21 @@ func TestSession_invite_refuses_a_foreign_issuing_window(t *testing.T) {
 	window, windowErr := eventStore.GetWindow(ctx, "#dev")
 	channel, channelOK := window.(*domain.ChannelWindow)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Response     protocol.Response
 		Replies      []storemod.InstanceReplyRecord
 		RepliesError error
 		WindowError  error
 		ChannelOK    bool
 		Invited      bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Response: protocol.Response{Err: domain.NotOnChannelError{
 			Channel: "#other", Command: "INVITE", At: fixedTime,
 		}},
 		ChannelOK: true,
-	}, struct {
-		Response     protocol.Response
-		Replies      []storemod.InstanceReplyRecord
-		RepliesError error
-		WindowError  error
-		ChannelOK    bool
-		Invited      bool
-	}{
+	}, assertionSnapshot{
 		Response:     response,
 		Replies:      replies,
 		RepliesError: repliesErr,

@@ -20,7 +20,14 @@ import (
 // this interface implicitly.
 type DataStore interface {
 	ReadMemories(ctx context.Context, id domain.InstanceID) ([]store.MemoryEntry, error)
-	WriteMemory(ctx context.Context, id domain.InstanceID, key, content string, at time.Time) error
+	WriteMemory(
+		ctx context.Context,
+		id domain.InstanceID,
+		key string,
+		content string,
+		at time.Time,
+		pinned bool,
+	) error
 	DeleteMemory(ctx context.Context, id domain.InstanceID, key string) error
 }
 
@@ -95,7 +102,9 @@ func (a *StoreAdapter) Read(ctx context.Context, id domain.InstanceID) ([]Entry,
 
 			result = make([]Entry, len(entries))
 			for i, e := range entries {
-				result[i] = Entry{Key: e.Key, Content: e.Content, At: e.At}
+				result[i] = Entry{
+					Key: e.Key, Content: e.Content, Pinned: e.Pinned, At: e.At,
+				}
 			}
 
 			return nil
@@ -109,7 +118,9 @@ func (a *StoreAdapter) Write(ctx context.Context, id domain.InstanceID, entry En
 	return a.inSpan(ctx, "memory.adapter.write",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			return a.store.WriteMemory(ctx, id, entry.Key, entry.Content, entry.At)
+			return a.store.WriteMemory(
+				ctx, id, entry.Key, entry.Content, entry.At, entry.Pinned,
+			)
 		})
 }
 

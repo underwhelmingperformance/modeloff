@@ -718,6 +718,11 @@ func resetChannelJoinContext(ctx context.Context, tx *sql.Tx, join ChannelJoin) 
 	`, join.Instance.ID(), join.Window.Name()); err != nil {
 		return fmt.Errorf("reset channel replies: %w", err)
 	}
+	if err := deleteContextSummariesForWindowTx(
+		ctx, tx, join.Instance.ID(), 1, string(join.Window.Name()),
+	); err != nil {
+		return fmt.Errorf("reset channel summaries: %w", err)
+	}
 
 	if join.PreserveTurns {
 		return nil
@@ -799,6 +804,18 @@ func (s *SQLiteStore) DeleteWindow(ctx context.Context, name domain.ChannelName)
 				return fmt.Errorf("begin transaction: %w", err)
 			}
 			defer func() { _ = tx.Rollback() }()
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM context_summaries
+				WHERE window_kind = 1 AND window_key = ? COLLATE NOCASE
+			`, name); err != nil {
+				return fmt.Errorf("delete channel context summaries: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM context_summary_sources
+				WHERE window_kind = 1 AND window_key = ? COLLATE NOCASE
+			`, name); err != nil {
+				return fmt.Errorf("delete channel context summary sources: %w", err)
+			}
 
 			if _, err := tx.ExecContext(ctx, `
 				DELETE FROM model_turns
@@ -1365,6 +1382,11 @@ func deleteDepartedActorContext(
 		WHERE instance_id = ? AND window_kind = ? AND window_key = ?
 	`, departure.Instance.ID(), windowKind, windowKey); err != nil {
 		return fmt.Errorf("delete channel replies: %w", err)
+	}
+	if err := deleteContextSummariesForWindowTx(
+		ctx, tx, departure.Instance.ID(), windowKind, windowKey,
+	); err != nil {
+		return err
 	}
 
 	return nil
@@ -2515,6 +2537,9 @@ func deleteInstanceOwnedContext(
 		`DELETE FROM channel_scrollback WHERE instance_id = ?`, string(id)); err != nil {
 		return fmt.Errorf("delete channel scrollback: %w", err)
 	}
+	if err := deleteContextSummariesForActorTx(ctx, tx, id); err != nil {
+		return err
+	}
 
 	if id == "" {
 		return nil
@@ -2547,6 +2572,18 @@ func deleteDirectPeerContext(
 		WHERE window_kind = 2 AND window_key = ? AND instance_id != ?
 	`, string(id), string(id)); err != nil {
 		return fmt.Errorf("delete direct-window model turns: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM context_summaries
+		WHERE window_kind = 2 AND window_key = ? AND instance_id != ?
+	`, string(id), string(id)); err != nil {
+		return fmt.Errorf("delete direct-window context summaries: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM context_summary_sources
+		WHERE window_kind = 2 AND window_key = ? AND instance_id != ?
+	`, string(id), string(id)); err != nil {
+		return fmt.Errorf("delete direct-window context summary sources: %w", err)
 	}
 
 	return nil

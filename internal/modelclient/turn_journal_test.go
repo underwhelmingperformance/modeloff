@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -136,6 +137,17 @@ func journalJSON(t *testing.T, value any) json.RawMessage {
 	return data
 }
 
+type storedJournalRequest struct {
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
+type storedJournalInput struct {
+	Request storedJournalRequest `json:"request"`
+}
+
 func TestModelTurnInput_preserves_the_provider_request_body(t *testing.T) {
 	wire := api.RenderedEventRequest{
 		Method:  "POST",
@@ -144,34 +156,23 @@ func TestModelTurnInput_preserves_the_provider_request_body(t *testing.T) {
 		Body:    json.RawMessage(`{"content":"stored <memory>& mood"}`),
 	}
 	data := journalJSON(t, journalInput(wire))
-	var stored struct {
-		Request struct {
-			Method  string            `json:"method"`
-			Path    string            `json:"path"`
-			Headers map[string]string `json:"headers"`
-			Body    string            `json:"body"`
-		} `json:"request"`
-	}
+	var stored storedJournalInput
 	err := json.Unmarshal(data, &stored)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Error   error
 		Method  string
 		Path    string
 		Headers map[string]string
 		Body    string
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Method:  "POST",
 		Path:    "/api/v1/chat/completions",
 		Headers: map[string]string{"x-session-id": "inst-botty"},
 		Body:    string(wire.Body),
-	}, struct {
-		Error   error
-		Method  string
-		Path    string
-		Headers map[string]string
-		Body    string
-	}{
+	}, assertionSnapshot{
 		Error:   err,
 		Method:  stored.Request.Method,
 		Path:    stored.Request.Path,
@@ -232,15 +233,17 @@ func TestDispatchToInstance_sends_an_initial_request_recorded_before_authority_c
 
 	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 	rendered, renderErr := api.RenderEventRequest(
-		inst.ModelID, inst.ID(), prompt, nil, []protocol.IRCMessage{trigger}, definition,
+		inst.ModelID, inst.ID(), prompt, api.TurnHistory{}, []protocol.IRCMessage{trigger}, definition,
 	)
 	require.NoError(t, renderErr)
 	require.ErrorIs(t, err, errDispatchWindowClosed)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Requests []turnPrompt
 		Effects  []string
 		Entries  []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Requests: []turnPrompt{{triggers: []string{"hello"}}},
 		Entries: sequenced([]store.ModelTurnEntry{
 			{
@@ -263,11 +266,7 @@ func TestDispatchToInstance_sends_an_initial_request_recorded_before_authority_c
 				At: sess.Now(),
 			},
 		}),
-	}, struct {
-		Requests []turnPrompt
-		Effects  []string
-		Entries  []store.ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		Requests: requests,
 		Effects:  effects,
 		Entries:  journal.entries,
@@ -363,7 +362,7 @@ func TestDispatchToInstance_journals_the_complete_provider_turn(t *testing.T) {
 		"test/model",
 		"inst-botty",
 		prompt,
-		make([]protocol.IRCMessage, 0),
+		api.TurnHistory{},
 		[]protocol.IRCMessage{trigger},
 		definition,
 	)
@@ -417,6 +416,229 @@ func TestDispatchToInstance_journals_the_complete_provider_turn(t *testing.T) {
 			At: sess.Now(),
 		},
 	}), journal.entries)
+}
+
+func TestDispatchToInstance_journals_compaction_and_the_final_turn(t *testing.T) {
+	t.Parallel()
+
+	sess := newFakeSession()
+	journal := &recordingTurnJournal{}
+	contexts := &recordingContextStore{}
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	older := domain.StoredEvent{ID: 1, Event: domain.Message{
+		Source: domain.ClientSource("inst-alice", "alice"), Target: "#dev",
+		Body: "older " + strings.Repeat("x", 3000), At: sess.Now(),
+	}}
+	newer := domain.StoredEvent{ID: 2, Event: domain.Message{
+		Source: domain.ClientSource("inst-alice", "alice"), Target: "#dev",
+		Body: "newer " + strings.Repeat("x", 3000), At: sess.Now().Add(time.Second),
+	}}
+	trigger := protocol.IRCMessage{
+		Kind: protocol.KindPrivMsg, Source: domain.ClientSource("inst-alice", "alice"),
+		Target: "#dev", Body: "what do you think?", At: sess.Now().Add(2 * time.Second),
+	}
+	summaryResult := api.ContextSummaryResult{
+		Summary: "Alice shared two earlier details.", RequestID: "summary-request",
+		Usage: api.Usage{PromptTokens: 90, CompletionTokens: 12, TotalTokens: 102},
+	}
+	turnResult := api.CompletionResult{
+		RequestID: "turn-request",
+		Usage:     api.Usage{PromptTokens: 110, CompletionTokens: 4, TotalTokens: 114},
+	}
+	upstream := &apitest.Fake{
+		SummarizeContextFn: func(
+			context.Context,
+			domain.ModelID,
+			domain.InstanceID,
+			[]string,
+			[]protocol.IRCMessage,
+		) (api.ContextSummaryResult, error) {
+			return summaryResult, nil
+		},
+		SendEventsFn: func(
+			context.Context,
+			domain.ModelID,
+			domain.InstanceID,
+			api.SystemPrompt,
+			[]protocol.IRCMessage,
+			[]protocol.IRCMessage,
+		) (api.CompletionResult, error) {
+			return turnResult, nil
+		},
+	}
+	mc := New(Config{
+		Instance: inst, Session: sess,
+		APIClient: func() api.Client { return upstream },
+		Tools:     NewToolRegistry(), Journal: journal, Contexts: contexts,
+		ContextLen: func(domain.ModelID) int { return 6500 },
+	})
+	window := testChannelContext(domain.NewChannelWindow("#dev", sess.Now()))
+	guard := validWindowGuard{window: window}
+
+	err := mc.dispatchToInstance(t.Context(), turnRequest{
+		api: upstream, window: window, target: protocol.ChannelTarget("#dev"), guard: guard,
+		history: []domain.StoredEvent{older, newer}, events: []protocol.IRCMessage{trigger},
+		triggers: []protocol.IRCMessage{trigger},
+	})
+	mc.Wait()
+	require.NoError(t, err)
+
+	olderMessage, ok := protocol.FromChannelEvent(older.Event)
+	require.True(t, ok)
+	newerMessage, ok := protocol.FromChannelEvent(newer.Event)
+	require.True(t, ok)
+	sources := []protocol.IRCMessage{olderMessage, newerMessage}
+	summaryRequest, err := upstream.RenderContextSummaryRequest(
+		inst.ModelID, inst.ID(), nil, sources,
+	)
+	require.NoError(t, err)
+	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
+	summaryMessage := protocol.IRCMessage{
+		Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"), Target: "#dev",
+		Body: "summary of earlier context: " + summaryResult.Summary, At: sess.Now(),
+	}
+	turnRequest, err := api.RenderEventRequest(
+		inst.ModelID, inst.ID(), prompt, api.TurnHistory{Cacheable: []protocol.IRCMessage{summaryMessage}},
+		[]protocol.IRCMessage{trigger},
+	)
+	require.NoError(t, err)
+
+	type assertionSnapshot struct {
+		Turn    store.ModelTurn
+		Entries []store.ModelTurnEntry
+		Updates []store.ContextSummaryUpdate
+	}
+
+	require.Equal(t, assertionSnapshot{
+		Turn: store.ModelTurn{
+			InstanceID: inst.ID(), Window: protocol.ChannelWindowTarget("#dev"),
+			ModelID: inst.ModelID, StartedAt: sess.Now(),
+		},
+		Entries: sequenced([]store.ModelTurnEntry{
+			{Kind: store.ModelTurnInput, Data: journalJSON(t, journalInput(summaryRequest)), At: sess.Now()},
+			{Kind: store.ModelTurnAssistant, Data: journalJSON(t, modelTurnAssistant{
+				Text: summaryResult.Summary, RequestID: summaryResult.RequestID, Usage: summaryResult.Usage,
+			}), At: sess.Now()},
+			{Kind: store.ModelTurnInput, Data: journalJSON(t, journalInput(turnRequest)), At: sess.Now()},
+			{Kind: store.ModelTurnAssistant, Data: journalJSON(t, modelTurnAssistant{
+				RequestID: turnResult.RequestID, Usage: turnResult.Usage,
+			}), At: sess.Now()},
+			{Kind: store.ModelTurnOutcome, Data: journalJSON(t, modelTurnOutcome{
+				PassReason: "model_pass",
+			}), At: sess.Now()},
+		}),
+		Updates: []store.ContextSummaryUpdate{{
+			InstanceID: inst.ID(), Window: protocol.ChannelWindowTarget("#dev"),
+			Summary: summaryResult.Summary, Sources: sources, CreatedAt: sess.Now(),
+		}},
+	}, assertionSnapshot{Turn: journal.turn, Entries: journal.entries, Updates: contexts.updates})
+}
+
+type contextCompactionFailureState struct {
+	Entries      []store.ModelTurnEntry
+	Updates      []store.ContextSummaryUpdate
+	FinalRequest []protocol.IRCMessage
+}
+
+// TestDispatchToInstance_journals_a_turn_whose_summary_failed covers
+// what the journal holds when compaction falls back on dropping the
+// oldest lines: the summary request that failed, the dispatch request
+// the turn went on to send, and the turn's own outcome. A summary the
+// provider refused does not end the turn, so the outcome is not an
+// error.
+func TestDispatchToInstance_journals_a_turn_whose_summary_failed(t *testing.T) {
+	t.Parallel()
+
+	sess := newFakeSession()
+	journal := &recordingTurnJournal{}
+	contexts := &recordingContextStore{}
+	inst := domain.NewModelInstance("inst-botty", "botty", "test/model", "", nil)
+	older := domain.StoredEvent{ID: 1, Event: domain.Message{
+		Source: domain.ClientSource("inst-alice", "alice"), Target: "#dev",
+		Body: "older " + strings.Repeat("x", 3000), At: sess.Now(),
+	}}
+	newer := domain.StoredEvent{ID: 2, Event: domain.Message{
+		Source: domain.ClientSource("inst-alice", "alice"), Target: "#dev",
+		Body: "newer " + strings.Repeat("x", 3000), At: sess.Now().Add(time.Second),
+	}}
+	trigger := protocol.IRCMessage{
+		Kind: protocol.KindPrivMsg, Source: domain.ClientSource("inst-alice", "alice"),
+		Target: "#dev", Body: "what do you think?", At: sess.Now().Add(2 * time.Second),
+	}
+	summaryErr := errors.New("summary unavailable")
+	var finalRequest []protocol.IRCMessage
+	upstream := &apitest.Fake{
+		SummarizeContextFn: func(
+			context.Context,
+			domain.ModelID,
+			domain.InstanceID,
+			[]string,
+			[]protocol.IRCMessage,
+		) (api.ContextSummaryResult, error) {
+			return api.ContextSummaryResult{}, summaryErr
+		},
+		SendEventsFn: func(
+			_ context.Context,
+			_ domain.ModelID,
+			_ domain.InstanceID,
+			_ api.SystemPrompt,
+			_ []protocol.IRCMessage,
+			events []protocol.IRCMessage,
+		) (api.CompletionResult, error) {
+			finalRequest = append(finalRequest, events...)
+
+			return api.CompletionResult{}, nil
+		},
+	}
+	mc := New(Config{
+		Instance: inst, Session: sess,
+		APIClient: func() api.Client { return upstream },
+		Tools:     NewToolRegistry(), Journal: journal, Contexts: contexts,
+		ContextLen: func(domain.ModelID) int { return 6500 },
+	})
+	window := testChannelContext(domain.NewChannelWindow("#dev", sess.Now()))
+	guard := validWindowGuard{window: window}
+
+	err := mc.dispatchToInstance(t.Context(), turnRequest{
+		api: upstream, window: window, target: protocol.ChannelTarget("#dev"), guard: guard,
+		history: []domain.StoredEvent{older, newer}, events: []protocol.IRCMessage{trigger},
+		triggers: []protocol.IRCMessage{trigger},
+	})
+	mc.Wait()
+	require.NoError(t, err)
+
+	olderMessage, ok := protocol.FromChannelEvent(older.Event)
+	require.True(t, ok)
+	newerMessage, ok := protocol.FromChannelEvent(newer.Event)
+	require.True(t, ok)
+	summaryRequest, renderErr := upstream.RenderContextSummaryRequest(
+		inst.ModelID, inst.ID(), nil, []protocol.IRCMessage{olderMessage, newerMessage},
+	)
+	require.NoError(t, renderErr)
+	dispatchRequest, renderErr := upstream.RenderEventRequest(
+		inst.ModelID, inst.ID(),
+		buildSystemPrompt(window, inst.Nick(), inst.Persona()),
+		api.TurnHistory{Current: contextReplies(window, nil, []protocol.IRCMessage{trigger})},
+		[]protocol.IRCMessage{trigger},
+	)
+	require.NoError(t, renderErr)
+
+	require.Equal(t, contextCompactionFailureState{
+		Entries: sequenced([]store.ModelTurnEntry{
+			{Kind: store.ModelTurnInput, Data: journalJSON(t, journalInput(summaryRequest)), At: sess.Now()},
+			{Kind: store.ModelTurnInput, Data: journalJSON(t, journalInput(dispatchRequest)), At: sess.Now()},
+			{Kind: store.ModelTurnAssistant, Data: journalJSON(t, modelTurnAssistant{}), At: sess.Now()},
+			{Kind: store.ModelTurnOutcome, Data: journalJSON(t, modelTurnOutcome{
+				PassReason: "model_pass",
+			}), At: sess.Now()},
+		}),
+		Updates:      nil,
+		FinalRequest: []protocol.IRCMessage{trigger},
+	}, contextCompactionFailureState{
+		Entries:      journal.entries,
+		Updates:      contexts.updates,
+		FinalRequest: finalRequest,
+	})
 }
 
 func TestDispatchToInstance_retries_a_continuation_without_repeating_tool_effects(t *testing.T) {
@@ -525,23 +747,21 @@ func TestDispatchToInstance_retries_a_continuation_without_repeating_tool_effect
 
 	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 	renderedRequest, err := api.RenderEventRequest(
-		"test/model", "inst-botty", prompt, nil,
+		"test/model", "inst-botty", prompt, api.TurnHistory{},
 		[]protocol.IRCMessage{trigger}, definition,
 	)
 	require.NoError(t, err)
-	require.Equal(t, struct {
+	type continuationRetryWaitState struct {
 		Delay                time.Duration
 		Effects              []string
 		ContinuationAttempts []continuationAttempt
-	}{
+	}
+
+	require.Equal(t, continuationRetryWaitState{
 		Delay:                10 * time.Second,
 		Effects:              []string{"effect"},
 		ContinuationAttempts: []continuationAttempt{{SameConversation: true, ToolResults: toolResults}},
-	}, struct {
-		Delay                time.Duration
-		Effects              []string
-		ContinuationAttempts []continuationAttempt
-	}{
+	}, continuationRetryWaitState{
 		Delay:                wait.delay,
 		Effects:              effects,
 		ContinuationAttempts: continuationAttempts,
@@ -593,22 +813,20 @@ func TestDispatchToInstance_retries_a_continuation_without_repeating_tool_effect
 			At: sess.Now(),
 		},
 	})
-	require.Equal(t, struct {
+	type completedContinuationRetryState struct {
 		Effects              []string
 		ContinuationAttempts []continuationAttempt
 		JournalEntries       []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, completedContinuationRetryState{
 		Effects: []string{"effect"},
 		ContinuationAttempts: []continuationAttempt{
 			{SameConversation: true, ToolResults: toolResults},
 			{SameConversation: true, ToolResults: toolResults},
 		},
 		JournalEntries: wantEntries,
-	}, struct {
-		Effects              []string
-		ContinuationAttempts []continuationAttempt
-		JournalEntries       []store.ModelTurnEntry
-	}{
+	}, completedContinuationRetryState{
 		Effects:              effects,
 		ContinuationAttempts: continuationAttempts,
 		JournalEntries:       journal.entries,
@@ -701,7 +919,7 @@ func TestDispatchToInstance_journals_malformed_tool_arguments_and_correction(t *
 
 	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 	rendered, err := api.RenderEventRequest(
-		"test/model", "inst-botty", prompt, nil,
+		"test/model", "inst-botty", prompt, api.TurnHistory{},
 		[]protocol.IRCMessage{trigger}, definition,
 	)
 	require.NoError(t, err)
@@ -825,15 +1043,17 @@ func TestDispatchToInstance_journals_completed_tools_before_a_later_failure(t *t
 	require.ErrorIs(t, err, executionErr)
 	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 	rendered, renderErr := api.RenderEventRequest(
-		"test/model", "inst-botty", prompt, nil,
+		"test/model", "inst-botty", prompt, api.TurnHistory{},
 		[]protocol.IRCMessage{trigger}, definitions...,
 	)
 	require.NoError(t, renderErr)
 	toolResults := []api.ToolResult{{ToolCallID: "call-1", Content: `{"ok":true}`}}
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Effects []string
 		Entries []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Effects: []string{"succeed", "fail"},
 		Entries: sequenced([]store.ModelTurnEntry{
 			{
@@ -862,10 +1082,7 @@ func TestDispatchToInstance_journals_completed_tools_before_a_later_failure(t *t
 				At: sess.Now(),
 			},
 		}),
-	}, struct {
-		Effects []string
-		Entries []store.ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		Effects: effects,
 		Entries: journal.entries,
 	})
@@ -953,7 +1170,7 @@ func TestDispatchToInstance_stops_after_the_last_executed_tool_batch(t *testing.
 
 	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 	rendered, renderErr := api.RenderEventRequest(
-		"test/model", "inst-botty", prompt, nil, nil, definition,
+		"test/model", "inst-botty", prompt, api.TurnHistory{}, nil, definition,
 	)
 	require.NoError(t, renderErr)
 	toolResult := []api.ToolResult{{ToolCallID: "call", Content: `{"ok":true}`}}
@@ -994,19 +1211,17 @@ func TestDispatchToInstance_stops_after_the_last_executed_tool_batch(t *testing.
 		}),
 		At: sess.Now(),
 	})
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		ContinueCalls int
 		ToolCalls     int
 		Entries       []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		ContinueCalls: maxToolLoopTurns - 1,
 		ToolCalls:     maxToolLoopTurns,
 		Entries:       sequenced(wantEntries),
-	}, struct {
-		ContinueCalls int
-		ToolCalls     int
-		Entries       []store.ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		ContinueCalls: continueCalls,
 		ToolCalls:     toolCalls,
 		Entries:       journal.entries,
@@ -1091,7 +1306,7 @@ func TestDispatchToInstance_journals_rejected_tool_batches(t *testing.T) {
 
 	prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 	rendered, renderErr := api.RenderEventRequest(
-		"test/model", "inst-botty", prompt, nil, nil, definition,
+		"test/model", "inst-botty", prompt, api.TurnHistory{}, nil, definition,
 	)
 	require.NoError(t, renderErr)
 	toolResults := []api.ToolResult{{
@@ -1221,7 +1436,7 @@ func TestDispatchToInstance_journals_provider_choice_failures(t *testing.T) {
 
 			prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 			rendered, renderErr := api.RenderEventRequest(
-				"test/model", "inst-botty", prompt, nil, nil,
+				"test/model", "inst-botty", prompt, api.TurnHistory{}, nil,
 			)
 			require.NoError(t, renderErr)
 			require.Equal(t, sequenced([]store.ModelTurnEntry{
@@ -1417,7 +1632,7 @@ func TestTurnJournal_a_refused_write_leaves_the_turn_alone(t *testing.T) {
 
 			prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 			rendered, renderErr := api.RenderEventRequest(
-				inst.ModelID, inst.ID(), prompt, nil, nil, registry.Definitions()...,
+				inst.ModelID, inst.ID(), prompt, api.TurnHistory{}, nil, registry.Definitions()...,
 			)
 			require.NoError(t, renderErr)
 			type assertionSnapshot struct {
@@ -1519,7 +1734,7 @@ func TestTurnJournal_a_turn_does_not_wait_for_the_store(t *testing.T) {
 
 		prompt := buildSystemPrompt(window, inst.Nick(), inst.Persona())
 		rendered, renderErr := api.RenderEventRequest(
-			inst.ModelID, inst.ID(), prompt, nil, nil,
+			inst.ModelID, inst.ID(), prompt, api.TurnHistory{}, nil,
 		)
 		require.NoError(t, renderErr)
 		type assertionSnapshot struct {

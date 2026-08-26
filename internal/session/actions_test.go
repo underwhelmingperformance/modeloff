@@ -145,7 +145,7 @@ func TestSession_join_finishes_persistence_and_delivery_after_cancellation(t *te
 		storedUser, err := backing.GetInstanceByID(ctx, protocol.UserClientID)
 		require.NoError(t, err)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Response             protocol.Response
 			SendError            error
 			CommandContextError  error
@@ -154,7 +154,9 @@ func TestSession_join_finishes_persistence_and_delivery_after_cancellation(t *te
 			PeerDeliveries       []domain.Event
 			LiveUserMembership   bool
 			StoredUserMembership bool
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Response: protocol.Response{Events: []protocol.Event{
 				domain.JoinedChannel{Channel: "#dev"},
 			}},
@@ -187,16 +189,7 @@ func TestSession_join_finishes_persistence_and_delivery_after_cancellation(t *te
 			},
 			LiveUserMembership:   true,
 			StoredUserMembership: true,
-		}, struct {
-			Response             protocol.Response
-			SendError            error
-			CommandContextError  error
-			AuditEvents          []domain.StoredEvent
-			Scrollback           []domain.StoredEvent
-			PeerDeliveries       []domain.Event
-			LiveUserMembership   bool
-			StoredUserMembership bool
-		}{
+		}, assertionSnapshot{
 			Response:             resp,
 			SendError:            sendErr,
 			CommandContextError:  commandCtx.Err(),

@@ -85,8 +85,7 @@ func TestFileBatch(t *testing.T) {
 					trigger("#dev", "bob", "two"),
 					trigger("#dev", "alice", "three"),
 				},
-				latestTrigger: 2,
-				causes:        causes(3),
+				causes: causes(3),
 			}},
 		},
 		{
@@ -107,8 +106,7 @@ func TestFileBatch(t *testing.T) {
 						trigger("#dev", "alice", "one"),
 						trigger("#dev", "carol", "three"),
 					},
-					latestTrigger: 1,
-					causes:        causes(2),
+					causes: causes(2),
 				},
 				{
 					channel:  "#ops",
@@ -143,8 +141,7 @@ func TestFileBatch(t *testing.T) {
 					trigger("#dev", "alice", "one"),
 					trigger("#dev", "bob", "two"),
 				},
-				latestTrigger: 2,
-				causes:        causes(2),
+				causes: causes(2),
 			}},
 		},
 		{
@@ -154,11 +151,10 @@ func TestFileBatch(t *testing.T) {
 				msg("#dev", "alice", "one"),
 			},
 			want: []turnBatch{{
-				channel:       "#dev",
-				events:        []protocol.IRCMessage{wire(topic("#dev", "leading")), trigger("#dev", "alice", "one")},
-				triggers:      []protocol.IRCMessage{trigger("#dev", "alice", "one")},
-				latestTrigger: 1,
-				causes:        causes(1),
+				channel:  "#dev",
+				events:   []protocol.IRCMessage{wire(topic("#dev", "leading")), trigger("#dev", "alice", "one")},
+				triggers: []protocol.IRCMessage{trigger("#dev", "alice", "one")},
+				causes:   causes(1),
 			}},
 		},
 		{
@@ -243,12 +239,11 @@ func TestFileBatch_snapshot_precedes_the_triggers_it_files(t *testing.T) {
 	})
 
 	require.Equal(t, []turnBatch{{
-		channel:       "#dev",
-		history:       []domain.StoredEvent{{ID: 1, Event: earlier}},
-		events:        []protocol.IRCMessage{firstIRC, secondIRC},
-		triggers:      []protocol.IRCMessage{firstIRC, secondIRC},
-		latestTrigger: 1,
-		causes:        []trace.SpanContext{{}, {}},
+		channel:  "#dev",
+		history:  []domain.StoredEvent{{ID: 1, Event: earlier}},
+		events:   []protocol.IRCMessage{firstIRC, secondIRC},
+		triggers: []protocol.IRCMessage{firstIRC, secondIRC},
+		causes:   []trace.SpanContext{{}, {}},
 	}}, derefBatches(batches))
 
 	require.Equal(t, []domain.StoredEvent{
@@ -284,11 +279,10 @@ func TestFileBatch_preserves_causal_order_inside_the_current_turn(t *testing.T) 
 	})
 
 	require.Equal(t, []turnBatch{{
-		channel:       "#dev",
-		events:        []protocol.IRCMessage{firstIRC, topicIRC, secondIRC},
-		triggers:      []protocol.IRCMessage{firstIRC, secondIRC},
-		latestTrigger: 2,
-		causes:        []trace.SpanContext{{}, {}},
+		channel:  "#dev",
+		events:   []protocol.IRCMessage{firstIRC, topicIRC, secondIRC},
+		triggers: []protocol.IRCMessage{firstIRC, secondIRC},
+		causes:   []trace.SpanContext{{}, {}},
 	}}, derefBatches(batches))
 }
 
@@ -306,16 +300,15 @@ func TestDrain_caps_one_burst_and_leaves_the_remainder_queued(t *testing.T) {
 	drained := drain(events)
 	remaining := drain(events)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Drained   []protocol.Delivery
 		Remaining []protocol.Delivery
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Drained:   all[:modelHistorySize-1],
 		Remaining: all[modelHistorySize-1:],
-	}, struct {
-		Drained   []protocol.Delivery
-		Remaining []protocol.Delivery
-	}{
+	}, assertionSnapshot{
 		Drained:   drained,
 		Remaining: remaining,
 	})
@@ -354,16 +347,19 @@ func TestFileBatch_discards_history_across_a_rejoin(t *testing.T) {
 	})
 
 	require.Equal(t, []turnBatch{{
-		channel:       channel,
-		events:        []protocol.IRCMessage{joinIRC, messageIRC},
-		triggers:      []protocol.IRCMessage{messageIRC},
-		latestTrigger: 1,
-		causes:        []trace.SpanContext{{}},
+		channel:  channel,
+		events:   []protocol.IRCMessage{joinIRC, messageIRC},
+		triggers: []protocol.IRCMessage{messageIRC},
+		causes:   []trace.SpanContext{{}},
 	}}, derefBatches(batches))
 }
 
 func TestClosedWindow_uses_projected_kick_subject_identity(t *testing.T) {
 	t.Parallel()
+	type assertionSnapshot struct {
+		Target domain.ChannelName
+		Closed bool
+	}
 
 	self := domain.NewModelInstance("inst-botty", "renamed", "test/model", "", nil)
 	event := domain.Kicked{
@@ -372,15 +368,9 @@ func TestClosedWindow_uses_projected_kick_subject_identity(t *testing.T) {
 		SubjectIsSelf: true,
 	}
 	target, closed := closedWindow(self, event)
-	got := struct {
-		Target domain.ChannelName
-		Closed bool
-	}{Target: target, Closed: closed}
+	got := assertionSnapshot{Target: target, Closed: closed}
 
-	require.Equal(t, struct {
-		Target domain.ChannelName
-		Closed bool
-	}{Target: "#dev", Closed: true}, got)
+	require.Equal(t, assertionSnapshot{Target: "#dev", Closed: true}, got)
 }
 
 // derefBatches flattens the returned pointers so a whole batch can

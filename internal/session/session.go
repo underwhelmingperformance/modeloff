@@ -105,6 +105,8 @@ type Store interface {
 	DeleteModelTurnsForWindow(ctx context.Context, id domain.InstanceID, window protocol.WindowTarget) error
 	BeginModelTurn(ctx context.Context, turn store.ModelTurn, input store.ModelTurnEntry) (store.ModelTurnID, error)
 	AppendModelTurnEntry(ctx context.Context, turnID store.ModelTurnID, entry store.ModelTurnEntry) error
+	ContextSummaries(ctx context.Context, id domain.InstanceID, window protocol.WindowTarget) ([]store.ContextSummary, error)
+	CommitContextSummary(ctx context.Context, update store.ContextSummaryUpdate) (store.ContextSummary, error)
 
 	// Model instances. These methods remain on the session's private
 	// persistence boundary; no actor handle crosses the client

@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,7 @@ func TestContextReplies(t *testing.T) {
 	}
 
 	memories := []memory.Entry{
-		{Key: "goal", Content: "learn go"},
+		{Key: "goal", Content: "learn go", Pinned: true},
 		{Key: "mood", Content: "curious"},
 	}
 
@@ -161,7 +162,7 @@ func TestContextReplies(t *testing.T) {
 			},
 		},
 		{
-			name:     "memories are a server reply with no time of their own",
+			name:     "memories are a server reply and identify pinned entries",
 			window:   testChannelContext(channel("", "")),
 			memories: memories,
 			want: []protocol.IRCMessage{
@@ -169,7 +170,7 @@ func TestContextReplies(t *testing.T) {
 					Kind:   protocol.KindServerReply,
 					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
-					Body:   "your stored memories: [goal=learn go] [mood=curious]",
+					Body:   "your stored memories: [pinned goal=learn go] [mood=curious]",
 				},
 			},
 		},
@@ -189,7 +190,7 @@ func TestContextReplies(t *testing.T) {
 					Kind:   protocol.KindServerReply,
 					Source: domain.ServerSource("modeloff"),
 					Target: "#dev",
-					Body:   "your stored memories: [goal=learn go] [mood=curious]",
+					Body:   "your stored memories: [pinned goal=learn go] [mood=curious]",
 				},
 			},
 		},
@@ -202,7 +203,7 @@ func TestContextReplies(t *testing.T) {
 					Kind:   protocol.KindServerReply,
 					Source: domain.ServerSource("modeloff"),
 					Target: "inst-peer",
-					Body:   "your stored memories: [goal=learn go] [mood=curious]",
+					Body:   "your stored memories: [pinned goal=learn go] [mood=curious]",
 				},
 			},
 		},
@@ -210,9 +211,31 @@ func TestContextReplies(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, contextReplies(tc.window, tc.memories))
+			require.Equal(t, tc.want, contextReplies(tc.window, tc.memories, nil))
 		})
 	}
+}
+
+func TestContextReplies_includes_current_channel_state(t *testing.T) {
+	window := testWindowContext{
+		target: protocol.ChannelWindowTarget("#dev"),
+		channelState: &protocol.ChannelState{
+			Modes: domain.ChannelModes{Moderated: true, NoExternal: true, TopicLock: true},
+			Members: []protocol.ChannelMemberState{
+				{Nick: "alice", Modes: domain.MemberModes{Operator: true}},
+				{Nick: "botty", Modes: domain.MemberModes{Voice: true}},
+			},
+		},
+	}
+
+	require.Equal(t, []protocol.IRCMessage{
+		{
+			Kind:   protocol.KindServerReply,
+			Source: domain.ServerSource("modeloff"),
+			Target: "#dev",
+			Body:   "current state for #dev: modes +mnt; members @alice +botty",
+		},
+	}, contextReplies(window, nil, nil))
 }
 
 // TestContextReplies_truncated_memories pins that the memory line
@@ -242,7 +265,7 @@ func TestContextReplies_truncated_memories(t *testing.T) {
 			Target: "#dev",
 			Body:   body.String(),
 		},
-	}, contextReplies(testChannelContext(cw), many))
+	}, contextReplies(testChannelContext(cw), many, nil))
 }
 
 func TestCapMemoriesForPrompt_keeps_the_most_recent_entries(t *testing.T) {
@@ -256,25 +279,56 @@ func TestCapMemoriesForPrompt_keeps_the_most_recent_entries(t *testing.T) {
 		}
 	}
 
-	capped, truncated := capMemoriesForPrompt(entries)
+	selection := capMemoriesForPrompt(entries, nil)
 	want := make([]memory.Entry, maxMemoryEntries)
 	for i := range want {
 		want[i] = entries[len(entries)-1-i]
 	}
 
-	require.Equal(t, struct {
-		Entries   []memory.Entry
-		Truncated bool
-	}{
+	require.Equal(t, promptMemorySelection{
 		Entries:   want,
 		Truncated: true,
-	}, struct {
-		Entries   []memory.Entry
-		Truncated bool
-	}{
-		Entries:   capped,
-		Truncated: truncated,
-	})
+	}, selection)
+}
+
+// TestCapMemoriesForPrompt_orders_by_relevance_then_pin_then_recency
+// covers both halves of the order. The pinned entry has nothing to do
+// with the question asked, so the relevant entry goes ahead of it;
+// among the entries the question points at equally, the pinned one
+// still goes ahead of every unpinned entry however recent.
+func TestCapMemoriesForPrompt_orders_by_relevance_then_pin_then_recency(t *testing.T) {
+	base := time.Date(2026, time.August, 25, 10, 0, 0, 0, time.UTC)
+	entries := make([]memory.Entry, maxMemoryEntries+2)
+	for i := range maxMemoryEntries {
+		entries[i] = memory.Entry{
+			Key:     fmt.Sprintf("general-%02d", i),
+			Content: "unrelated background detail",
+			At:      base.Add(time.Duration(i) * time.Minute),
+		}
+	}
+	relevant := memory.Entry{
+		Key: "database", Content: "production uses sqlite", At: base.Add(-time.Hour),
+	}
+	pinned := memory.Entry{
+		Key: "user_name", Content: "the user's name is Laney", Pinned: true,
+		At: base.Add(-2 * time.Hour),
+	}
+	entries[maxMemoryEntries] = relevant
+	entries[maxMemoryEntries+1] = pinned
+
+	selection := capMemoriesForPrompt(entries, []protocol.IRCMessage{{
+		Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"),
+		Target: "#dev", Body: "what database does production use?",
+	}})
+	want := []memory.Entry{relevant, pinned}
+	for i := maxMemoryEntries - 1; i >= 2; i-- {
+		want = append(want, entries[i])
+	}
+
+	require.Equal(t, promptMemorySelection{
+		Entries:   want,
+		Truncated: true,
+	}, selection)
 }
 
 // TestCapMemoriesForPrompt covers the bound on the block of memories
@@ -331,10 +385,11 @@ func TestCapMemoriesForPrompt(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			capped, truncated := capMemoriesForPrompt(tc.entries)
+			selection := capMemoriesForPrompt(tc.entries, nil)
 
-			require.Equal(t, tc.entries[:tc.wantCount], capped)
-			require.Equal(t, tc.wantTruncated, truncated)
+			require.Equal(t, promptMemorySelection{
+				Entries: tc.entries[:tc.wantCount], Truncated: tc.wantTruncated,
+			}, selection)
 		})
 	}
 }
@@ -343,17 +398,146 @@ func TestCapMemoriesForPrompt(t *testing.T) {
 // covers the edge the table above can't: a single memory bigger than
 // maxMemoryBytes on its own. Dropping it entirely would leave the
 // memory line with a truncation note pointing at memories the model
-// can't see any of; keeping a truncated version, the way
-// [trimToTokenBudget] always keeps at least the newest transcript
-// event, gives the model something real instead.
+// can't see any of. A truncated value gives the model some of the
+// stored content and preserves its key.
 func TestCapMemoriesForPrompt_single_oversized_entry_is_truncated_not_dropped(t *testing.T) {
 	oversized := memory.Entry{Key: "big", Content: strings.Repeat("x", maxMemoryBytes)}
 	other := memory.Entry{Key: "small", Content: "v"}
 
-	capped, truncated := capMemoriesForPrompt([]memory.Entry{oversized, other})
+	selection := capMemoriesForPrompt([]memory.Entry{oversized, other}, nil)
 
-	require.True(t, truncated)
-	require.Equal(t, []memory.Entry{
-		{Key: "big", Content: strings.Repeat("x", maxMemoryBytes-len("big"))},
-	}, capped)
+	require.Equal(t, promptMemorySelection{
+		Entries: []memory.Entry{{
+			Key: "big", Content: strings.Repeat("x", maxMemoryBytes-len("big")),
+		}},
+		Truncated: true,
+	}, selection)
+}
+
+type memoryTruncationCase struct {
+	name  string
+	entry memory.Entry
+	want  memory.Entry
+}
+
+func TestTruncateMemoryEntry_bounds_keys_and_keeps_valid_UTF8(t *testing.T) {
+	at := time.Date(2026, time.August, 26, 15, 0, 0, 0, time.UTC)
+	tests := []memoryTruncationCase{
+		{
+			name: "content ends at a complete code point",
+			entry: memory.Entry{
+				Key: "abc", Content: strings.Repeat("😀", 1000), Pinned: true, At: at,
+			},
+			want: memory.Entry{
+				Key: "abc", Content: strings.Repeat("😀", 999), Pinned: true, At: at,
+			},
+		},
+		{
+			name: "an oversized key uses the complete display allowance",
+			entry: memory.Entry{
+				Key: strings.Repeat("🔑", 1001), Content: "value", Pinned: true, At: at,
+			},
+			want: memory.Entry{
+				Key: strings.Repeat("🔑", 1000), Content: "", Pinned: true, At: at,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, truncateMemoryEntry(tc.entry, maxMemoryBytes))
+		})
+	}
+}
+
+type memoryTermsCase struct {
+	name string
+	text string
+	want []string
+}
+
+// TestMemoryTerms covers the tokens lexical memory selection matches
+// on. A token shorter than three runes is skipped; the tokens after
+// it are still yielded.
+func TestMemoryTerms(t *testing.T) {
+	tests := []memoryTermsCase{
+		{
+			name: "empty text yields nothing",
+			text: "",
+			want: nil,
+		},
+		{
+			name: "an ordinary English sentence keeps every long token",
+			text: "laney: the deploy is broken on staging",
+			want: []string{"laney", "the", "deploy", "broken", "staging"},
+		},
+		{
+			name: "a leading short token does not end the iteration",
+			text: "we do care about the rota",
+			want: []string{"care", "about", "the", "rota"},
+		},
+		{
+			name: "tokens are lowercased and split on punctuation",
+			text: "Migration-14 broke PostgreSQL",
+			want: []string{"migration", "broke", "postgresql"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, slices.Collect(memoryTerms(tc.text)))
+		})
+	}
+}
+
+type memoryRelevanceCase struct {
+	name    string
+	entry   memory.Entry
+	context []protocol.IRCMessage
+	want    int
+}
+
+// TestMemoryRelevance covers the score capMemoriesForPrompt orders
+// unpinned entries by: one point per distinct token the entry and the
+// turn's traffic share.
+func TestMemoryRelevance(t *testing.T) {
+	message := func(body string) []protocol.IRCMessage {
+		return []protocol.IRCMessage{{
+			Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"),
+			Target: "#dev", Body: body,
+		}}
+	}
+
+	tests := []memoryRelevanceCase{
+		{
+			name:    "no shared tokens scores zero",
+			entry:   memory.Entry{Key: "rota", Content: "laney is on call this week"},
+			context: message("what is the deploy process"),
+			want:    0,
+		},
+		{
+			name:    "each distinct shared token scores once",
+			entry:   memory.Entry{Key: "database", Content: "production uses sqlite"},
+			context: message("which database does production use?"),
+			want:    2,
+		},
+		{
+			name:    "a token repeated in the entry still scores once",
+			entry:   memory.Entry{Key: "staging", Content: "staging staging staging"},
+			context: message("is staging broken?"),
+			want:    1,
+		},
+		{
+			name:    "a shared token after a short one still scores",
+			entry:   memory.Entry{Key: "rota", Content: "we do care about the rota"},
+			context: message("who is on the rota"),
+			want:    2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, memoryRelevance(tc.entry, memoryContextTerms(tc.context)))
+		})
+	}
 }

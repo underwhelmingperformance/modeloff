@@ -109,11 +109,6 @@ func (mc *ModelClient) batchesForDeliveries(
 	first protocol.Delivery,
 	pending redispatchSet,
 ) []*turnBatch {
-	// Re-consulted every burst, so a catalogue refresh (a lazy first
-	// load, a `SetAPIKey` invalidation followed by a fresh `ListModels`)
-	// reaches the transcript token budget without needing a reattach.
-	mc.hist.SetContextLen(mc.contextLenFn(mc.instance.ModelID))
-
 	deliveries := append([]protocol.Delivery{first}, drain(events)...)
 	batches := mc.fileBatch(ctx, deliveries)
 
@@ -233,13 +228,23 @@ func (mc *ModelClient) runBatch(ctx context.Context, batch *turnBatch, pending r
 	mc.mu.Unlock()
 
 	var nonReplayable *nonReplayableTurnError
-	if err == nil || batch.retried || errors.As(err, &nonReplayable) || !api.Retryable(err) {
+	if err == nil || batch.retried || errors.As(err, &nonReplayable) || !replayableTurnError(err) {
 		return
 	}
 
 	if mc.scheduleRedispatch(ctx, batch, err) {
 		pending.hold(batch)
 	}
+}
+
+// replayableTurnError reports whether dispatching the batch again
+// could answer differently. A transient upstream failure may have
+// passed by the second attempt. A prompt the provider refused for
+// length is the other case: the refusal raises the model's recorded
+// token ratio, so the second attempt plans a smaller request and
+// compacts where the first one did not.
+func replayableTurnError(err error) bool {
+	return api.Retryable(err) || errors.Is(err, api.ErrPromptTooLong)
 }
 
 // scheduleRedispatch hands `batch` back to the dispatch loop after the
@@ -343,16 +348,13 @@ func drain(events <-chan protocol.Delivery) []protocol.Delivery {
 // current order. Triggers retain the subset that grants dispatch
 // authority, and causes link those triggering deliveries to the turn.
 type turnBatch struct {
-	channel  domain.ChannelName
-	history  []domain.StoredEvent
-	replies  []storedReply
-	events   []protocol.IRCMessage
-	triggers []protocol.IRCMessage
-	// latestTrigger is the position of the newest dispatch trigger in
-	// events. Later entries can be sender history or state changes.
-	latestTrigger int
-	causes        []trace.SpanContext
-	historyErr    error
+	channel    domain.ChannelName
+	history    []domain.StoredEvent
+	replies    []storedReply
+	events     []protocol.IRCMessage
+	triggers   []protocol.IRCMessage
+	causes     []trace.SpanContext
+	historyErr error
 
 	// retried records that this batch has already been handed back to
 	// the dispatch loop once, which is what bounds a failing turn to
@@ -391,7 +393,6 @@ func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Deli
 }
 
 func fileTrigger(batch *turnBatch, message protocol.IRCMessage, cause trace.SpanContext) {
-	batch.latestTrigger = len(batch.events)
 	batch.events = append(batch.events, message)
 	batch.triggers = append(batch.triggers, message)
 	batch.causes = append(batch.causes, cause)
@@ -765,13 +766,11 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 			// comes from [dispatchTrigger], which names a window only
 			// alongside a turn to run in it, so a tool cannot be handed
 			// a target derived from a window that was never there.
-			target:        targetForContext(window),
-			history:       batch.history,
-			replies:       batch.replies,
-			events:        batch.events,
-			triggers:      batch.triggers,
-			latestTrigger: batch.latestTrigger,
-			tokenBudget:   mc.hist.TokenBudget(),
+			target:   targetForContext(window),
+			history:  batch.history,
+			replies:  batch.replies,
+			events:   batch.events,
+			triggers: batch.triggers,
 		}
 
 		if err := mc.dispatchToInstance(ctx, turn); err != nil {

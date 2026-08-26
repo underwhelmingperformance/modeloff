@@ -133,15 +133,14 @@ func TestModelClient_history_only_DM_files_without_starting_a_turn(t *testing.T)
 	}})
 	loaded := windowHistory(t, mc, "inst-alice")
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Batches []*turnBatch
 		History []domain.StoredEvent
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		History: []domain.StoredEvent{{Event: answer}},
-	}, struct {
-		Batches []*turnBatch
-		History []domain.StoredEvent
-	}{
+	}, assertionSnapshot{
 		Batches: batches,
 		History: loaded,
 	})
@@ -253,6 +252,6 @@ func TestDispatchWindowFor(t *testing.T) {
 		window, err := dispatchWindowFor(t.Context(), validWindowGuard{window: testDirectContext("inst-alice")}, "inst-alice")
 		require.NoError(t, err)
 
-		require.Empty(t, contextReplies(window, nil))
+		require.Empty(t, contextReplies(window, nil, nil))
 	})
 }

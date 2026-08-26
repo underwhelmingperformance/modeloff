@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -51,6 +52,12 @@ type OpenRouterClient struct {
 	chatTimeout    time.Duration
 	metaTimeout    time.Duration
 	tracerProvider trace.TracerProvider
+	ratios         *promptTokenRatios
+
+	// contextWindows answers a model's context window, so a request can
+	// be capped by what its own prompt leaves. It is nil until a caller
+	// supplies one through [OpenRouterClient.SetContextWindows].
+	contextWindows atomic.Pointer[func(domain.ModelID) int]
 }
 
 // NewOpenRouterClient creates a client configured to talk to an
@@ -77,6 +84,7 @@ func NewOpenRouterClient(apiKey, baseURL string, httpClient *http.Client) *OpenR
 		chatTimeout:    defaultChatTimeout,
 		metaTimeout:    defaultMetaTimeout,
 		tracerProvider: otel.GetTracerProvider(),
+		ratios:         newPromptTokenRatios(),
 	}
 }
 
@@ -201,7 +209,7 @@ func eventRequestParams(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt SystemPrompt,
-	history []protocol.IRCMessage,
+	history TurnHistory,
 	events []protocol.IRCMessage,
 	tools []ToolDefinition,
 ) openai.ChatCompletionNewParams {
@@ -213,6 +221,73 @@ func eventRequestParams(
 	)
 }
 
+// DispatchCompletionTokens is the most a dispatch turn's completion may
+// take. Context planning holds the same number back from the model's
+// window when it decides how much transcript a turn may carry, so the
+// two agree on what the completion is allowed to take.
+const DispatchCompletionTokens = 4000
+
+// CompletionAllowance is what `max_completion_tokens` may be for a prompt
+// of promptTokens against a window of contextLength.
+//
+// [DispatchCompletionTokens] is the ceiling and the window is the bound.
+// The planner reserves the ceiling before it knows what the prompt will
+// cost, and a request whose prompt turned out larger has to ask for less:
+// a small window would otherwise be handed a prompt the planner sized
+// against a shrunken reserve and a cap that never shrank with it, and a
+// tool exchange that fits when it is planned would stop fitting once the
+// assistant message and the tool results are appended.
+//
+// A window this client has not been told about gives the ceiling, which
+// is what a request asked for before there was anything to bound it with.
+// A window with nothing left asks for one token: the prompt is already
+// over the limit, and the provider's answer to that is the length error
+// the turn compacts against.
+func CompletionAllowance(contextLength, promptTokens int) int {
+	if contextLength <= 0 {
+		return DispatchCompletionTokens
+	}
+
+	return max(min(DispatchCompletionTokens, contextLength-promptTokens), 1)
+}
+
+// ContextWindowLookup is the optional capability a [Client] implements to
+// be told each model's context window, so it can size a completion against
+// what the prompt leaves. A client that is never told keeps asking for
+// [DispatchCompletionTokens].
+type ContextWindowLookup interface {
+	SetContextWindows(lookup func(domain.ModelID) int)
+}
+
+// SetContextWindows tells the client where to look up a model's context
+// window. The manager passes the catalogue cache it already keeps, so the
+// completion cap and the planner's reserve read the same number.
+func (c *OpenRouterClient) SetContextWindows(lookup func(domain.ModelID) int) {
+	c.contextWindows.Store(&lookup)
+}
+
+// sizeCompletion caps `params` by what its own prompt leaves in the
+// model's window.
+func (c *OpenRouterClient) sizeCompletion(
+	modelID domain.ModelID,
+	params openai.ChatCompletionNewParams,
+) openai.ChatCompletionNewParams {
+	lookup := c.contextWindows.Load()
+	if lookup == nil {
+		return params
+	}
+
+	request, err := renderCompletionRequest("", params)
+	if err != nil {
+		return params
+	}
+	params.MaxCompletionTokens = openai.Int(int64(CompletionAllowance(
+		(*lookup)(modelID), c.EstimatePromptTokens(modelID, request),
+	)))
+
+	return params
+}
+
 func completionRequestParams(
 	modelID domain.ModelID,
 	promptCacheKey domain.InstanceID,
@@ -220,10 +295,11 @@ func completionRequestParams(
 	tools []ToolDefinition,
 ) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
-		Model:             shared.ChatModel(string(modelID)),
-		Messages:          messages,
-		Tools:             toolParams(tools),
-		ParallelToolCalls: openai.Bool(false),
+		Model:               shared.ChatModel(string(modelID)),
+		Messages:            messages,
+		Tools:               toolParams(tools),
+		ParallelToolCalls:   openai.Bool(false),
+		MaxCompletionTokens: openai.Int(DispatchCompletionTokens),
 	}
 	if promptCacheKey != "" {
 		params.PromptCacheKey = openai.String(string(promptCacheKey))
@@ -241,17 +317,26 @@ type RenderedEventRequest struct {
 	Body    json.RawMessage   `json:"body"`
 }
 
-func openRouterCompletionRequest(
-	params openai.ChatCompletionNewParams,
-) (openai.ChatCompletionNewParams, map[string]string, bool) {
-	extraFields := make(map[string]any)
-	if len(params.Tools) > 0 {
-		extraFields["provider"] = map[string]any{"require_parameters": true}
-	}
-	if len(extraFields) > 0 {
-		params.SetExtraFields(extraFields)
+// EstimatedPromptTokens estimates the token cost of the complete
+// rendered request body. The estimate uses the same four-byte rule
+// as model context planning, but measures the final JSON so it also
+// covers message roles, encoding, tool schemas and provider fields.
+func (r RenderedEventRequest) EstimatedPromptTokens() int {
+	if len(r.Body) == 0 {
+		return 0
 	}
 
+	return (len(r.Body) + 3) / 4
+}
+
+type requestJSONField struct {
+	path  string
+	value any
+}
+
+func openRouterCompletionPolicy(
+	params openai.ChatCompletionNewParams,
+) (map[string]string, []requestJSONField) {
 	headers := make(map[string]string)
 	if params.PromptCacheKey.Valid() {
 		headers["x-session-id"] = params.PromptCacheKey.Value
@@ -260,7 +345,20 @@ func openRouterCompletionRequest(
 		headers["x-anthropic-beta"] = anthropicStructuredOutputBeta
 	}
 
-	return params, headers, isAnthropicModel(domain.ModelID(params.Model))
+	var fields []requestJSONField
+	if len(params.Tools) > 0 {
+		fields = append(fields, requestJSONField{
+			path: "provider", value: map[string]any{"require_parameters": true},
+		})
+	}
+	fields = append(fields, requestJSONField{
+		path: "plugins",
+		value: []map[string]any{{
+			"id": "context-compression", "enabled": false,
+		}},
+	})
+
+	return headers, fields
 }
 
 func isAnthropicModel(modelID domain.ModelID) bool {
@@ -275,7 +373,7 @@ func RenderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt SystemPrompt,
-	history []protocol.IRCMessage,
+	history TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...ToolDefinition,
 ) (RenderedEventRequest, error) {
@@ -290,7 +388,7 @@ func (c *OpenRouterClient) RenderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt SystemPrompt,
-	history []protocol.IRCMessage,
+	history TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...ToolDefinition,
 ) (RenderedEventRequest, error) {
@@ -347,7 +445,7 @@ func renderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt SystemPrompt,
-	history []protocol.IRCMessage,
+	history TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...ToolDefinition,
 ) (RenderedEventRequest, error) {
@@ -379,15 +477,15 @@ func renderCompletionRequest(
 	path string,
 	params openai.ChatCompletionNewParams,
 ) (RenderedEventRequest, error) {
-	params, headers, cacheControl := openRouterCompletionRequest(params)
+	headers, fields := openRouterCompletionPolicy(params)
 	body, err := params.MarshalJSON()
 	if err != nil {
 		return RenderedEventRequest{}, fmt.Errorf("render event request: %w", err)
 	}
-	if cacheControl {
-		body, err = sjson.SetBytes(body, "cache_control", map[string]string{"type": "ephemeral"})
+	for _, field := range fields {
+		body, err = sjson.SetBytes(body, field.path, field.value)
 		if err != nil {
-			return RenderedEventRequest{}, fmt.Errorf("render event request cache policy: %w", err)
+			return RenderedEventRequest{}, fmt.Errorf("render event request policy: %w", err)
 		}
 	}
 
@@ -424,7 +522,7 @@ func (c *OpenRouterClient) SendEvents(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt SystemPrompt,
-	history []protocol.IRCMessage,
+	history TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...ToolDefinition,
 ) (CompletionResult, error) {
@@ -434,15 +532,19 @@ func (c *OpenRouterClient) SendEvents(
 	err := c.inSpan(ctx, "api.openrouter.send_events",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(modelID))},
 		func(ctx context.Context, span trace.Span) error {
-			params := eventRequestParams(
+			params := c.sizeCompletion(modelID, eventRequestParams(
 				modelID,
 				selfInstanceID,
 				systemPrompt,
 				history,
 				events,
 				tools,
-			)
+			))
 			msgs := params.Messages
+			rendered, err := c.recordRequestSize(span, modelID, params)
+			if err != nil {
+				return err
+			}
 
 			resp, rawResp, err := c.chatCompletion( //nolint:bodyclose // SDK reads and closes the body.
 				ctx,
@@ -450,6 +552,7 @@ func (c *OpenRouterClient) SendEvents(
 				option.WithMaxRetries(0),
 			)
 			if err != nil {
+				err = classifyCompletionError(err)
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
 				logger.ErrorContext(ctx, "openrouter send events failed", "error", err)
 				return err
@@ -462,6 +565,7 @@ func (c *OpenRouterClient) SendEvents(
 				logger.ErrorContext(ctx, "openrouter response parse failed", "error", err)
 				return err
 			}
+			c.ratios.observe(modelID, len(rendered.Body), parsed.Usage.PromptTokens)
 
 			if len(parsed.PendingToolCalls) > 0 {
 				parsed.Conversation = &Conversation{
@@ -483,7 +587,7 @@ func (c *OpenRouterClient) SendEvents(
 				"completion_tokens", parsed.Usage.CompletionTokens,
 				"cost_credits", parsed.Usage.CostCredits,
 				"event_count", len(events),
-				"history_count", len(history),
+				"history_count", len(history.Cacheable)+len(history.Current),
 			)
 
 			result = parsed
@@ -514,7 +618,12 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 			if err != nil {
 				return err
 			}
+			params = c.sizeCompletion(conv.modelID, params)
 			msgs := params.Messages
+			rendered, err := c.recordRequestSize(span, conv.modelID, params)
+			if err != nil {
+				return err
+			}
 
 			resp, rawResp, err := c.chatCompletion( //nolint:bodyclose // SDK reads and closes the body.
 				ctx,
@@ -522,6 +631,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 				option.WithMaxRetries(0),
 			)
 			if err != nil {
+				err = classifyCompletionError(err)
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
 				logger.ErrorContext(ctx, "openrouter continue failed", "error", err)
 				return err
@@ -534,6 +644,7 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 				logger.ErrorContext(ctx, "openrouter continue parse failed", "error", err)
 				return err
 			}
+			c.ratios.observe(conv.modelID, len(rendered.Body), parsed.Usage.PromptTokens)
 
 			if len(parsed.PendingToolCalls) > 0 {
 				// Append tool results and the new assistant message for
@@ -572,6 +683,27 @@ func (c *OpenRouterClient) ContinueWithToolResults(
 	return result, nil
 }
 
+// recordRequestSize renders what `params` describes, records its
+// measured size on the span, and returns it so the caller can compare
+// the provider's own prompt-token count against the bytes it sent.
+func (c *OpenRouterClient) recordRequestSize(
+	span trace.Span,
+	modelID domain.ModelID,
+	params openai.ChatCompletionNewParams,
+) (RenderedEventRequest, error) {
+	request, err := renderCompletionRequest("", params)
+	if err != nil {
+		return RenderedEventRequest{}, err
+	}
+
+	span.SetAttributes(
+		attribute.Int(observability.AttrPromptEstimate, c.EstimatePromptTokens(modelID, request)),
+		attribute.Int(observability.AttrRequestBytes, len(request.Body)),
+	)
+
+	return request, nil
+}
+
 // messageRole is the openai role a coalesced transcript run emits
 // under. The system role is not one of them: the system message is
 // the app's own prompt, emitted once ahead of every run, so no
@@ -585,12 +717,35 @@ const (
 
 // messageRun is a contiguous sequence of content carrying the same
 // role. `buildMessages` accumulates runs as it walks history and
-// events, then emits each run as one openai message — single-part
-// runs collapse to a plain-string body, multi-part runs become an
-// array of text content parts.
+// events, then emits each run as one openai message: single-part runs
+// collapse to a plain-string body, multi-part runs become an array of
+// text content parts.
 type messageRun struct {
 	role  messageRole
 	parts []string
+}
+
+// cachePoint identifies the content part that closes the request's
+// cacheable prefix, as a run index and a part index within that run.
+type cachePoint struct {
+	run  int
+	part int
+}
+
+// partIn returns the index of the part in `run` carrying the
+// breakpoint, or -1 when the breakpoint is in another run.
+func (p cachePoint) partIn(run int) int {
+	if p.run != run {
+		return -1
+	}
+
+	return p.part
+}
+
+// ephemeralCacheControl is the `cache_control` extra field a provider
+// reads to place a prompt-cache breakpoint at a content part.
+func ephemeralCacheControl() map[string]any {
+	return map[string]any{"cache_control": map[string]any{"type": "ephemeral"}}
 }
 
 // buildMessages renders a turn's input as openai chat messages: the
@@ -616,10 +771,16 @@ type messageRun struct {
 // calls in it, so a replayed reply has no id to name. Tool results
 // within a turn do keep the tool role, which
 // [OpenRouterClient.ContinueWithToolResults] gives them.
+//
+// The request carries two prompt-cache breakpoints: one on the fixed
+// system prompt and one on the last part built from
+// [TurnHistory.Cacheable]. A provider reuses the longest cached
+// prefix it can match, so the second one is what lets a turn reuse
+// the transcript the turn before it sent.
 func buildMessages(
 	systemPrompt SystemPrompt,
 	selfInstanceID domain.InstanceID,
-	history []protocol.IRCMessage,
+	history TurnHistory,
 	events []protocol.IRCMessage,
 ) []openai.ChatCompletionMessageParamUnion {
 	var runs []messageRun
@@ -647,7 +808,16 @@ func buildMessages(
 		addPart(roleUser, string(data))
 	}
 
-	for _, h := range history {
+	for _, h := range history.Cacheable {
+		appendMsg(h)
+	}
+
+	cache := cachePoint{run: -1, part: -1}
+	if last := len(runs) - 1; last >= 0 {
+		cache = cachePoint{run: last, part: len(runs[last].parts) - 1}
+	}
+
+	for _, h := range history.Current {
 		appendMsg(h)
 	}
 
@@ -657,46 +827,61 @@ func buildMessages(
 
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(runs)+2)
 	fixed := openai.ChatCompletionContentPartTextParam{Text: systemPrompt.Fixed}
-	fixed.SetExtraFields(map[string]any{
-		"cache_control": map[string]any{"type": "ephemeral"},
-	})
+	fixed.SetExtraFields(ephemeralCacheControl())
 	msgs = append(msgs, openai.SystemMessage([]openai.ChatCompletionContentPartTextParam{fixed}))
 
 	if systemPrompt.Dynamic != "" {
 		msgs = append(msgs, openai.UserMessage(systemPrompt.Dynamic))
 	}
 
-	for _, r := range runs {
-		msgs = append(msgs, runToMessage(r))
+	for i, r := range runs {
+		msgs = append(msgs, runToMessage(r, cache.partIn(i)))
 	}
 
 	return msgs
 }
 
-func runToMessage(r messageRun) openai.ChatCompletionMessageParamUnion {
+// runToMessage emits one coalesced run as an openai message.
+// `cacheAt` names the part that closes the cacheable prefix, or -1
+// when the breakpoint is elsewhere. A breakpoint has to sit on a
+// content part, so a run carrying one keeps the array form whatever
+// its length; every other single-part run collapses to a plain-string
+// body.
+func runToMessage(r messageRun, cacheAt int) openai.ChatCompletionMessageParamUnion {
+	textPart := func(i int, text string) openai.ChatCompletionContentPartTextParam {
+		part := openai.ChatCompletionContentPartTextParam{Text: text}
+		if i == cacheAt {
+			part.SetExtraFields(ephemeralCacheControl())
+		}
+
+		return part
+	}
+
 	switch r.role {
 	case roleAssistant:
-		if len(r.parts) == 1 {
+		if len(r.parts) == 1 && cacheAt < 0 {
 			return openai.AssistantMessage(r.parts[0])
 		}
 
 		parts := make([]openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion, len(r.parts))
 		for i, p := range r.parts {
+			part := textPart(i, p)
 			parts[i] = openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{
-				OfText: &openai.ChatCompletionContentPartTextParam{Text: p},
+				OfText: &part,
 			}
 		}
 
 		return openai.AssistantMessage(parts)
 
 	case roleUser:
-		if len(r.parts) == 1 {
+		if len(r.parts) == 1 && cacheAt < 0 {
 			return openai.UserMessage(r.parts[0])
 		}
 
 		parts := make([]openai.ChatCompletionContentPartUnionParam, len(r.parts))
 		for i, p := range r.parts {
-			parts[i] = openai.TextContentPart(p)
+			part := textPart(i, p)
+			parts[i] = openai.ChatCompletionContentPartUnionParam{OfText: &part}
 		}
 
 		return openai.UserMessage(parts)
@@ -937,7 +1122,7 @@ func (c *OpenRouterClient) chatCompletion(
 ) (*openai.ChatCompletion, *http.Response, error) {
 	ctx, cancel := ensureDeadline(ctx, c.chatTimeout)
 	defer cancel()
-	payload, headers, cacheControl := openRouterCompletionRequest(payload)
+	headers, fields := openRouterCompletionPolicy(payload)
 
 	var rawResp *http.Response
 
@@ -950,10 +1135,8 @@ func (c *OpenRouterClient) chatCompletion(
 		// key still reaches providers that use it for cache bucketing.
 		opts = append(opts, option.WithHeader(name, value))
 	}
-	if cacheControl {
-		opts = append(opts, option.WithJSONSet(
-			"cache_control", map[string]string{"type": "ephemeral"},
-		))
+	for _, field := range fields {
+		opts = append(opts, option.WithJSONSet(field.path, field.value))
 	}
 	completion, err := c.oai.Chat.Completions.New(
 		ctx,

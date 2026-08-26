@@ -99,6 +99,7 @@ type ModelClient struct {
 	contextLenFn func(domain.ModelID) int
 	pacer        *Pacer
 	journal      TurnJournal
+	contexts     ContextStore
 
 	dispatchContext context.Context
 	journalQueue    *journalQueue
@@ -141,6 +142,20 @@ type TurnJournal interface {
 	) (store.ModelTurnRecorder, error)
 }
 
+// ContextStore is the actor-bound summary surface used by a
+// ModelClient.
+type ContextStore interface {
+	ContextSummaries(
+		ctx context.Context,
+		guard protocol.WindowGuard,
+	) ([]store.ContextSummary, error)
+	CommitContextSummary(
+		ctx context.Context,
+		guard protocol.WindowGuard,
+		update store.ContextSummaryUpdate,
+	) (store.ContextSummary, error)
+}
+
 // Config contains the lifetime dependencies of a [ModelClient].
 type Config struct {
 	Instance        *domain.Instance
@@ -155,6 +170,7 @@ type Config struct {
 	JournalContext  context.Context
 	Pacer           *Pacer
 	Journal         TurnJournal
+	Contexts        ContextStore
 }
 
 // New returns an unattached `ModelClient` for cfg.Instance. The client is
@@ -176,12 +192,11 @@ type Config struct {
 // before the store can close.
 //
 // Config.ContextLen reports the live catalogue-cached context length
-// for a model id. It is consulted at the top of every dispatch burst
-// (see [ModelClient.runDispatchLoop]), so the transcript token
-// budget stays current with whatever the catalogue holds across the
-// client's whole lifetime. A zero return — including from a nil
-// function — disables the budget for that burst, leaving
-// [modelHistorySize]'s event-count ring as the only bound.
+// for a model id. Each turn consults it after refreshing the model
+// catalogue, so the request budget uses the current provider value.
+// A zero return disables the budget for that turn, leaving
+// [modelHistorySize]'s event-count ring as the only bound, and a nil
+// function returns zero for every model.
 //
 // Config.Pacer adds a typing delay before each chat-tool emit so bots
 // don't fire at machine speed; a nil value disables pacing.
@@ -212,6 +227,7 @@ func New(cfg Config) *ModelClient {
 		contextLenFn:    cfg.ContextLen,
 		pacer:           cfg.Pacer,
 		journal:         cfg.Journal,
+		contexts:        cfg.Contexts,
 		dispatchContext: dispatchContext,
 		journalQueue:    newJournalQueue(cfg.JournalContext),
 		hist:            newHistory(),

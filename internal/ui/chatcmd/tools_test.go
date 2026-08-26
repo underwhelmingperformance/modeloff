@@ -319,7 +319,7 @@ func (toolTestAPI) RenderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...api.ToolDefinition,
 ) (api.RenderedEventRequest, error) {
@@ -345,7 +345,7 @@ func (toolTestAPI) SendEvents(
 	domain.ModelID,
 	domain.InstanceID,
 	api.SystemPrompt,
-	[]protocol.IRCMessage,
+	api.TurnHistory,
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {
@@ -720,10 +720,12 @@ func TestJoinCommand_preserves_committed_targets_when_execution_fails(t *testing
 	))
 	require.ErrorIs(t, modelReply.ExecutionError, executionFailure)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Human        ReplyEvents
 		ModelPayload modelclient.ToolResultPayload
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Human: ReplyEvents{
 			Events: []domain.ProtocolEvent{domain.SystemNotice{
 				Target: "#general",
@@ -731,10 +733,7 @@ func TestJoinCommand_preserves_committed_targets_when_execution_fails(t *testing
 			}},
 			Error: &domain.ErrorEvent{Operation: "join", Err: executionFailure, Target: "#general"},
 		},
-	}, struct {
-		Human        ReplyEvents
-		ModelPayload modelclient.ToolResultPayload
-	}{
+	}, assertionSnapshot{
 		Human:        humanReply,
 		ModelPayload: modelReply.Payload,
 	})
@@ -1347,16 +1346,15 @@ func TestMeCommand_refuses_the_status_window(t *testing.T) {
 	var targetErr noMessageTargetError
 	require.ErrorAs(t, err, &targetErr)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Command protocol.Command
 		Error   noMessageTargetError
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Command: nil,
 		Error:   noMessageTargetError{Window: domain.StatusChannelName},
-	}, struct {
-		Command protocol.Command
-		Error   noMessageTargetError
-	}{
+	}, assertionSnapshot{
 		Command: command,
 		Error:   targetErr,
 	})
@@ -1377,10 +1375,12 @@ func TestMeCommand_Run_preserves_a_typed_body_error(t *testing.T) {
 		result.Error.At = time.Time{}
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		OK     bool
 		Result CommandErrorResult
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		OK: true,
 		Result: CommandErrorResult{
 			Error: domain.ErrorEvent{
@@ -1389,10 +1389,7 @@ func TestMeCommand_Run_preserves_a_typed_body_error(t *testing.T) {
 				Target:    "#lobby",
 			},
 		},
-	}, struct {
-		OK     bool
-		Result CommandErrorResult
-	}{
+	}, assertionSnapshot{
 		OK:     ok,
 		Result: result,
 	})

@@ -205,7 +205,7 @@ func New(cfg Config) *Manager {
 	}
 	lifecycleContext, cancelLifecycle := context.WithCancel(lifecycleBase)
 
-	return &Manager{
+	manager := &Manager{
 		store:                cfg.Store,
 		memory:               cfg.Memory,
 		tools:                cfg.Tools,
@@ -224,6 +224,9 @@ func New(cfg Config) *Manager {
 		draining:             make(map[protocol.ClientID]*drainingClient),
 		pendingMemoryDeletes: make(map[protocol.ClientID]struct{}),
 	}
+	manager.sizeCompletions(cfg.APIClient)
+
+	return manager
 }
 
 // WithTracerProvider returns m with its tracer provider replaced
@@ -309,6 +312,7 @@ func (m *Manager) SetAPIKey(ctx context.Context, apiKey, baseURL string) error {
 		}
 
 		m.api = nextClient
+		m.sizeCompletions(nextClient)
 		m.apiKey = apiKey
 		m.mu.Unlock()
 
@@ -336,6 +340,7 @@ func (m *Manager) SetBaseURL(ctx context.Context, baseURL string) error {
 				return observability.ErrWithKind(fmt.Errorf("build api client: %w", err), observability.ErrorKindValidation)
 			}
 			m.api = client
+			m.sizeCompletions(client)
 			rebuilt = true
 		}
 		m.mu.Unlock()
@@ -875,6 +880,7 @@ func (m *Manager) Attach(
 		JournalContext:  m.lifecycleContext,
 		Pacer:           m.pacer,
 		Journal:         sess,
+		Contexts:        sess,
 	})
 	attaching := &clientAttachment{done: make(chan struct{})}
 	m.clients[id] = mc
@@ -1246,4 +1252,15 @@ func (m *Manager) inSpan(
 		DefaultErrKind: observability.ErrorKindStore,
 		ClassifyError:  observability.ErrorKindOf,
 	}.Run(ctx, op, attrs, fn)
+}
+
+// sizeCompletions tells a client where to look up a model's context
+// window, so it can cap a completion by what the request's own prompt
+// leaves. The catalogue cache is the same number the dispatch planner
+// reserves against, which is what keeps the reserve and the cap from
+// diverging.
+func (m *Manager) sizeCompletions(client api.Client) {
+	if lookup, ok := client.(api.ContextWindowLookup); ok {
+		lookup.SetContextWindows(m.CachedContextLen)
+	}
 }

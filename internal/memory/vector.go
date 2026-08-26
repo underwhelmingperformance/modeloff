@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -299,7 +300,11 @@ func (s *IndexedStore) Search(ctx context.Context, id domain.InstanceID, query s
 				}
 
 				searchResults = append(searchResults, SearchResult{
-					Entry:      Entry{Key: key, Content: content, At: parseEntryAt(r.Metadata["at"])},
+					Entry: Entry{
+						Key: key, Content: content,
+						Pinned: parseEntryPinned(r.Metadata["pinned"]),
+						At:     parseEntryAt(r.Metadata["at"]),
+					},
 					Similarity: r.Similarity,
 				})
 			}
@@ -445,6 +450,7 @@ func (s *IndexedStore) indexPrepared(
 			"key":     entry.Key,
 			"content": entry.Content,
 			"at":      entry.At.Format(time.RFC3339Nano),
+			"pinned":  strconv.FormatBool(entry.Pinned),
 		},
 	}
 
@@ -466,6 +472,11 @@ func parseEntryAt(s string) time.Time {
 	}
 
 	return t
+}
+
+func parseEntryPinned(s string) bool {
+	pinned, err := strconv.ParseBool(s)
+	return err == nil && pinned
 }
 
 // Delete removes the entry from the backing store, then from the
@@ -611,20 +622,36 @@ func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) 
 
 	var anchor string
 	var added int
+	var refreshed int
 
 	for _, entry := range entries {
 		backingKeys[entry.Key] = struct{}{}
 		anchor = entry.Key
 
-		if _, err := col.GetByID(ctx, entry.Key); err == nil {
+		document, err := col.GetByID(ctx, entry.Key)
+		if err != nil {
+			if err := s.index(ctx, id, entry); err != nil {
+				return fmt.Errorf("index entry %s/%s: %w", id, entry.Key, err)
+			}
+
+			added++
+			continue
+		}
+		if indexedDocumentMatches(entry, document) {
 			continue
 		}
 
-		if err := s.index(ctx, id, entry); err != nil {
-			return fmt.Errorf("index entry %s/%s: %w", id, entry.Key, err)
+		embedding := document.Embedding
+		if document.Content != memoryDocumentContent(entry) {
+			embedding, err = s.embeddingFunc(ctx, memoryDocumentContent(entry))
+			if err != nil {
+				return fmt.Errorf("embed changed entry %s/%s: %w", id, entry.Key, err)
+			}
 		}
-
-		added++
+		if err := s.indexPrepared(ctx, id, entry, embedding); err != nil {
+			return fmt.Errorf("refresh entry %s/%s: %w", id, entry.Key, err)
+		}
+		refreshed++
 	}
 
 	removed, err := s.pruneOrphanDocuments(ctx, id, col, anchor, backingKeys)
@@ -632,15 +659,24 @@ func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) 
 		return err
 	}
 
-	if added > 0 || removed > 0 {
+	if added > 0 || refreshed > 0 || removed > 0 {
 		slog.Default().InfoContext(ctx, "reconciled memory index against the backing store",
 			"instance_id", string(id),
 			"added", added,
+			"refreshed", refreshed,
 			"removed", removed,
 		)
 	}
 
 	return nil
+}
+
+func indexedDocumentMatches(entry Entry, document chromem.Document) bool {
+	return document.Content == memoryDocumentContent(entry) &&
+		document.Metadata["key"] == entry.Key &&
+		document.Metadata["content"] == entry.Content &&
+		document.Metadata["at"] == entry.At.Format(time.RFC3339Nano) &&
+		document.Metadata["pinned"] == strconv.FormatBool(entry.Pinned)
 }
 
 // pruneOrphanDocuments removes every document col holds whose id is

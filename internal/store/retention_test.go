@@ -299,19 +299,18 @@ func TestSQLiteStore_modelTurnRetention_counts_UTF8_bytes(t *testing.T) {
 			entries := dumpTable(t, s.db, `
 				SELECT turn_id, data FROM model_turn_entries ORDER BY turn_id
 			`)
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Turns   []ModelTurnID
 				Entries []string
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Turns: []ModelTurnID{2, 3},
 				Entries: []string{
 					`turn_id=2|data="éééééééééééééééééééé"`,
 					`turn_id=3|data="éééééééééééééééééééé"`,
 				},
-			}, struct {
-				Turns   []ModelTurnID
-				Entries []string
-			}{
+			}, assertionSnapshot{
 				Turns: turns, Entries: entries,
 			})
 		})
@@ -394,15 +393,14 @@ func TestSQLiteStore_DeleteInstanceByID_preserves_user_private_replies(t *testin
 	require.NoError(t, err)
 	gotTurnEntries, err := reopened.ModelTurnEntries(ctx, turnID)
 	require.NoError(t, err)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Replies     []InstanceReplyRecord
 		TurnEntries []ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Replies: records,
-	}, struct {
-		Replies     []InstanceReplyRecord
-		TurnEntries []ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		Replies: gotReplies, TurnEntries: gotTurnEntries,
 	})
 }
@@ -694,22 +692,19 @@ func TestSQLiteStore_pruneEvents_tolerates_a_stale_channel_cursor(t *testing.T) 
 		retainedIDs[i] = event.ID
 	}
 	expectedIDs := append([]int64{staleCursor}, ids[200:]...)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Cursor     int64
 		Total      int
 		FromCursor int
 		IDs        []int64
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Cursor:     staleCursor,
 		Total:      eventRetentionHeadroom + 1,
 		FromCursor: eventRetentionHeadroom + 1,
 		IDs:        expectedIDs,
-	}, struct {
-		Cursor     int64
-		Total      int
-		FromCursor int
-		IDs        []int64
-	}{
+	}, assertionSnapshot{
 		Cursor:     gotCursor,
 		Total:      total,
 		FromCursor: fromCursor,
@@ -872,4 +867,72 @@ func TestSQLiteStore_pruneEvents_trims_a_thread_a_client_holds_with_itself(t *te
 		gotIDs[i] = e.ID
 	}
 	require.Equal(t, ids[len(ids)-eventRetentionHeadroom:], gotIDs)
+}
+
+// TestSQLiteStore_pruneEvents_removes_context_summaries_outside_actor_visibility
+// covers the orphan pass over the two summary tables. Neither has a
+// foreign key to channels or to instances, so a departure the ordinary
+// path missed leaves both the summary and its verbatim sources behind.
+func TestSQLiteStore_pruneEvents_removes_context_summaries_outside_actor_visibility(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	live := domain.NewModelInstance("inst-live", "live", "test/model", "", nil)
+	live.JoinChannel("#dev", testTime)
+	departed := domain.NewModelInstance("inst-departed", "departed", "test/model", "", nil)
+	invited := domain.NewModelInstance("inst-invited", "invited", "test/model", "", nil)
+	peer := domain.NewModelInstance("inst-peer", "peer", "test/model", "", nil)
+	for _, inst := range []*domain.Instance{live, departed, invited, peer} {
+		require.NoError(t, s.SaveInstance(ctx, inst))
+	}
+
+	window := domain.NewChannelWindow("#dev", testTime)
+	window.Members.Add(live)
+	window.Invitations.Add(invited.ID())
+	require.NoError(t, s.SaveWindow(ctx, window))
+
+	type summaryFixture struct {
+		actor  domain.InstanceID
+		window protocol.WindowTarget
+	}
+	fixtures := []summaryFixture{
+		{actor: live.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: departed.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: invited.ID(), window: protocol.ChannelWindowTarget("#dev")},
+		{actor: live.ID(), window: protocol.ChannelWindowTarget("#gone")},
+		{actor: live.ID(), window: protocol.DirectWindowTarget(peer.ID())},
+		{actor: live.ID(), window: protocol.DirectWindowTarget("inst-gone")},
+		{actor: live.ID(), window: protocol.DirectWindowTarget("")},
+		{actor: "inst-gone", window: protocol.DirectWindowTarget(peer.ID())},
+	}
+	for _, fixture := range fixtures {
+		_, err := s.CommitContextSummary(ctx, ContextSummaryUpdate{
+			InstanceID: fixture.actor, Window: fixture.window, Summary: "earlier context",
+			Sources: []protocol.IRCMessage{{
+				Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"),
+				Body: "a line worth summarising", At: testTime,
+			}},
+			CreatedAt: testTime,
+		})
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	want := []string{
+		"instance_id=inst-invited|window_kind=1|window_key=#dev",
+		"instance_id=inst-live|window_kind=1|window_key=#dev",
+		"instance_id=inst-live|window_kind=2|window_key=",
+		"instance_id=inst-live|window_kind=2|window_key=inst-peer",
+	}
+	require.Equal(t, want, dumpTable(t, s.db, `
+		SELECT instance_id, window_kind, window_key
+		FROM context_summaries
+		ORDER BY instance_id, window_kind, window_key
+	`))
+	require.Equal(t, want, dumpTable(t, s.db, `
+		SELECT instance_id, window_kind, window_key
+		FROM context_summary_sources
+		ORDER BY instance_id, window_kind, window_key
+	`))
 }

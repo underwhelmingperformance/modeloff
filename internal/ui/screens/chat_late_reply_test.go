@@ -162,24 +162,21 @@ func TestChatScreen_config_result_keeps_the_issuing_channel_incarnation(t *testi
 				wantTarget = "#b"
 			}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Active   domain.ChannelName
 				ChannelA []domain.Event
 				ChannelB []domain.Event
 				Effects  []tea.Msg
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Active:   "#b",
 				ChannelA: wantA,
 				ChannelB: wantB,
 				Effects: []tea.Msg{
 					components.ScrollbackUpdatedMsg{Channel: wantTarget},
 				},
-			}, struct {
-				Active   domain.ChannelName
-				ChannelA []domain.Event
-				ChannelB []domain.Event
-				Effects  []tea.Msg
-			}{
+			}, assertionSnapshot{
 				Active:   screen.active.Name(),
 				ChannelA: channelA,
 				ChannelB: channelB,
@@ -228,24 +225,20 @@ func TestChatScreen_delayed_close_keeps_a_reopened_dm(t *testing.T) {
 		activeWindow = screen.active.Window
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Handled       bool
 		Open          bool
 		CurrentWindow domain.Window
 		ActiveWindow  domain.Window
 		Effects       []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Handled:       true,
 		Open:          true,
 		CurrentWindow: reopened,
 		ActiveWindow:  reopened,
-	}, struct {
-		Handled       bool
-		Open          bool
-		CurrentWindow domain.Window
-		ActiveWindow  domain.Window
-		Effects       []tea.Msg
-	}{
+	}, assertionSnapshot{
 		Handled:       handled,
 		Open:          open,
 		CurrentWindow: currentWindow,
@@ -287,23 +280,20 @@ func TestChatScreen_late_reply_avoids_a_reopened_dm(t *testing.T) {
 		event:         reply,
 	})
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active          domain.ChannelName
 		Reopened        []domain.Event
 		Fallback        []domain.Event
 		RenderedEffects []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active:   "#other",
 		Fallback: []domain.Event{reply},
 		RenderedEffects: []tea.Msg{
 			components.ScrollbackUpdatedMsg{Channel: "#other"},
 		},
-	}, struct {
-		Active          domain.ChannelName
-		Reopened        []domain.Event
-		Fallback        []domain.Event
-		RenderedEffects []tea.Msg
-	}{
+	}, assertionSnapshot{
 		Active:          screen.active.Name(),
 		Reopened:        screen.scrollbackOf(reopened.Name()),
 		Fallback:        screen.scrollbackOf(other.Name()),
@@ -356,7 +346,7 @@ func TestChatScreen_delayed_close_keeps_new_activity_in_the_same_dm(t *testing.T
 		activeWindow = screen.active.Window
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		IssuingRevision uint64
 		Handled         bool
 		Open            bool
@@ -364,22 +354,16 @@ func TestChatScreen_delayed_close_keeps_new_activity_in_the_same_dm(t *testing.T
 		ActiveWindow    domain.Window
 		Events          []domain.Event
 		Effects         []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		IssuingRevision: 2,
 		Handled:         true,
 		Open:            true,
 		CurrentWindow:   issuing,
 		ActiveWindow:    issuing,
 		Events:          []domain.Event{beforeClose, afterClose},
-	}, struct {
-		IssuingRevision uint64
-		Handled         bool
-		Open            bool
-		CurrentWindow   domain.Window
-		ActiveWindow    domain.Window
-		Events          []domain.Event
-		Effects         []tea.Msg
-	}{
+	}, assertionSnapshot{
 		IssuingRevision: result.IssuingWindowRevision,
 		Handled:         handled,
 		Open:            open,
@@ -437,24 +421,20 @@ func TestChatScreen_newer_dm_intent_supersedes_a_delayed_close(t *testing.T) {
 				activeWindow = screen.active.Window
 			}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Handled bool
 				Open    bool
 				Window  domain.Window
 				Active  domain.Window
 				Effects []tea.Msg
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Handled: true,
 				Open:    true,
 				Window:  issuing,
 				Active:  issuing,
-			}, struct {
-				Handled bool
-				Open    bool
-				Window  domain.Window
-				Active  domain.Window
-				Effects []tea.Msg
-			}{
+			}, assertionSnapshot{
 				Handled: handled,
 				Open:    open,
 				Window:  currentWindow,
@@ -494,13 +474,15 @@ func TestChatScreen_delayed_dm_open_uses_nick_from_current_session_state(t *test
 	window, open := screen.windowByName(domain.ChannelName(botty.ID()))
 	member, memberPresent := channel.Members.GetByID(botty.ID())
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Open          bool
 		Window        observedWindowState
 		MemberPresent bool
 		Member        domain.Member
 		Active        *Window
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Open: true,
 		Window: observedWindowState{
 			Name:        domain.ChannelName(botty.ID()),
@@ -514,13 +496,7 @@ func TestChatScreen_delayed_dm_open_uses_nick_from_current_session_state(t *test
 			InstanceID: botty.ID(),
 			Nick:       "renamed",
 		},
-	}, struct {
-		Open          bool
-		Window        observedWindowState
-		MemberPresent bool
-		Member        domain.Member
-		Active        *Window
-	}{
+	}, assertionSnapshot{
 		Open:          open,
 		Window:        observeWindowState(window),
 		MemberPresent: memberPresent,
@@ -560,11 +536,13 @@ func TestChatScreen_dm_restore_uses_nick_from_current_session_state(t *testing.T
 	collectMsgs(restoreCmd)
 	window, open := screen.windowByName(domain.ChannelName(counterpartID))
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Open   bool
 		Window observedWindowState
 		Active *Window
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Open: true,
 		Window: observedWindowState{
 			Name:        domain.ChannelName(counterpartID),
@@ -572,11 +550,7 @@ func TestChatScreen_dm_restore_uses_nick_from_current_session_state(t *testing.T
 			Kind:        domain.KindDM,
 			Created:     sess.ConnectedAt(),
 		},
-	}, struct {
-		Open   bool
-		Window observedWindowState
-		Active *Window
-	}{
+	}, assertionSnapshot{
 		Open:   open,
 		Window: observeWindowState(window),
 		Active: screen.active,
@@ -599,11 +573,13 @@ func TestChatScreen_dm_open_uses_copied_nick_after_peer_disconnects(t *testing.T
 
 	window, open := screen.windowByName("inst-botty")
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Open   bool
 		Window observedWindowState
 		Active *Window
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Open: true,
 		Window: observedWindowState{
 			Name:        "inst-botty",
@@ -612,11 +588,7 @@ func TestChatScreen_dm_open_uses_copied_nick_after_peer_disconnects(t *testing.T
 			Created:     openedAt,
 			Revision:    1,
 		},
-	}, struct {
-		Open   bool
-		Window observedWindowState
-		Active *Window
-	}{
+	}, assertionSnapshot{
 		Open:   open,
 		Window: observeWindowState(window),
 		Active: screen.active,
@@ -657,24 +629,20 @@ func TestChatScreen_resolved_pending_dm_supersedes_a_delayed_close(t *testing.T)
 		events = current.Scrollback.Events()
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Handled bool
 		Open    bool
 		Window  domain.Window
 		Events  []domain.Event
 		Effects []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Handled: true,
 		Open:    true,
 		Window:  issuing,
 		Events:  []domain.Event{held},
-	}, struct {
-		Handled bool
-		Open    bool
-		Window  domain.Window
-		Events  []domain.Event
-		Effects []tea.Msg
-	}{
+	}, assertionSnapshot{
 		Handled: handled,
 		Open:    open,
 		Window:  currentWindow,
@@ -752,15 +720,14 @@ func TestChatScreen_stale_restore_does_not_reopen_a_closed_dm(t *testing.T) {
 	stored, err := eventStore.ListDMWindows(t.Context())
 	require.NoError(t, err)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Open   bool
 		Stored []domain.InstanceID
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Stored: nil,
-	}, struct {
-		Open   bool
-		Stored []domain.InstanceID
-	}{
+	}, assertionSnapshot{
 		Open:   open,
 		Stored: stored,
 	})
@@ -807,19 +774,17 @@ func TestChatScreen_background_dm_open_during_restore_keeps_a_landing(t *testing
 	}
 	_, generalOpen := screen.windowByName("#general")
 	_, dmOpen := screen.windowByName("inst-botty")
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active      domain.ChannelName
 		GeneralOpen bool
 		DMOpen      bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active:      "inst-botty",
 		GeneralOpen: true,
 		DMOpen:      true,
-	}, struct {
-		Active      domain.ChannelName
-		GeneralOpen bool
-		DMOpen      bool
-	}{
+	}, assertionSnapshot{
 		Active:      active,
 		GeneralOpen: generalOpen,
 		DMOpen:      dmOpen,
@@ -904,21 +869,18 @@ func TestChatScreen_stale_restore_does_not_replace_a_newer_focus(t *testing.T) {
 				active = screen.active.Window
 			}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Open    bool
 				DM      domain.Window
 				Active  domain.Window
 				Landing tea.Cmd
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Open:   true,
 				DM:     newDMWindow("", "testuser", sess.ConnectedAt()),
 				Active: expectedActive,
-			}, struct {
-				Open    bool
-				DM      domain.Window
-				Active  domain.Window
-				Landing tea.Cmd
-			}{
+			}, assertionSnapshot{
 				Open:    open,
 				DM:      restoredDM,
 				Active:  active,
@@ -1192,7 +1154,7 @@ func TestChatScreen_topic_reply_uses_the_issuing_channel(t *testing.T) {
 			})
 
 			currentChannel, issuingOpen := screen.channelWindowByName("#a")
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				IssuingOpen    bool
 				IssuingCurrent bool
 				Active         domain.ChannelName
@@ -1200,7 +1162,9 @@ func TestChatScreen_topic_reply_uses_the_issuing_channel(t *testing.T) {
 				ChannelA       []domain.Event
 				ChannelB       []domain.Event
 				Messages       []tea.Msg
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				IssuingOpen:    !tc.closeIssuing || tc.reopenIssuing,
 				IssuingCurrent: tc.wantIssuingCurrent,
 				Active:         tc.wantActive,
@@ -1210,15 +1174,7 @@ func TestChatScreen_topic_reply_uses_the_issuing_channel(t *testing.T) {
 				Messages: []tea.Msg{
 					components.ScrollbackUpdatedMsg{Channel: tc.wantTarget},
 				},
-			}, struct {
-				IssuingOpen    bool
-				IssuingCurrent bool
-				Active         domain.ChannelName
-				Status         []domain.Event
-				ChannelA       []domain.Event
-				ChannelB       []domain.Event
-				Messages       []tea.Msg
-			}{
+			}, assertionSnapshot{
 				IssuingOpen:    issuingOpen,
 				IssuingCurrent: currentChannel == issuingChannel,
 				Active:         screen.active.Name(),
@@ -1258,13 +1214,15 @@ func TestChatScreen_channel_error_avoids_a_replacement(t *testing.T) {
 			if active == "#a" {
 				wantTarget = domain.StatusChannelName
 			}
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Handled               bool
 				Active                domain.ChannelName
 				ReplacementScrollback []domain.Event
 				TargetScrollback      []domain.Event
 				Messages              []tea.Msg
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Handled: true,
 				Active:  active,
 				TargetScrollback: []domain.Event{domain.CommandError{
@@ -1275,13 +1233,7 @@ func TestChatScreen_channel_error_avoids_a_replacement(t *testing.T) {
 					nil,
 					components.NickListThinkingMsg{},
 				},
-			}, struct {
-				Handled               bool
-				Active                domain.ChannelName
-				ReplacementScrollback []domain.Event
-				TargetScrollback      []domain.Event
-				Messages              []tea.Msg
-			}{
+			}, assertionSnapshot{
 				Handled:               handled,
 				Active:                screen.active.Name(),
 				ReplacementScrollback: screen.scrollbackOf("#a"),

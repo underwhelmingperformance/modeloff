@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 11
+const SchemaVersion = 13
 
 type schemaTooNewError struct {
 	Found     int
@@ -353,6 +353,63 @@ var migrations = []migration{
 					ON model_turn_entries (turn_id, seq)
 			`); err != nil {
 				return fmt.Errorf("index model turn entries: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 12,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE context_summary_sources (
+					id          INTEGER PRIMARY KEY,
+					instance_id TEXT NOT NULL,
+					window_kind INTEGER NOT NULL,
+					window_key  TEXT NOT NULL,
+					data        TEXT NOT NULL,
+					at          TEXT NOT NULL
+				)
+			`); err != nil {
+				return fmt.Errorf("create context summary sources: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX idx_context_summary_sources_actor_window
+					ON context_summary_sources (instance_id, window_kind, window_key, id)
+			`); err != nil {
+				return fmt.Errorf("index context summary sources: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE context_summaries (
+					id              INTEGER PRIMARY KEY,
+					instance_id     TEXT NOT NULL,
+					window_kind     INTEGER NOT NULL,
+					window_key      TEXT NOT NULL,
+					summary         TEXT NOT NULL,
+					first_source_id INTEGER NOT NULL REFERENCES context_summary_sources(id),
+					last_source_id  INTEGER NOT NULL REFERENCES context_summary_sources(id),
+					created_at      TEXT NOT NULL
+				)
+			`); err != nil {
+				return fmt.Errorf("create context summaries: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX idx_context_summaries_actor_window
+					ON context_summaries (instance_id, window_kind, window_key, id)
+			`); err != nil {
+				return fmt.Errorf("index context summaries: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 13,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0
+			`); err != nil {
+				return fmt.Errorf("add memories.pinned: %w", err)
 			}
 
 			return nil

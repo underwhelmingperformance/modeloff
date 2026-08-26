@@ -56,6 +56,13 @@ func TestSource_JSON_round_trip(t *testing.T) {
 }
 
 func TestSource_identity(t *testing.T) {
+	type sourceProperties struct {
+		Nick     domain.Nick
+		ID       domain.InstanceID
+		IDOK     bool
+		IsClient bool
+	}
+
 	tests := []struct {
 		name       string
 		source     domain.Source
@@ -100,23 +107,13 @@ func TestSource_identity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotID, gotIDOK := tt.source.InstanceID()
-			got := struct {
-				Nick     domain.Nick
-				ID       domain.InstanceID
-				IDOK     bool
-				IsClient bool
-			}{
+			got := sourceProperties{
 				Nick:     tt.source.Nick(),
 				ID:       gotID,
 				IDOK:     gotIDOK,
 				IsClient: tt.source.IsClient(),
 			}
-			want := struct {
-				Nick     domain.Nick
-				ID       domain.InstanceID
-				IDOK     bool
-				IsClient bool
-			}{tt.wantNick, tt.wantID, tt.wantIDOK, tt.wantClient}
+			want := sourceProperties{tt.wantNick, tt.wantID, tt.wantIDOK, tt.wantClient}
 
 			require.Equal(t, want, got)
 		})

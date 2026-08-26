@@ -67,8 +67,10 @@ func TestModelClient_dispatch_does_not_show_trigger_in_history_and_events(t *tes
 			Target: "#room", Body: "hello bot", At: fixedTime}
 
 		require.Equal(t, []capture{{
-			history: nil,
-			events:  []protocol.IRCMessage{trigger},
+			history: []protocol.IRCMessage{
+				currentChannelStateMessage("#room", "+", "@testuser", "botty"),
+			},
+			events: []protocol.IRCMessage{trigger},
 		}}, captures,
 			"the trigger goes only in the events argument; placing it in history too "+
 				"surfaces the same line twice in the LLM prompt because buildMessages "+
@@ -136,8 +138,12 @@ func TestModelClient_history_contains_self_replies(t *testing.T) {
 		}
 
 		require.Equal(t, [][]protocol.IRCMessage{
-			nil,
-			{userTrigger1, bottyReply1},
+			{currentChannelStateMessage("#room", "+", "@testuser", "botty")},
+			{
+				userTrigger1,
+				bottyReply1,
+				currentChannelStateMessage("#room", "+", "@testuser", "botty"),
+			},
 		}, captures,
 			"turn 2's history carries botty's turn-1 reply; the model has "+
 				"its own utterance available as ongoing context")

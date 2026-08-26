@@ -179,6 +179,7 @@ func (e *blockingMemoryEffect) Finish(ctx context.Context) {
 func (m *blockingMemoryExecutor) PrepareWriteMemory(
 	ctx context.Context,
 	_, _ string,
+	_ bool,
 ) (memory.PreparedMutation, error) {
 	if m.phase != blockWritePreparation {
 		return memoryEffectFunc(func(context.Context) error { return nil }), nil
@@ -225,20 +226,17 @@ func TestToolContext_Send_rechecks_window_authority_at_command_submission(t *tes
 	initiallyValid := guard.Valid(t.Context())
 	response, err := toolCtx.Send(t.Context(), protocol.Nick{New: "renamed"})
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		InitiallyValid bool
 		Response       protocol.Response
 		WindowClosed   bool
 		Commands       []protocol.Command
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		InitiallyValid: true,
 		WindowClosed:   true,
-	}, struct {
-		InitiallyValid bool
-		Response       protocol.Response
-		WindowClosed   bool
-		Commands       []protocol.Command
-	}{
+	}, assertionSnapshot{
 		InitiallyValid: initiallyValid,
 		Response:       response,
 		WindowClosed:   errors.Is(err, errDispatchWindowClosed),
@@ -256,7 +254,7 @@ func TestExecuteTools_rechecks_window_authority_before_accepting_memory_work(t *
 			name: "write",
 			call: api.PendingToolCall{
 				ID: "write-1", Name: "write_memory",
-				Args: json.RawMessage(`{"key":"decision","content":"ship it"}`),
+				Args: json.RawMessage(`{"key":"decision","content":"ship it","pinned":false}`),
 			},
 		},
 		{
@@ -288,24 +286,21 @@ func TestExecuteTools_rechecks_window_authority_before_accepting_memory_work(t *
 				[]api.PendingToolCall{tt.call}, nil,
 			)
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Outcome      toolBatchOutcome
 				WindowClosed bool
-				Written      map[string]string
+				Written      map[string]memory.Entry
 				Deleted      []string
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Outcome: toolBatchOutcome{
 					results:  []api.ToolResult{},
 					executed: true,
 				},
 				WindowClosed: true,
-				Written:      map[string]string{},
-			}, struct {
-				Outcome      toolBatchOutcome
-				WindowClosed bool
-				Written      map[string]string
-				Deleted      []string
-			}{
+				Written:      map[string]memory.Entry{},
+			}, assertionSnapshot{
 				Outcome:      outcome,
 				WindowClosed: errors.Is(executeErr, errDispatchWindowClosed),
 				Written:      memories.written,
@@ -328,7 +323,7 @@ func TestExecuteTools_does_not_hold_window_authority_during_slow_memory_work(t *
 			phase: blockWritePreparation,
 			call: api.PendingToolCall{
 				ID: "write-1", Name: "write_memory",
-				Args: json.RawMessage(`{"key":"decision","content":"ship it"}`),
+				Args: json.RawMessage(`{"key":"decision","content":"ship it","pinned":false}`),
 			},
 			wantCancelled: true,
 		},
@@ -384,19 +379,17 @@ func TestExecuteTools_does_not_hold_window_authority_during_slow_memory_work(t *
 			cancel()
 			result := <-executed
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				AuthorityUnlocked bool
 				Executed          bool
 				Cancelled         bool
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				AuthorityUnlocked: true,
 				Executed:          true,
 				Cancelled:         tt.wantCancelled,
-			}, struct {
-				AuthorityUnlocked bool
-				Executed          bool
-				Cancelled         bool
-			}{
+			}, assertionSnapshot{
 				AuthorityUnlocked: authorityUnlocked,
 				Executed:          result.outcome.executed,
 				Cancelled:         errors.Is(result.err, context.Canceled),
@@ -445,13 +438,12 @@ func TestDispatch_rechecks_window_authority_after_prompt_preparation(t *testing.
 
 	require.ErrorIs(t, <-result, errDispatchWindowClosed)
 	mc.Wait()
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		UpstreamCalls int
 		Journal       []store.ModelTurnEntry
-	}{}, struct {
-		UpstreamCalls int
-		Journal       []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{}, assertionSnapshot{
 		UpstreamCalls: upstream.callCount(),
 		Journal:       journal.entries,
 	})
@@ -597,10 +589,12 @@ func TestRunTurn_stops_journalling_after_a_tool_closes_the_window(t *testing.T) 
 	})
 	require.ErrorIs(t, err, errDispatchWindowClosed)
 	journal.queue.stop()
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Effects int64
 		Entries []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Effects: 1,
 		Entries: sequenced([]store.ModelTurnEntry{
 			{
@@ -616,10 +610,7 @@ func TestRunTurn_stops_journalling_after_a_tool_closes_the_window(t *testing.T) 
 				}}}),
 			},
 		}),
-	}, struct {
-		Effects int64
-		Entries []store.ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		Effects: effects.Load(),
 		Entries: recording.entries,
 	})
@@ -689,11 +680,13 @@ func TestRunTurn_sends_a_continuation_recorded_before_authority_changes(t *testi
 	toolResults := []api.ToolResult{{ToolCallID: "effect-1", Content: `{"ok":true}`}}
 	require.ErrorIs(t, err, errDispatchWindowClosed)
 	journal.queue.stop()
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		ToolEffects   []string
 		Continuations [][]api.ToolResult
 		Entries       []store.ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		ToolEffects: []string{"effect"},
 		Continuations: [][]api.ToolResult{
 			toolResults,
@@ -718,11 +711,7 @@ func TestRunTurn_sends_a_continuation_recorded_before_authority_changes(t *testi
 				Data: journalJSON(t, modelTurnAssistant{}),
 			},
 		}),
-	}, struct {
-		ToolEffects   []string
-		Continuations [][]api.ToolResult
-		Entries       []store.ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		ToolEffects:   toolEffects,
 		Continuations: continuations,
 		Entries:       recorder.entries,

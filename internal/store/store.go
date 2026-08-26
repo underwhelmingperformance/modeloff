@@ -20,6 +20,7 @@ var ErrNoSuchChannel = errors.New("no such channel")
 type MemoryEntry struct {
 	Key     string
 	Content string
+	Pinned  bool
 
 	// At is when this entry was written, as recorded by
 	// WriteMemory's caller. A row written before this field existed

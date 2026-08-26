@@ -31,7 +31,7 @@ func (stubAPI) RenderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...api.ToolDefinition,
 ) (api.RenderedEventRequest, error) {
@@ -57,7 +57,7 @@ func (stubAPI) SendEvents(
 	domain.ModelID,
 	domain.InstanceID,
 	api.SystemPrompt,
-	[]protocol.IRCMessage,
+	api.TurnHistory,
 	[]protocol.IRCMessage,
 	...api.ToolDefinition,
 ) (api.CompletionResult, error) {

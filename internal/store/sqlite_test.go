@@ -148,7 +148,7 @@ func TestSQLiteStore_CommitChannelJoin_rolls_back_every_row(t *testing.T) {
 	events, eventsErr := s.EventsBefore(ctx, "#dev", nil, 10)
 	scrollback, scrollbackErr := s.ChannelScrollback(ctx, actor.ID(), "#dev", 10)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		CommitFailed    bool
 		WindowAbsent    bool
 		ActorLoadError  error
@@ -157,19 +157,12 @@ func TestSQLiteStore_CommitChannelJoin_rolls_back_every_row(t *testing.T) {
 		Events          []domain.StoredEvent
 		ScrollbackError error
 		Scrollback      []domain.StoredEvent
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		CommitFailed: true,
 		WindowAbsent: true,
-	}, struct {
-		CommitFailed    bool
-		WindowAbsent    bool
-		ActorLoadError  error
-		ActorInChannel  bool
-		EventsLoadError error
-		Events          []domain.StoredEvent
-		ScrollbackError error
-		Scrollback      []domain.StoredEvent
-	}{
+	}, assertionSnapshot{
 		CommitFailed:    commitErr != nil,
 		WindowAbsent:    errors.Is(windowErr, ErrNoSuchChannel),
 		ActorLoadError:  actorErr,
@@ -374,7 +367,7 @@ func TestSQLiteStore_CommitChannelUpdate_rolls_back_every_row(t *testing.T) {
 	audit, auditErr := s.EventsBefore(ctx, "#dev", nil, 10)
 	scrollback, scrollbackErr := s.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		CommitFailed   bool
 		WindowError    error
 		StoredChannel  *domain.ChannelWindow
@@ -383,20 +376,13 @@ func TestSQLiteStore_CommitChannelUpdate_rolls_back_every_row(t *testing.T) {
 		ScrollbackErr  error
 		Scrollback     []domain.StoredEvent
 		StoredIsWindow bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		CommitFailed:   true,
 		StoredChannel:  window,
 		StoredIsWindow: true,
-	}, struct {
-		CommitFailed   bool
-		WindowError    error
-		StoredChannel  *domain.ChannelWindow
-		AuditError     error
-		Audit          []domain.StoredEvent
-		ScrollbackErr  error
-		Scrollback     []domain.StoredEvent
-		StoredIsWindow bool
-	}{
+	}, assertionSnapshot{
 		CommitFailed:   commitErr != nil,
 		WindowError:    windowErr,
 		StoredChannel:  storedChannel,
@@ -437,21 +423,17 @@ func TestSQLiteStore_CommitChannelEvent_rolls_back_the_audit_and_projections(t *
 
 	audit, auditErr := s.EventsBefore(ctx, "#dev", nil, 10)
 	scrollback, scrollbackErr := s.ChannelScrollback(ctx, peer.ID(), "#dev", 10)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		CommitFailed  bool
 		AuditError    error
 		Audit         []domain.StoredEvent
 		ScrollbackErr error
 		Scrollback    []domain.StoredEvent
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		CommitFailed: true,
-	}, struct {
-		CommitFailed  bool
-		AuditError    error
-		Audit         []domain.StoredEvent
-		ScrollbackErr error
-		Scrollback    []domain.StoredEvent
-	}{
+	}, assertionSnapshot{
 		CommitFailed:  commitErr != nil,
 		AuditError:    auditErr,
 		Audit:         audit,
@@ -756,7 +738,7 @@ func TestSQLiteStore_CommitInstanceDeletion_rolls_back_every_row(t *testing.T) {
 
 	memory := MemoryEntry{Key: "fact", Content: "likes tea", At: testTime}
 	require.NoError(t, s.WriteMemory(
-		ctx, actor.ID(), memory.Key, memory.Content, memory.At,
+		ctx, actor.ID(), memory.Key, memory.Content, memory.At, memory.Pinned,
 	))
 
 	priorMessage := domain.Message{
@@ -1905,7 +1887,7 @@ func TestSQLiteStore_WriteMemory_records_at(t *testing.T) {
 
 	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea", testTime))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea", testTime, false))
 
 	entries, err := s.ReadMemories(ctx, "inst-temp")
 	require.NoError(t, err)
@@ -1921,14 +1903,41 @@ func TestSQLiteStore_WriteMemory_overwrite_updates_at(t *testing.T) {
 
 	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "mood", "happy", testTime))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "mood", "happy", testTime, false))
 
 	later := testTime.Add(time.Hour)
-	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "mood", "excited", later))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "mood", "excited", later, false))
 
 	entries, err := s.ReadMemories(ctx, "inst-temp")
 	require.NoError(t, err)
 	require.Equal(t, []MemoryEntry{{Key: "mood", Content: "excited", At: later}}, entries)
+}
+
+func TestSQLiteStore_WriteMemory_preserves_and_updates_the_pin(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
+	require.NoError(t, s.SaveInstance(ctx, inst))
+	require.NoError(t, s.WriteMemory(
+		ctx, "inst-temp", "identity", "Laney uses Go", testTime, true,
+	))
+
+	entries, err := s.ReadMemories(ctx, "inst-temp")
+	require.NoError(t, err)
+	require.Equal(t, []MemoryEntry{{
+		Key: "identity", Content: "Laney uses Go", At: testTime, Pinned: true,
+	}}, entries)
+
+	later := testTime.Add(time.Hour)
+	require.NoError(t, s.WriteMemory(
+		ctx, "inst-temp", "identity", "Laney uses Rust", later, false,
+	))
+	entries, err = s.ReadMemories(ctx, "inst-temp")
+	require.NoError(t, err)
+	require.Equal(t, []MemoryEntry{{
+		Key: "identity", Content: "Laney uses Rust", At: later,
+	}}, entries)
 }
 
 // TestSQLiteStore_ReadMemories_legacy_row_has_zero_at pins the
@@ -1964,7 +1973,7 @@ func TestSQLiteStore_DeleteInstanceByID_removes_memories(t *testing.T) {
 
 	inst := domain.NewModelInstance("inst-temp", "temp", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, inst))
-	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea", testTime))
+	require.NoError(t, s.WriteMemory(ctx, "inst-temp", "fact", "likes tea", testTime, false))
 
 	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-temp"))
 
@@ -1983,8 +1992,8 @@ func TestSQLiteStore_DeleteInstanceByID_leaves_other_instances_memories(t *testi
 	kept := domain.NewModelInstance("inst-kept", "kept", "test/model", "", nil)
 	require.NoError(t, s.SaveInstance(ctx, gone))
 	require.NoError(t, s.SaveInstance(ctx, kept))
-	require.NoError(t, s.WriteMemory(ctx, "inst-gone", "fact", "likes tea", testTime))
-	require.NoError(t, s.WriteMemory(ctx, "inst-kept", "fact", "likes coffee", testTime))
+	require.NoError(t, s.WriteMemory(ctx, "inst-gone", "fact", "likes tea", testTime, false))
+	require.NoError(t, s.WriteMemory(ctx, "inst-kept", "fact", "likes coffee", testTime, false))
 
 	require.NoError(t, s.DeleteInstanceByID(ctx, "inst-gone"))
 
@@ -2036,20 +2045,18 @@ func TestSQLiteStore_DeleteInstanceByID_removes_channel_memberships(t *testing.T
 	want := domain.NewChannelWindow("#shared", testTime)
 	want.Topic = "still here"
 	want.Members.Add(kept)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Window        domain.Window
 		SoleEntries   []ModelTurnEntry
 		SharedEntries []ModelTurnEntry
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Window: domain.Window(want),
 		SharedEntries: []ModelTurnEntry{{
 			Kind: ModelTurnInput, Data: []byte(`{"input":"shared"}`), At: testTime,
 		}},
-	}, struct {
-		Window        domain.Window
-		SoleEntries   []ModelTurnEntry
-		SharedEntries []ModelTurnEntry
-	}{
+	}, assertionSnapshot{
 		Window:        got,
 		SoleEntries:   soleEntries,
 		SharedEntries: sharedEntries,

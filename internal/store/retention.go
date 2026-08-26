@@ -145,6 +145,7 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			attribute.Int64("modeloff.retention.channel_scrollback_orphaned_removed", orphans.channelScrollback),
 			attribute.Int64("modeloff.retention.instance_replies_orphaned_removed", orphans.instanceReplies),
 			attribute.Int64("modeloff.retention.model_turns_orphaned_removed", orphans.modelTurns),
+			attribute.Int64("modeloff.retention.context_summaries_orphaned_removed", orphans.contextSummaries),
 			attribute.Int64("modeloff.retention.channel_trimmed", channelTrimmed),
 			attribute.Int64("modeloff.retention.channel_scrollback_trimmed", scrollbackTrimmed),
 			attribute.Int64("modeloff.retention.instance_replies_trimmed", repliesTrimmed),
@@ -161,6 +162,7 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 				"channel_scrollback_orphaned_removed", orphans.channelScrollback,
 				"instance_replies_orphaned_removed", orphans.instanceReplies,
 				"model_turns_orphaned_removed", orphans.modelTurns,
+				"context_summaries_orphaned_removed", orphans.contextSummaries,
 				"channel_trimmed", channelTrimmed,
 				"channel_scrollback_trimmed", scrollbackTrimmed,
 				"instance_replies_trimmed", repliesTrimmed,
@@ -188,10 +190,12 @@ type orphanRetention struct {
 	channelScrollback int64
 	instanceReplies   int64
 	modelTurns        int64
+	contextSummaries  int64
 }
 
 func (r orphanRetention) total() int64 {
-	return r.channelEvents + r.dmEvents + r.channelScrollback + r.instanceReplies + r.modelTurns
+	return r.channelEvents + r.dmEvents + r.channelScrollback +
+		r.instanceReplies + r.modelTurns + r.contextSummaries
 }
 
 func (s *SQLiteStore) pruneOrphans(ctx context.Context) (orphanRetention, error) {
@@ -223,7 +227,60 @@ func (s *SQLiteStore) pruneOrphans(ctx context.Context) (orphanRetention, error)
 		return orphanRetention{}, fmt.Errorf("prune orphaned model turns: %w", err)
 	}
 
+	removed.contextSummaries, err = s.pruneOrphanContextSummaries(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned context summaries: %w", err)
+	}
+
 	return removed, nil
+}
+
+// contextSummaryOrphanPredicate matches a summary or source row naming
+// an actor with no instances row, or a channel with no channels row,
+// under the column names both tables share. A departed actor's rows are removed by the departure
+// transaction; these are the ones a run that ended without one left
+// behind. Neither table has a foreign key to channels or to instances,
+// so nothing else reaches them.
+const contextSummaryOrphanPredicate = `
+	row.instance_id = ''
+	OR row.instance_id NOT IN (SELECT instance_id FROM instances)
+	OR (row.window_kind = 2 AND row.window_key != ''
+		AND row.window_key NOT IN (SELECT instance_id FROM instances))
+	OR (row.window_kind = 1 AND NOT EXISTS (
+		SELECT 1 FROM channels AS channel
+		WHERE channel.name = row.window_key COLLATE NOCASE
+			AND (
+				EXISTS (
+					SELECT 1 FROM json_each(channel.data, '$.Members') AS member
+					WHERE json_extract(member.value, '$.instance_id') = row.instance_id
+				)
+				OR EXISTS (
+					SELECT 1 FROM json_each(channel.data, '$.Invitations') AS invitation
+					WHERE invitation.value = row.instance_id
+				)
+			)
+	))`
+
+// pruneOrphanContextSummaries removes the summaries first so no
+// surviving first_source_id or last_source_id references a source row
+// the second statement deletes.
+func (s *SQLiteStore) pruneOrphanContextSummaries(ctx context.Context) (int64, error) {
+	summaries, err := deleteEventsBatched(ctx, s.db, `DELETE FROM context_summaries WHERE id IN (
+		SELECT row.id FROM context_summaries AS row
+		WHERE `+contextSummaryOrphanPredicate+`
+		ORDER BY row.id LIMIT ?
+	)`, nil)
+	if err != nil {
+		return summaries, err
+	}
+
+	sources, err := deleteEventsBatched(ctx, s.db, `DELETE FROM context_summary_sources WHERE id IN (
+		SELECT row.id FROM context_summary_sources AS row
+		WHERE `+contextSummaryOrphanPredicate+`
+		ORDER BY row.id LIMIT ?
+	)`, nil)
+
+	return summaries + sources, err
 }
 
 func (s *SQLiteStore) pruneOrphanChannelScrollback(ctx context.Context) (int64, error) {

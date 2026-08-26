@@ -472,7 +472,7 @@ func TestOpenRouterClient_SendEvents_ignoresContent(t *testing.T) {
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -534,8 +534,14 @@ func messageContents(msgs []openai.ChatCompletionMessageParamUnion) []string {
 			}
 		case m.OfAssistant != nil:
 			contents[i] = m.OfAssistant.Content.OfString.Value
+			for _, part := range m.OfAssistant.Content.OfArrayOfContentParts {
+				contents[i] += part.OfText.Text
+			}
 		case m.OfUser != nil:
 			contents[i] = m.OfUser.Content.OfString.Value
+			for _, part := range m.OfUser.Content.OfArrayOfContentParts {
+				contents[i] += part.OfText.Text
+			}
 		case m.OfDeveloper != nil:
 			contents[i] = m.OfDeveloper.Content.OfString.Value
 		case m.OfTool != nil:
@@ -548,6 +554,18 @@ func messageContents(msgs []openai.ChatCompletionMessageParamUnion) []string {
 
 func testSystemPrompt(text string) SystemPrompt {
 	return SystemPrompt{Fixed: text}
+}
+
+// cachedTextContentPart is a user-role content part carrying the
+// prompt-cache breakpoint buildMessages puts at the end of the
+// cacheable history.
+func cachedTextContentPart(text string) openai.ChatCompletionContentPartUnionParam {
+	part := openai.ChatCompletionContentPartTextParam{Text: text}
+	part.SetExtraFields(map[string]any{
+		"cache_control": map[string]any{"type": "ephemeral"},
+	})
+
+	return openai.ChatCompletionContentPartUnionParam{OfText: &part}
 }
 
 func testSystemMessage(text string) openai.ChatCompletionMessageParamUnion {
@@ -570,7 +588,7 @@ func TestBuildMessages_marks_the_fixed_system_prefix(t *testing.T) {
 		openai.UserMessage("\ncurrent identity"),
 	}
 
-	require.Equal(t, want, buildMessages(prompt, "", nil, nil))
+	require.Equal(t, want, buildMessages(prompt, "", TurnHistory{}, nil))
 }
 
 func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T) {
@@ -584,7 +602,7 @@ func TestBuildMessages_self_messages_are_assistant_role_in_history(t *testing.T)
 		{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("bob"), Target: "#test", Body: "bob said this"},
 	}
 
-	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, history, events)
+	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, TurnHistory{Cacheable: history}, events)
 
 	require.Equal(t, []string{"system", "assistant", "user"}, messageRoles(msgs),
 		"alice + bob share the user role and coalesce")
@@ -614,7 +632,7 @@ func TestBuildMessages_self_chat_events_follow_server_delivery_order(t *testing.
 	}
 	events := []protocol.IRCMessage{bob, selfMessage, selfJoin, selfAction, alice}
 
-	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, nil, events)
+	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, TurnHistory{}, events)
 
 	require.Equal(t, []openai.ChatCompletionMessageParamUnion{
 		testSystemMessage("system prompt"),
@@ -637,7 +655,7 @@ func TestBuildMessages_survives_nick_rename(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "other user"},
 	}
 
-	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, history, nil)
+	msgs := buildMessages(testSystemPrompt("system prompt"), selfID, TurnHistory{Cacheable: history}, nil)
 
 	require.Equal(t, []string{"system", "assistant", "user"}, messageRoles(msgs),
 		"the two self entries coalesce into one assistant message")
@@ -672,12 +690,12 @@ func TestBuildMessages_coalesces_same_role_runs(t *testing.T) {
 			{OfText: &openai.ChatCompletionContentPartTextParam{Text: ircJSON(t, history[3])}},
 		}),
 		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
-			openai.TextContentPart(ircJSON(t, history[4])),
+			cachedTextContentPart(ircJSON(t, history[4])),
 			openai.TextContentPart(ircJSON(t, events[0])),
 		}),
 	}
 
-	require.Equal(t, want, buildMessages(testSystemPrompt("system prompt"), selfID, history, events))
+	require.Equal(t, want, buildMessages(testSystemPrompt("system prompt"), selfID, TurnHistory{Cacheable: history}, events))
 }
 
 // ircJSON marshals `m` with the stable source ID stripped, matching the
@@ -721,12 +739,12 @@ func TestBuildMessages_only_the_system_prompt_takes_the_system_role(t *testing.T
 		testSystemMessage("system prompt"),
 		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
 			openai.TextContentPart(ircJSON(t, history[0])),
-			openai.TextContentPart(ircJSON(t, history[1])),
+			cachedTextContentPart(ircJSON(t, history[1])),
 			openai.TextContentPart(ircJSON(t, events[0])),
 		}),
 	}
 
-	require.Equal(t, want, buildMessages(testSystemPrompt("system prompt"), "", history, events))
+	require.Equal(t, want, buildMessages(testSystemPrompt("system prompt"), "", TurnHistory{Cacheable: history}, events))
 }
 
 func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
@@ -734,7 +752,7 @@ func TestBuildMessages_instance_id_stripped_from_json(t *testing.T) {
 		{Kind: protocol.KindPrivMsg, Source: domain.ClientSource("inst-xyz", "botty"), Target: "#test", Body: "hello"},
 	}
 
-	msgs := buildMessages(testSystemPrompt("system prompt"), "", events, nil)
+	msgs := buildMessages(testSystemPrompt("system prompt"), "", TurnHistory{Cacheable: events}, nil)
 
 	expectedEvent := events[0]
 	expectedEvent.Source = expectedEvent.Source.WithoutInstanceID()
@@ -780,7 +798,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		"anthropic/test-model",
 		selfID,
 		testSystemPrompt("System prompt"),
-		history,
+		TurnHistory{Cacheable: history},
 		events,
 	)
 	require.NoError(t, err)
@@ -791,11 +809,14 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	wantBody := map[string]any{
-		"cache_control":       map[string]any{"type": "ephemeral"},
-		"model":               "anthropic/test-model",
-		"parallel_tool_calls": false,
-		"prompt_cache_key":    string(selfID),
-		"tools":               []any{},
+		"model":                 "anthropic/test-model",
+		"parallel_tool_calls":   false,
+		"max_completion_tokens": float64(DispatchCompletionTokens),
+		"plugins": []any{
+			map[string]any{"id": "context-compression", "enabled": false},
+		},
+		"prompt_cache_key": string(selfID),
+		"tools":            []any{},
 		"messages": []any{
 			map[string]any{
 				"role": "system",
@@ -812,6 +833,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 				"content": []any{
 					map[string]any{
 						"type": "text", "text": string(historyJSON),
+						"cache_control": map[string]any{"type": "ephemeral"},
 					},
 					map[string]any{
 						"type": "text", "text": string(eventJSON),
@@ -826,7 +848,7 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		"anthropic/test-model",
 		selfID,
 		testSystemPrompt("System prompt"),
-		history,
+		TurnHistory{Cacheable: history},
 		events,
 	)
 	require.NoError(t, err)
@@ -850,6 +872,110 @@ func TestOpenRouterClient_SendEventsWithHistory(t *testing.T) {
 		Path:    rendered.Path,
 		Headers: rendered.Headers,
 		Body:    renderedBody,
+	})
+}
+
+func TestOpenRouterClient_SummarizeContext_preserves_rendered_request_and_response_evidence(t *testing.T) {
+	const selfID domain.InstanceID = "instance-cache-key"
+
+	previous := []string{"Alice proposed a migration."}
+	sources := []protocol.IRCMessage{{
+		Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("bob"),
+		Target: "#dev", Body: "we agreed to test it first",
+	}}
+	var received json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(structuredChatResponse(
+			`{"summary":"Alice proposed a migration; Bob said the group agreed to test it first."}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOpenRouterClient("test-key", srv.URL+"/api/v1", srv.Client())
+	rendered, err := client.RenderContextSummaryRequest(
+		"anthropic/test-model", selfID, previous, sources,
+	)
+	require.NoError(t, err)
+	result, err := client.SummarizeContext(
+		t.Context(), "anthropic/test-model", selfID, previous, sources,
+	)
+	require.NoError(t, err)
+
+	type responseSchema struct {
+		Name   string         `json:"name"`
+		Strict bool           `json:"strict"`
+		Schema map[string]any `json:"schema"`
+	}
+	type responseFormat struct {
+		Type       string         `json:"type"`
+		JSONSchema responseSchema `json:"json_schema"`
+	}
+	type message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type requestBody struct {
+		Model               string            `json:"model"`
+		Messages            []message         `json:"messages"`
+		Tools               []any             `json:"tools"`
+		ParallelToolCalls   bool              `json:"parallel_tool_calls"`
+		PromptCacheKey      string            `json:"prompt_cache_key"`
+		MaxCompletionTokens int64             `json:"max_completion_tokens"`
+		ResponseFormat      responseFormat    `json:"response_format"`
+		CacheControl        map[string]string `json:"cache_control"`
+	}
+	type requestEvidence struct {
+		Method  string
+		Path    string
+		Headers map[string]string
+		Body    json.RawMessage
+	}
+	var body requestBody
+	require.NoError(t, json.Unmarshal(rendered.Body, &body))
+	input, err := json.Marshal(contextSummaryInput{Previous: previous, Sources: sources})
+	require.NoError(t, err)
+
+	type assertionSnapshot struct {
+		Request requestEvidence
+		Body    requestBody
+		Result  ContextSummaryResult
+	}
+
+	require.Equal(t, assertionSnapshot{
+		Request: requestEvidence{
+			Method: http.MethodPost, Path: "/api/v1/chat/completions",
+			Headers: map[string]string{"x-session-id": string(selfID)}, Body: rendered.Body,
+		},
+		Body: requestBody{
+			Model: "anthropic/test-model",
+			Messages: []message{
+				{Role: "system", Content: contextSummaryPrompt},
+				{Role: "user", Content: string(input)},
+			},
+			Tools: []any{}, ParallelToolCalls: false,
+			PromptCacheKey: string(selfID), MaxCompletionTokens: contextSummaryCompletionTokens,
+			ResponseFormat: responseFormat{
+				Type: "json_schema",
+				JSONSchema: responseSchema{
+					Name: "context_summary", Strict: true, Schema: contextSummarySchema,
+				},
+			},
+			CacheControl: nil,
+		},
+		Result: ContextSummaryResult{
+			Summary:   "Alice proposed a migration; Bob said the group agreed to test it first.",
+			RequestID: "chatcmpl_test",
+			Usage:     Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CostCredits: 0.125},
+		},
+	}, assertionSnapshot{
+		Request: requestEvidence{
+			Method: rendered.Method, Path: rendered.Path, Headers: rendered.Headers, Body: received,
+		},
+		Body:   body,
+		Result: result,
 	})
 }
 
@@ -899,7 +1025,7 @@ func TestOpenRouterClient_SendEvents_preservesOpenRouterUsageMetadata(t *testing
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -999,15 +1125,14 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 			t.Context(), "anthropic/claude-haiku-4.5", persona, nil,
 		)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Nick  domain.Nick
 			Error error
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Nick: "logkeeper",
-		}, struct {
-			Nick  domain.Nick
-			Error error
-		}{
+		}, assertionSnapshot{
 			Nick:  got.Nick,
 			Error: err,
 		})
@@ -1231,7 +1356,7 @@ func TestOpenRouterClient_SendEvents_write_memory(t *testing.T) {
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -1262,7 +1387,7 @@ func TestOpenRouterClient_SendEvents_delete_memory(t *testing.T) {
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -1293,7 +1418,7 @@ func TestOpenRouterClient_SendEvents_search_memory(t *testing.T) {
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -1331,7 +1456,7 @@ func TestOpenRouterClient_SendEvents_includes_explicit_search_tool(t *testing.T)
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -1372,7 +1497,7 @@ func TestOpenRouterClient_SendEvents_excludes_search_without_explicit_tool(t *te
 		"test/model",
 		"",
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		[]protocol.IRCMessage{
 			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"},
 		},
@@ -1413,7 +1538,7 @@ func TestOpenRouterClient_SendEvents_contentFiltered(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	result, err := client.SendEvents(
-		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), TurnHistory{},
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 	)
 	require.ErrorIs(t, err, ErrContentFiltered)
@@ -1446,7 +1571,7 @@ func TestOpenRouterClient_SendEvents_truncated(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	result, err := client.SendEvents(
-		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), TurnHistory{},
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 	)
 	require.ErrorIs(t, err, ErrResponseTruncated)
@@ -1480,7 +1605,7 @@ func TestOpenRouterClient_SendEvents_refusal(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	result, err := client.SendEvents(
-		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), TurnHistory{},
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 	)
 
@@ -1517,7 +1642,7 @@ func TestOpenRouterClient_SendEvents_emptyChoices(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	got, err := client.SendEvents(
-		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), TurnHistory{},
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 	)
 	require.NoError(t, err)
@@ -1551,7 +1676,7 @@ func TestOpenRouterClient_SendEvents_emptyResponse(t *testing.T) {
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
 	got, err := client.SendEvents(
-		t.Context(), "test/model", "", testSystemPrompt("prompt"), nil,
+		t.Context(), "test/model", "", testSystemPrompt("prompt"), TurnHistory{},
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 	)
 	require.NoError(t, err)
@@ -1630,7 +1755,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 		"anthropic/test-model",
 		selfID,
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		events,
 		tools...,
 	)
@@ -1641,7 +1766,7 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 		"anthropic/test-model",
 		selfID,
 		testSystemPrompt("You are a test bot."),
-		nil,
+		TurnHistory{},
 		events,
 		tools...,
 	)
@@ -1710,25 +1835,24 @@ func TestOpenRouterClient_ContinueWithToolResults(t *testing.T) {
 			SessionID:     string(selfID),
 			AnthropicBeta: anthropicStructuredOutputBeta,
 			Provider:      map[string]any{"require_parameters": true},
-			CacheControl:  map[string]any{"type": "ephemeral"},
+			CacheControl:  nil,
 		},
 		{
 			SessionID:     string(selfID),
 			AnthropicBeta: anthropicStructuredOutputBeta,
 			Provider:      map[string]any{"require_parameters": true},
-			CacheControl:  map[string]any{"type": "ephemeral"},
+			CacheControl:  nil,
 		},
 	}
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Observed []requestPolicy
 		Rendered []requestPolicy
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Observed: wantPolicies,
 		Rendered: wantPolicies,
-	}, struct {
-		Observed []requestPolicy
-		Rendered []requestPolicy
-	}{
+	}, assertionSnapshot{
 		Observed: observedPolicies,
 		Rendered: renderedPolicies,
 	})
@@ -1790,11 +1914,11 @@ func TestOpenRouterClient_ContinueWithToolResults_has_no_hidden_HTTP_retry(t *te
 	prompt := testSystemPrompt("You are a test bot.")
 	tools := testMemoryTools(false)
 	initialRequest, err := client.RenderEventRequest(
-		"test/model", selfID, prompt, nil, events, tools...,
+		"test/model", selfID, prompt, TurnHistory{}, events, tools...,
 	)
 	require.NoError(t, err)
 	initial, err := client.SendEvents(
-		t.Context(), "test/model", selfID, prompt, nil, events, tools...,
+		t.Context(), "test/model", selfID, prompt, TurnHistory{}, events, tools...,
 	)
 	require.NoError(t, err)
 
@@ -1810,16 +1934,15 @@ func TestOpenRouterClient_ContinueWithToolResults_has_no_hidden_HTTP_retry(t *te
 	mu.Lock()
 	requests := append([]RenderedEventRequest(nil), observed...)
 	mu.Unlock()
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		ContinuationFailed bool
 		Requests           []RenderedEventRequest
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		ContinuationFailed: true,
 		Requests:           []RenderedEventRequest{initialRequest, continuationRequest},
-	}, struct {
-		ContinuationFailed bool
-		Requests           []RenderedEventRequest
-	}{
+	}, assertionSnapshot{
 		ContinuationFailed: continuationErr != nil,
 		Requests:           requests,
 	})
@@ -2197,7 +2320,7 @@ func TestSendEvents_logs_event_and_history_counts(t *testing.T) {
 		{Kind: protocol.KindJoin, Source: domain.LegacyClientSource("charlie"), Target: "#test"},
 	}
 
-	_, err := client.SendEvents(t.Context(), "test/model", "", testSystemPrompt("system"), history, events)
+	_, err := client.SendEvents(t.Context(), "test/model", "", testSystemPrompt("system"), TurnHistory{Cacheable: history}, events)
 	require.NoError(t, err)
 
 	record := buf.find("openrouter send events completed")
@@ -2223,7 +2346,7 @@ func TestContinueWithToolResults_logs_token_counts(t *testing.T) {
 	client := NewOpenRouterClient("test-key", toolSrv.URL, toolSrv.Client())
 
 	result, err := client.SendEvents(
-		t.Context(), "test/model", "", testSystemPrompt("system"), nil,
+		t.Context(), "test/model", "", testSystemPrompt("system"), TurnHistory{},
 		[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#test", Body: "hi"}},
 		testMemoryTools(false)...,
 	)
@@ -2308,7 +2431,7 @@ func TestOpenRouterClient_perCallTimeouts(t *testing.T) {
 					"test/model",
 					"",
 					testSystemPrompt("prompt"),
-					nil,
+					TurnHistory{},
 					[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 				)
 				return err
@@ -2351,7 +2474,7 @@ func TestOpenRouterClient_callerDeadlineWins(t *testing.T) {
 			"test/model",
 			"",
 			testSystemPrompt("prompt"),
-			nil,
+			TurnHistory{},
 			[]protocol.IRCMessage{{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("a"), Target: "#t", Body: "x"}},
 		)
 
@@ -2404,4 +2527,64 @@ func TestTruncateBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildMessages_closes_the_cacheable_prefix_at_the_end_of_history
+// pins where the second prompt-cache breakpoint goes. The cacheable
+// half of the history carries the compacted summaries and the recent
+// transcript, both of which grow only at their tail, so a provider
+// matching a cached prefix can reuse all of it. Everything past the
+// breakpoint is current server state and the events the turn answers,
+// which differ on most turns.
+//
+// The last cacheable part keeps the content-part array form even when
+// its run holds one part, because a breakpoint sits on a content part
+// and a plain-string body has none.
+func TestBuildMessages_closes_the_cacheable_prefix_at_the_end_of_history(t *testing.T) {
+	const selfID = "inst-self"
+
+	history := TurnHistory{
+		Cacheable: []protocol.IRCMessage{
+			{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("alice"), Target: "#room", Body: "alice-1"},
+			{Kind: protocol.KindPrivMsg, Source: domain.ClientSource(selfID, "self-nick"), Target: "#room", Body: "self-1"},
+		},
+		Current: []protocol.IRCMessage{
+			{Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"), Target: "#room", Body: "current state"},
+		},
+	}
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("bob"), Target: "#room", Body: "bob-1"},
+	}
+
+	cached := openai.ChatCompletionContentPartTextParam{Text: ircJSON(t, history.Cacheable[1])}
+	cached.SetExtraFields(map[string]any{
+		"cache_control": map[string]any{"type": "ephemeral"},
+	})
+
+	require.Equal(t, []openai.ChatCompletionMessageParamUnion{
+		testSystemMessage("system prompt"),
+		openai.UserMessage(ircJSON(t, history.Cacheable[0])),
+		openai.AssistantMessage([]openai.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{
+			{OfText: &cached},
+		}),
+		openai.UserMessage([]openai.ChatCompletionContentPartUnionParam{
+			openai.TextContentPart(ircJSON(t, history.Current[0])),
+			openai.TextContentPart(ircJSON(t, events[0])),
+		}),
+	}, buildMessages(testSystemPrompt("system prompt"), selfID, history, events))
+}
+
+// TestBuildMessages_marks_only_the_system_prefix_without_history
+// covers a turn whose whole transcript was compacted away: with
+// nothing cacheable there is no second breakpoint to place, and the
+// fixed system prompt keeps the only one.
+func TestBuildMessages_marks_only_the_system_prefix_without_history(t *testing.T) {
+	events := []protocol.IRCMessage{
+		{Kind: protocol.KindPrivMsg, Source: domain.LegacyClientSource("bob"), Target: "#room", Body: "bob-1"},
+	}
+
+	require.Equal(t, []openai.ChatCompletionMessageParamUnion{
+		testSystemMessage("system prompt"),
+		openai.UserMessage(ircJSON(t, events[0])),
+	}, buildMessages(testSystemPrompt("system prompt"), "", TurnHistory{}, events))
 }

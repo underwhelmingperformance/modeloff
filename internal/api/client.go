@@ -25,6 +25,38 @@ var ErrContentFiltered = errors.New("response blocked by content filter")
 // ErrResponseTruncated indicates the response was truncated due to token limits.
 var ErrResponseTruncated = errors.New("response truncated: hit token limit")
 
+// ErrPromptTooLong indicates the provider refused the request because
+// its prompt exceeds the model's context window. It is not retryable
+// on its own: the same request produces the same refusal. What
+// answers it is a smaller request, which is why the dispatch path
+// records the refusal against the model's token ratio before it tries
+// again.
+var ErrPromptTooLong = errors.New("prompt exceeds the model context window")
+
+// PromptTokenEstimator is the optional provider capability that
+// estimates what a rendered request costs in prompt tokens for one
+// model.
+//
+// [RenderedEventRequest.EstimatedPromptTokens] applies OpenRouter's
+// four-bytes-per-token normalising rule, which is not the native
+// count a provider enforces its context window with. OpenRouter's
+// April 2026 measurements of the Opus 4.7 tokeniser put native counts
+// 32 to 45 per cent above it for identical text, and the JSON
+// punctuation and RFC 3339 timestamps in this app's transcript push
+// the same way. A client that has seen the provider's own counts for
+// a model answers from those instead.
+type PromptTokenEstimator interface {
+	// EstimatePromptTokens returns the prompt tokens `request` is
+	// expected to cost under `modelID`.
+	EstimatePromptTokens(modelID domain.ModelID, request RenderedEventRequest) int
+
+	// RecordPromptRejection records that the provider refused a
+	// request of `requestBytes` bytes under `modelID` for exceeding
+	// the context window, so every later estimate puts a request that
+	// size above `limitTokens`.
+	RecordPromptRejection(modelID domain.ModelID, requestBytes, limitTokens int)
+}
+
 // ErrModelRefused indicates the model refused to respond.
 type ErrModelRefused struct {
 	Reason string
@@ -93,6 +125,28 @@ type Usage struct {
 	CacheWriteTokens      int64   `json:"cache_write_tokens"`
 	CostCredits           float64 `json:"cost_credits"`
 	UpstreamInferenceCost float64 `json:"upstream_inference_cost"`
+}
+
+// TurnHistory is the transcript one turn sends, split at the point a
+// provider may cache up to. Cacheable holds the summaries of what has
+// been compacted and the recent transcript, which grow only at their
+// tail, so a provider matching a cached prompt prefix reuses all of
+// it. Current holds the server state as it stands for this turn: the
+// member list, the topic, the memories selected against the turn's
+// traffic and the per-participant persona records, none of which a
+// later turn can be assumed to repeat.
+//
+// The request carries a prompt-cache breakpoint at the end of
+// Cacheable, so a change in Current invalidates only what follows it.
+type TurnHistory struct {
+	Cacheable []protocol.IRCMessage
+	Current   []protocol.IRCMessage
+}
+
+// Messages returns the whole transcript in the order the provider
+// receives it.
+func (h TurnHistory) Messages() []protocol.IRCMessage {
+	return slices.Concat(h.Cacheable, h.Current)
 }
 
 // ToolDefinition describes a model-callable tool.
@@ -190,6 +244,32 @@ type NickReasonGenerator interface {
 	) (NicknameResult, error)
 }
 
+// ContextSummaryResult is one compact representation of projected
+// transcript sources.
+type ContextSummaryResult struct {
+	Summary   string
+	RequestID string
+	Usage     Usage
+}
+
+// ContextSummarizer is the optional provider capability used when a
+// complete turn does not fit the model's context window.
+type ContextSummarizer interface {
+	RenderContextSummaryRequest(
+		modelID domain.ModelID,
+		selfInstanceID domain.InstanceID,
+		previous []string,
+		sources []protocol.IRCMessage,
+	) (RenderedEventRequest, error)
+	SummarizeContext(
+		ctx context.Context,
+		modelID domain.ModelID,
+		selfInstanceID domain.InstanceID,
+		previous []string,
+		sources []protocol.IRCMessage,
+	) (ContextSummaryResult, error)
+}
+
 // Client defines the interface for all API interactions. Both the
 // chat completion (via openai-go) and OpenRouter-specific calls are
 // abstracted behind this interface to support testing with fakes.
@@ -203,7 +283,7 @@ type Client interface {
 		modelID domain.ModelID,
 		selfInstanceID domain.InstanceID,
 		systemPrompt SystemPrompt,
-		history []protocol.IRCMessage,
+		history TurnHistory,
 		events []protocol.IRCMessage,
 		tools ...ToolDefinition,
 	) (RenderedEventRequest, error)
@@ -224,7 +304,7 @@ type Client interface {
 		modelID domain.ModelID,
 		selfInstanceID domain.InstanceID,
 		systemPrompt SystemPrompt,
-		history []protocol.IRCMessage,
+		history TurnHistory,
 		events []protocol.IRCMessage,
 		tools ...ToolDefinition,
 	) (CompletionResult, error)

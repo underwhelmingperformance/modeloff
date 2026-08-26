@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	chromem "github.com/philippgille/chromem-go"
 	"github.com/stretchr/testify/require"
@@ -253,7 +254,7 @@ func TestIndexedStore_PrepareWrite_defers_persistent_effect_and_reuses_the_embed
 	}
 	store := newTestIndexedStore(t, embedder)
 	id := domain.InstanceID("prepared")
-	entry := Entry{Key: "decision", Content: "ship it"}
+	entry := Entry{Key: "decision", Content: "ship it", Pinned: true}
 
 	prepared, err := store.PrepareWrite(ctx, id, entry)
 	require.NoError(t, err)
@@ -275,27 +276,27 @@ func TestIndexedStore_PrepareWrite_defers_persistent_effect_and_reuses_the_embed
 	document, err := collection.GetByID(ctx, entry.Key)
 	require.NoError(t, err)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		BeforeCommit []Entry
 		AfterCommit  []Entry
 		AfterFinish  []Entry
 		Document     chromem.Document
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		BeforeCommit: []Entry{},
 		AfterCommit:  []Entry{entry},
 		AfterFinish:  []Entry{entry},
 		Document: chromem.Document{
-			ID:        entry.Key,
-			Metadata:  map[string]string{"at": "0001-01-01T00:00:00Z", "content": entry.Content, "key": entry.Key},
+			ID: entry.Key,
+			Metadata: map[string]string{
+				"at": "0001-01-01T00:00:00Z", "content": entry.Content,
+				"key": entry.Key, "pinned": "true",
+			},
 			Embedding: []float32{1, 0, 0},
 			Content:   "decision: ship it",
 		},
-	}, struct {
-		BeforeCommit []Entry
-		AfterCommit  []Entry
-		AfterFinish  []Entry
-		Document     chromem.Document
-	}{
+	}, assertionSnapshot{
 		BeforeCommit: beforeCommit,
 		AfterCommit:  afterCommit,
 		AfterFinish:  afterFinish,
@@ -329,16 +330,15 @@ func TestIndexedStore_PrepareWrite_embedding_failure_commits_only_the_source_of_
 	require.NotNil(t, collection)
 	_, indexedErr := collection.GetByID(ctx, "mood")
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Entries      []Entry
 		IndexMissing bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Entries:      []Entry{{Key: "mood", Content: "excited"}},
 		IndexMissing: true,
-	}, struct {
-		Entries      []Entry
-		IndexMissing bool
-	}{
+	}, assertionSnapshot{
 		Entries:      entries,
 		IndexMissing: indexedErr != nil,
 	})
@@ -407,31 +407,30 @@ func TestIndexedStore_PrepareDelete_separates_the_backing_commit_from_index_clea
 	prepared.Finish(ctx)
 	_, afterFinishErr := collection.GetByID(ctx, entry.Key)
 	wantDocument := chromem.Document{
-		ID:        entry.Key,
-		Metadata:  map[string]string{"at": "0001-01-01T00:00:00Z", "content": entry.Content, "key": entry.Key},
+		ID: entry.Key,
+		Metadata: map[string]string{
+			"at": "0001-01-01T00:00:00Z", "content": entry.Content,
+			"key": entry.Key, "pinned": "false",
+		},
 		Embedding: []float32{1, 0, 0},
 		Content:   "decision: ship it",
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		BeforeCommit        []Entry
 		BeforeDocument      chromem.Document
 		AfterCommit         []Entry
 		AfterCommitDocument chromem.Document
 		IndexRemoved        bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		BeforeCommit:        []Entry{entry},
 		BeforeDocument:      wantDocument,
 		AfterCommit:         []Entry{},
 		AfterCommitDocument: wantDocument,
 		IndexRemoved:        true,
-	}, struct {
-		BeforeCommit        []Entry
-		BeforeDocument      chromem.Document
-		AfterCommit         []Entry
-		AfterCommitDocument chromem.Document
-		IndexRemoved        bool
-	}{
+	}, assertionSnapshot{
 		BeforeCommit:        beforeCommit,
 		BeforeDocument:      beforeDocument,
 		AfterCommit:         afterCommit,
@@ -731,6 +730,25 @@ func TestIndexedStore_Search_reindexes_from_backing_store(t *testing.T) {
 	require.Equal(t, []SearchResult{
 		{Entry: Entry{Key: "cat", Content: "cats are great"}, Similarity: 1.0},
 	}, results)
+}
+
+func TestIndexedStore_Search_refreshes_legacy_document_metadata(t *testing.T) {
+	ctx := t.Context()
+	store := newTestIndexedStore(t, trivialEmbedder())
+	id := domain.InstanceID("metadata")
+	at := time.Date(2026, time.August, 26, 16, 0, 0, 0, time.UTC)
+	legacy := Entry{Key: "identity", Content: "Laney uses Go", At: at}
+	current := legacy
+	current.Pinned = true
+
+	require.NoError(t, store.index(ctx, id, legacy))
+	require.NoError(t, store.backing.Write(ctx, id, current))
+
+	results, err := store.Search(ctx, id, "Laney", 1)
+	require.NoError(t, err)
+	require.Equal(t, []SearchResult{{
+		Entry: current, Similarity: 1,
+	}}, results)
 }
 
 // countingEmbedder wraps fn and counts every call it receives, so a

@@ -64,13 +64,12 @@ func TestTargetForWindow(t *testing.T) {
 			t.Parallel()
 
 			got, ok := protocol.TargetForWindow(tc.window)
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Target protocol.MsgTarget
 				OK     bool
-			}{Target: tc.want, OK: tc.ok}, struct {
-				Target protocol.MsgTarget
-				OK     bool
-			}{Target: got, OK: ok})
+			}
+
+			require.Equal(t, assertionSnapshot{Target: tc.want, OK: tc.ok}, assertionSnapshot{Target: got, OK: ok})
 		})
 	}
 }

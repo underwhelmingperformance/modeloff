@@ -427,7 +427,7 @@ func (f *integrationAPI) RenderEventRequest(
 	modelID domain.ModelID,
 	selfInstanceID domain.InstanceID,
 	systemPrompt api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	tools ...api.ToolDefinition,
 ) (api.RenderedEventRequest, error) {
@@ -453,7 +453,7 @@ func (f *integrationAPI) SendEvents(
 	modelID domain.ModelID,
 	_ domain.InstanceID,
 	system api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
@@ -461,7 +461,7 @@ func (f *integrationAPI) SendEvents(
 	defer f.mu.Unlock()
 
 	if f.sendEventsFn != nil {
-		return f.sendEventsFn(ctx, modelID, system.Text(), history, events)
+		return f.sendEventsFn(ctx, modelID, system.Text(), history.Messages(), events)
 	}
 
 	return api.CompletionResult{}, nil

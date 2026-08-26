@@ -213,6 +213,21 @@ type WindowGuard interface {
 	Send(ctx context.Context, client Client, cmd Command) (Response, error)
 }
 
+// ChannelMemberState is the visible nick and privileges of one channel
+// member at the time a turn begins. It omits the member's stable identity,
+// which is not part of the IRC state disclosed to peers.
+type ChannelMemberState struct {
+	Nick  domain.Nick
+	Modes domain.MemberModes
+}
+
+// ChannelState is the actor-visible channel state at the time a turn begins.
+// Anonymous channels contain the single masked member disclosed by NAMES.
+type ChannelState struct {
+	Modes   domain.ChannelModes
+	Members []ChannelMemberState
+}
+
 // WindowContext is the current state from which a model turn may be
 // assembled. A context describes the conversation, but it does not grant
 // access to it; the [WindowGuard] remains the authority and is rechecked
@@ -223,6 +238,7 @@ type WindowGuard interface {
 // conversation key, so a rename cannot leave cached presentation state here.
 type WindowContext interface {
 	Target() WindowTarget
+	ChannelState() (ChannelState, bool)
 	Topic() (domain.TopicInfo, bool)
 }
 

@@ -128,12 +128,14 @@ func TestForcedTeardown_masks_an_unreadable_anonymous_channel(t *testing.T) {
 			Message: "Killed by testuser (spam)",
 			At:      fixedTime,
 		}
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Response       protocol.Response
 			UserEvents     []domain.Event
 			TerminalEvents []domain.Event
 			Stored         []domain.StoredEvent
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Response:   protocol.Response{},
 			UserEvents: []domain.Event{part},
 			TerminalEvents: []domain.Event{
@@ -151,12 +153,7 @@ func TestForcedTeardown_masks_an_unreadable_anonymous_channel(t *testing.T) {
 				},
 			},
 			Stored: []domain.StoredEvent{{ID: 1, Event: part}},
-		}, struct {
-			Response       protocol.Response
-			UserEvents     []domain.Event
-			TerminalEvents []domain.Event
-			Stored         []domain.StoredEvent
-		}{
+		}, assertionSnapshot{
 			Response:       resp,
 			UserEvents:     userEvents,
 			TerminalEvents: terminalEvents,

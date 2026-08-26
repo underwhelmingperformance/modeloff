@@ -36,7 +36,12 @@ var ErrModelListUnavailable = errors.New("model list unavailable")
 // searches on behalf of a model instance. Preparation may perform slow
 // embedding work, but it must not change persistent memory state.
 type MemoryExecutor interface {
-	PrepareWriteMemory(ctx context.Context, key, content string) (memory.PreparedMutation, error)
+	PrepareWriteMemory(
+		ctx context.Context,
+		key string,
+		content string,
+		pinned bool,
+	) (memory.PreparedMutation, error)
 	PrepareDeleteMemory(ctx context.Context, key string) (memory.PreparedMutation, error)
 	SearchMemory(ctx context.Context, query string, limit int) ([]memory.SearchResult, error)
 }
@@ -69,8 +74,9 @@ func (m *instanceMemory) PrepareWriteMemory(
 	ctx context.Context,
 	key string,
 	content string,
+	pinned bool,
 ) (memory.PreparedMutation, error) {
-	entry := memory.Entry{Key: key, Content: content, At: m.now()}
+	entry := memory.Entry{Key: key, Content: content, Pinned: pinned, At: m.now()}
 	if preparer, ok := m.store.(memory.MutationPreparer); ok {
 		return preparer.PrepareWrite(ctx, m.instanceID, entry)
 	}
@@ -93,8 +99,13 @@ func (m *instanceMemory) PrepareDeleteMemory(
 	}), nil
 }
 
-func (m *instanceMemory) WriteMemory(ctx context.Context, key, content string) error {
-	effect, err := m.PrepareWriteMemory(ctx, key, content)
+func (m *instanceMemory) WriteMemory(
+	ctx context.Context,
+	key string,
+	content string,
+	pinned bool,
+) error {
+	effect, err := m.PrepareWriteMemory(ctx, key, content, pinned)
 	if err != nil {
 		return err
 	}
@@ -139,7 +150,7 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 		{
 			Definition: api.ToolDefinition{
 				Name:        "write_memory",
-				Description: "Create or update a durable personal memory by key. Prefer updating an existing key over creating near-duplicates. Use short, stable keys that describe the fact clearly (e.g. user_name, preferred_editor). Only store stable facts that may matter in future conversations, not temporary chat context or obvious details already visible in the current prompt. Use this to overwrite a stale or incorrect memory by writing the corrected value to the same key. Do not call repeatedly without clear reason.",
+				Description: "Create or update a durable personal memory by key. Prefer updating an existing key over creating near-duplicates. Use short, stable keys that describe the fact clearly (e.g. user_name, preferred_editor). Only store stable facts that may matter in future conversations, not temporary chat context or obvious details already visible in the current prompt. Set pinned for a fact worth keeping in the short memory line even when nothing in the conversation points at it; leave ordinary searchable facts unpinned. Use this to overwrite a stale or incorrect memory by writing the corrected value to the same key. Do not call repeatedly without clear reason.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -151,8 +162,12 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 							"type":        "string",
 							"description": "The durable fact, preference, or decision to remember.",
 						},
+						"pinned": map[string]any{
+							"type":        "boolean",
+							"description": "Whether this fact is preferred for the short memory line ahead of other memories the conversation does not point at.",
+						},
 					},
-					"required":             []string{"key", "content"},
+					"required":             []string{"key", "content", "pinned"},
 					"additionalProperties": false,
 				},
 			},
@@ -160,13 +175,16 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 				var args struct {
 					Key     string `json:"key"`
 					Content string `json:"content"`
+					Pinned  bool   `json:"pinned"`
 				}
 
 				if err := json.Unmarshal(rawArgs, &args); err != nil {
 					return ToolResultPayload{}, err
 				}
 
-				effect, err := mem.PrepareWriteMemory(ctx, args.Key, args.Content)
+				effect, err := mem.PrepareWriteMemory(
+					ctx, args.Key, args.Content, args.Pinned,
+				)
 				if err == nil {
 					err = toolCtx.runWithAuthority(ctx, func() error {
 						return effect.Commit(ctx)

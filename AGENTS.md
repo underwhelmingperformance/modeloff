@@ -1098,7 +1098,8 @@ store trims the channel event log, channel scrollback, DM events and
 the private reply log, and runs an orphan pass that removes rows whose
 instance or channel has been deleted. Model turns are trimmed inside
 the transaction that opens one, by turn count and by total entry
-bytes.
+bytes. Context summary sources are trimmed per actor and window by the
+transaction that commits a summary.
 
 ### Window authority and the turn journal
 
@@ -1141,6 +1142,48 @@ an append writing one row and nothing else. It keeps
 `modelTurnRetentionHeadroom` turns and `modelTurnRetentionBytes` of
 entry data per actor, and always keeps the newest turn even when that
 turn alone exceeds the byte bound.
+
+### Context compaction
+
+A dispatch turn plans its prompt against the model's context length
+before it sends anything. `contextWindowAllocation` reserves
+`api.DispatchCompletionTokens` for the completion, keeps at least
+`minimumPromptTokens` for the prompt, and estimates the rendered
+prompt from the byte-to-token ratios the OpenRouter client has
+observed for that model. A prompt that fits in what is left is sent
+unchanged. A dispatch the provider refuses with
+`api.ErrPromptTooLong` before any tool call raises the recorded ratio,
+so the redispatch plans smaller and compacts where the first attempt
+did not.
+
+A prompt that does not fit is compacted from the oldest end. The
+planner replaces the oldest prefix of the window transcript, and then
+of the current burst when the transcript alone is not enough, with a
+summary the instance's own model writes. Two binary searches pick the
+boundary: the shortest prefix whose replacement makes the turn fit,
+and then the longest part of that prefix whose own summary request
+still fits. A single message too large to summarise on its own is
+split on UTF-8 boundaries and summarised fragment by fragment, each
+fragment's summary feeding the next.
+
+Summaries are durable, keyed by actor and window in
+`context_summaries`, with the transcript rows each one covers recorded
+in `context_summary_sources`. A new summary supersedes the segments
+before it, and the commit is refused unless it names every segment
+that is active, so the chain cannot fork. Each turn reads its window's
+summaries and puts them at the front of the cacheable half of the
+provider history, ahead of the recent transcript. The planner then
+drops the leading transcript messages those summaries already cover,
+so no line reaches the provider twice.
+
+Compaction runs under the turn's own window guard, and the commit
+rechecks that the update names that guard's instance and window. An
+invitation turn has no membership interval, so its guard reads back no
+summaries and refuses to commit one. A summary the provider will not
+produce is not fatal: the turn logs it, drops that batch of transcript
+without a summary, and plans again. A turn that cannot be made to fit
+at all ends with `ContextWindowExceededError`, which names the context
+length and the estimated prompt size.
 
 ### Out of scope, design accommodates
 

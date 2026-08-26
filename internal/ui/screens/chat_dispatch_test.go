@@ -151,11 +151,13 @@ func TestChatScreen_channel_focus_refreshes_window_dispatch_activity(t *testing.
 				}
 			}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Active   domain.ChannelName
 				Types    []string
 				Thinking []components.NickListThinkingMsg
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Active: "#b",
 				Types: []string{
 					"components.CompleterMsg",
@@ -169,11 +171,7 @@ func TestChatScreen_channel_focus_refreshes_window_dispatch_activity(t *testing.
 					"components.NickListThinkingMsg",
 				},
 				Thinking: []components.NickListThinkingMsg{{Nicks: tt.wantThinking}},
-			}, struct {
-				Active   domain.ChannelName
-				Types    []string
-				Thinking []components.NickListThinkingMsg
-			}{
+			}, assertionSnapshot{
 				Active:   screen.activeName(),
 				Types:    msgsTypes(messages),
 				Thinking: thinking,
@@ -275,19 +273,17 @@ func TestChatScreen_DM_dispatch_activity_uses_the_counterpart_row(t *testing.T) 
 		}
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		FocusedMembers []domain.MemberList
 		Started        []tea.Msg
 		Done           []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		FocusedMembers: []domain.MemberList{members},
 		Started:        []tea.Msg{components.NickListThinkingMsg{Nicks: map[domain.Nick]bool{"botty": true}}},
 		Done:           []tea.Msg{components.NickListThinkingMsg{}},
-	}, struct {
-		FocusedMembers []domain.MemberList
-		Started        []tea.Msg
-		Done           []tea.Msg
-	}{
+	}, assertionSnapshot{
 		FocusedMembers: focusedMembers,
 		Started:        collectMsgs(started),
 		Done:           collectMsgs(done),
@@ -717,18 +713,16 @@ func TestChatScreen_ModelUnavailableError_renders_in_the_recipient_DM(t *testing
 		Target: dm.Name(), Text: failure.Error(), At: at,
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active         domain.ChannelName
 		DirectMessages []domain.Event
 		OtherChannel   []domain.Event
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active:         "#other",
 		DirectMessages: []domain.Event{notice},
-	}, struct {
-		Active         domain.ChannelName
-		DirectMessages []domain.Event
-		OtherChannel   []domain.Event
-	}{
+	}, assertionSnapshot{
 		Active:         updated.activeName(),
 		DirectMessages: updated.scrollbackOf(dm.Name()),
 		OtherChannel:   updated.scrollbackOf("#other"),
@@ -748,24 +742,21 @@ func TestChatScreen_ModelUnavailableError_from_another_DM_renders_in_status(t *t
 	}
 	updated, _ := screen.handleProtocolEvent(protocolEventMsg{event: failure})
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Active       domain.ChannelName
 		Status       []domain.Event
 		DirectPeer   []domain.Event
 		OtherChannel []domain.Event
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Active: "#other",
 		Status: []domain.Event{domain.SystemNotice{
 			Target: domain.StatusChannelName,
 			Text:   `model "botty" unavailable for dispatch`,
 			At:     at,
 		}},
-	}, struct {
-		Active       domain.ChannelName
-		Status       []domain.Event
-		DirectPeer   []domain.Event
-		OtherChannel []domain.Event
-	}{
+	}, assertionSnapshot{
 		Active:       updated.activeName(),
 		Status:       updated.scrollbackOf(domain.StatusChannelName),
 		DirectPeer:   updated.scrollbackOf(peer.Name()),
@@ -911,14 +902,16 @@ func TestChatScreen_ErrorEvent_renders_at_issuing_dm_window(t *testing.T) {
 	screen, renderCmd, handled := screen.routeReplies(result)
 	messages := collectMsgs(renderCmd)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		IssuingWindow domain.Window
 		Handled       bool
 		Active        domain.ChannelName
 		DMScrollback  []domain.Event
 		Other         []domain.Event
 		Messages      []tea.Msg
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		IssuingWindow: dm,
 		Handled:       true,
 		Active:        "#other",
@@ -930,14 +923,7 @@ func TestChatScreen_ErrorEvent_renders_at_issuing_dm_window(t *testing.T) {
 			nil,
 			components.NickListThinkingMsg{},
 		},
-	}, struct {
-		IssuingWindow domain.Window
-		Handled       bool
-		Active        domain.ChannelName
-		DMScrollback  []domain.Event
-		Other         []domain.Event
-		Messages      []tea.Msg
-	}{
+	}, assertionSnapshot{
 		IssuingWindow: result.IssuingWindow,
 		Handled:       handled,
 		Active:        screen.active.Name(),

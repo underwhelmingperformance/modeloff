@@ -17,9 +17,14 @@ const (
 	AttrChannelKind = "modeloff.channel_kind"
 
 	// LLM dispatch attributes (session-layer outcomes):
-	AttrPassReason    = "modeloff.llm.pass.reason"
-	AttrRetryCount    = "modeloff.llm.retry.count"
-	AttrToolTurnCount = "modeloff.llm.tool.turn_count"
+	AttrPassReason     = "modeloff.llm.pass.reason"
+	AttrRetryCount     = "modeloff.llm.retry.count"
+	AttrToolTurnCount  = "modeloff.llm.tool.turn_count"
+	AttrContextLength  = "modeloff.llm.context.length"
+	AttrPromptLimit    = "modeloff.llm.context.prompt_limit"
+	AttrPromptEstimate = "modeloff.llm.context.prompt_estimate"
+	AttrRequestBytes   = "modeloff.llm.context.request_bytes"
+	AttrContextFits    = "modeloff.llm.context.fits"
 
 	// LLM dispatch attributes (API transport):
 	AttrPromptTokens     = "modeloff.llm.tokens.prompt"

@@ -86,9 +86,11 @@ func TestInstanceMemory_WriteMemory_stamps_the_injected_clock(t *testing.T) {
 	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	mem := &instanceMemory{instanceID: "inst-1", store: store, now: func() time.Time { return fixed }}
 
-	require.NoError(t, mem.WriteMemory(t.Context(), "mood", "happy"))
+	require.NoError(t, mem.WriteMemory(t.Context(), "mood", "happy", true))
 
-	require.Equal(t, []memory.Entry{{Key: "mood", Content: "happy", At: fixed}}, store.written)
+	require.Equal(t, []memory.Entry{{
+		Key: "mood", Content: "happy", Pinned: true, At: fixed,
+	}}, store.written)
 }
 
 func TestInstanceMemory_SearchMemory_unsearchable_store_errors(t *testing.T) {

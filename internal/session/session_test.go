@@ -945,7 +945,7 @@ func TestSession_Connect_retries_a_failed_initial_handshake(t *testing.T) {
 				secondEvents := collectEmittedEvents(t, sess)
 				require.NoError(t, sess.Shutdown(t.Context()))
 
-				require.Equal(t, struct {
+				type assertionSnapshot struct {
 					FirstFailureMatches bool
 					FirstConnectedAt    time.Time
 					FirstMarker         string
@@ -956,7 +956,9 @@ func TestSession_Connect_retries_a_failed_initial_handshake(t *testing.T) {
 					SecondMarker        string
 					SecondReady         bool
 					SecondEvents        []domain.Event
-				}{
+				}
+
+				require.Equal(t, assertionSnapshot{
 					FirstFailureMatches: true,
 					SecondConnectedAt:   fixedTime,
 					SecondMarker:        fixedTime.Format(time.RFC3339Nano),
@@ -966,18 +968,7 @@ func TestSession_Connect_retries_a_failed_initial_handshake(t *testing.T) {
 						Nick:       "testuser",
 						At:         fixedTime,
 					}},
-				}, struct {
-					FirstFailureMatches bool
-					FirstConnectedAt    time.Time
-					FirstMarker         string
-					FirstReady          bool
-					FirstEvents         []domain.Event
-					SecondError         error
-					SecondConnectedAt   time.Time
-					SecondMarker        string
-					SecondReady         bool
-					SecondEvents        []domain.Event
-				}{
+				}, assertionSnapshot{
 					FirstFailureMatches: errors.Is(firstErr, sentinel),
 					FirstConnectedAt:    firstConnectedAt,
 					FirstMarker:         firstMarker,
@@ -2456,10 +2447,11 @@ func TestSession_Dispatch_multiple_instances_each_reply_once(t *testing.T) {
 		synctest.Wait()
 
 		msgs := channelMessages(t, s, "#general")
-		got := struct {
+		type assertionSnapshot struct {
 			User    []domain.Message
 			Replies []domain.Message
-		}{}
+		}
+		got := assertionSnapshot{}
 		for _, msg := range msgs {
 			if msg.AuthoredBy(protocol.UserClientID) {
 				got.User = append(got.User, msg)
@@ -2472,10 +2464,7 @@ func TestSession_Dispatch_multiple_instances_each_reply_once(t *testing.T) {
 			return strings.Compare(string(a.Source.Nick()), string(b.Source.Nick()))
 		})
 
-		require.Equal(t, struct {
-			User    []domain.Message
-			Replies []domain.Message
-		}{
+		require.Equal(t, assertionSnapshot{
 			User: []domain.Message{{
 				Source: domain.ClientSource(protocol.UserClientID, "testuser"),
 				Target: "#general", Body: "hello world", At: fixedTime,
@@ -3476,6 +3465,7 @@ func TestSession_Dispatch_filters_history_before_join(t *testing.T) {
 				Body: "new message",
 				At:   afterJoin,
 			},
+			currentChannelStateMessage("#general", "+", "@testuser", "botty"),
 		}, receivedHistory)
 	})
 }
@@ -3639,7 +3629,7 @@ func TestSession_Dispatch_write_memory_then_reply(t *testing.T) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
-						{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy"}`)},
+						{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy","pinned":false}`)},
 					},
 				}, nil
 			},
@@ -3734,7 +3724,7 @@ func TestSession_Dispatch_memory_write_failure_aborts_the_tool_loop(t *testing.T
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
-						{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy"}`)},
+						{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy","pinned":false}`)},
 					},
 				}, nil
 			},
@@ -3774,8 +3764,8 @@ func TestSession_Dispatch_multiple_memory_calls_in_one_response(t *testing.T) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
-						{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy"}`)},
-						{ID: "call_2", Name: "write_memory", Args: mustRawJSON(t, `{"key":"topic","content":"go programming"}`)},
+						{ID: "call_1", Name: "write_memory", Args: mustRawJSON(t, `{"key":"mood","content":"happy","pinned":false}`)},
+						{ID: "call_2", Name: "write_memory", Args: mustRawJSON(t, `{"key":"topic","content":"go programming","pinned":false}`)},
 					},
 				}, nil
 			},
@@ -4015,8 +4005,8 @@ func TestSession_Dispatch_write_then_search_memory_with_vector_store(t *testing.
 			return api.CompletionResult{
 				Conversation: &api.Conversation{},
 				PendingToolCalls: []api.PendingToolCall{
-					{ID: "call_write_cats", Name: "write_memory", Args: mustRawJSON(t, `{"key":"pet_cats","content":"cats are wonderful"}`)},
-					{ID: "call_write_dogs", Name: "write_memory", Args: mustRawJSON(t, `{"key":"pet_dogs","content":"dogs are loyal"}`)},
+					{ID: "call_write_cats", Name: "write_memory", Args: mustRawJSON(t, `{"key":"pet_cats","content":"cats are wonderful","pinned":false}`)},
+					{ID: "call_write_dogs", Name: "write_memory", Args: mustRawJSON(t, `{"key":"pet_dogs","content":"dogs are loyal","pinned":false}`)},
 				},
 			}, nil
 		},
@@ -4091,7 +4081,7 @@ func TestSession_Dispatch_memory_loop_respects_max_turns(t *testing.T) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
-						{ID: "call_init", Name: "write_memory", Args: mustRawJSON(t, `{"key":"k0","content":"v0"}`)},
+						{ID: "call_init", Name: "write_memory", Args: mustRawJSON(t, `{"key":"k0","content":"v0","pinned":false}`)},
 					},
 				}, nil
 			},
@@ -4105,7 +4095,7 @@ func TestSession_Dispatch_memory_loop_respects_max_turns(t *testing.T) {
 				return api.CompletionResult{
 					Conversation: &api.Conversation{},
 					PendingToolCalls: []api.PendingToolCall{
-						{ID: "call_" + nextKey, Name: "write_memory", Args: mustRawJSON(t, fmt.Sprintf(`{"key":"%s","content":"val"}`, nextKey))},
+						{ID: "call_" + nextKey, Name: "write_memory", Args: mustRawJSON(t, fmt.Sprintf(`{"key":"%s","content":"val","pinned":false}`, nextKey))},
 					},
 				}, nil
 			},
@@ -4803,6 +4793,7 @@ func TestAddModel_own_join_is_filed_but_not_dispatched(t *testing.T) {
 
 		require.Equal(t, []protocol.IRCMessage{
 			{Kind: protocol.KindJoin, Source: domain.ClientSource(bot.ID(), "fakenick"), Target: "#dev", At: fixedTime},
+			currentChannelStateMessage("#dev", "+", "@testuser", "fakenick"),
 		}, lastHistory)
 	})
 }
@@ -5018,7 +5009,7 @@ func TestSession_topic_audit_failure_rolls_back_the_topic(t *testing.T) {
 			Target: "#general", Topic: "new topic", At: fixedTime,
 		}
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Response             protocol.Response
 			PersistenceError     bool
 			Audit                []domain.Event
@@ -5035,7 +5026,9 @@ func TestSession_topic_audit_failure_rolls_back_the_topic(t *testing.T) {
 			PeerAfterRetry       []domain.Event
 			StoredAfterRetry     string
 			LiveAfterRetry       string
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			PersistenceError: true,
 			Audit:            storedEventValues(auditBefore),
 			Projection:       scrollbackEventValues(projectionBefore),
@@ -5047,24 +5040,7 @@ func TestSession_topic_audit_failure_rolls_back_the_topic(t *testing.T) {
 			PeerAfterRetry:   []domain.Event{topicChange},
 			StoredAfterRetry: "new topic",
 			LiveAfterRetry:   "new topic",
-		}, struct {
-			Response             protocol.Response
-			PersistenceError     bool
-			Audit                []domain.Event
-			Projection           []domain.Event
-			UserDeliveries       []domain.Event
-			PeerDeliveries       []domain.Event
-			StoredTopic          string
-			LiveTopic            string
-			RetryResponse        protocol.Response
-			RetryError           error
-			AuditAfterRetry      []domain.Event
-			ProjectionAfterRetry []domain.Event
-			UserAfterRetry       []domain.Event
-			PeerAfterRetry       []domain.Event
-			StoredAfterRetry     string
-			LiveAfterRetry       string
-		}{
+		}, assertionSnapshot{
 			Response:             response,
 			PersistenceError:     errors.Is(sendErr, persistenceFailure),
 			Audit:                storedEventValues(auditAfter),
@@ -5189,7 +5165,7 @@ func TestSession_actor_event_audit_failure_rolls_back_the_transition(t *testing.
 				badWindow, err := sess.loadChannelWindow(ctx, "#bad")
 				require.NoError(t, err)
 
-				require.Equal(t, struct {
+				type assertionSnapshot struct {
 					Response           protocol.Response
 					PersistenceError   bool
 					GoodAudit          []domain.Event
@@ -5203,7 +5179,9 @@ func TestSession_actor_event_audit_failure_rolls_back_the_transition(t *testing.
 					UserDeliveries     []protocol.Delivery
 					ObserverDeliveries []protocol.Delivery
 					ActorDeliveries    []protocol.Delivery
-				}{
+				}
+
+				require.Equal(t, assertionSnapshot{
 					PersistenceError:   true,
 					GoodAudit:          storedEventValues(goodAuditBefore),
 					BadAudit:           storedEventValues(badAuditBefore),
@@ -5216,21 +5194,7 @@ func TestSession_actor_event_audit_failure_rolls_back_the_transition(t *testing.
 					UserDeliveries:     []protocol.Delivery{},
 					ObserverDeliveries: []protocol.Delivery{},
 					ActorDeliveries:    []protocol.Delivery{},
-				}, struct {
-					Response           protocol.Response
-					PersistenceError   bool
-					GoodAudit          []domain.Event
-					BadAudit           []domain.Event
-					GoodScrollback     []domain.Event
-					BadScrollback      []domain.Event
-					GoodNicks          []domain.Nick
-					BadNicks           []domain.Nick
-					ActorNick          domain.Nick
-					Connected          bool
-					UserDeliveries     []protocol.Delivery
-					ObserverDeliveries []protocol.Delivery
-					ActorDeliveries    []protocol.Delivery
-				}{
+				}, assertionSnapshot{
 					Response:           response,
 					PersistenceError:   errors.Is(sendErr, persistenceFailure),
 					GoodAudit:          storedEventValues(goodAuditAfter),
@@ -5322,23 +5286,18 @@ func TestSession_message_persistence_failure_refuses_the_send(t *testing.T) {
 				var persistenceErr *MessagePersistenceError
 				require.ErrorAs(t, sendErr, &persistenceErr)
 
-				require.Equal(t, struct {
+				type assertionSnapshot struct {
 					Response       protocol.Response
 					SendError      *MessagePersistenceError
 					UserDeliveries []domain.Event
 					PeerDeliveries []domain.Event
 					Stored         []domain.StoredEvent
 					Projected      []domain.StoredEvent
-				}{
+				}
+
+				require.Equal(t, assertionSnapshot{
 					SendError: &MessagePersistenceError{Err: persistenceFailure},
-				}, struct {
-					Response       protocol.Response
-					SendError      *MessagePersistenceError
-					UserDeliveries []domain.Event
-					PeerDeliveries []domain.Event
-					Stored         []domain.StoredEvent
-					Projected      []domain.StoredEvent
-				}{
+				}, assertionSnapshot{
 					Response:       response,
 					SendError:      persistenceErr,
 					UserDeliveries: collectEmittedEvents(t, sess),

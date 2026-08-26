@@ -3,6 +3,7 @@ package modelclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -49,14 +50,14 @@ func (c *countingAPI) SendEvents(
 	_ domain.ModelID,
 	_ domain.InstanceID,
 	_ api.SystemPrompt,
-	history []protocol.IRCMessage,
+	history api.TurnHistory,
 	events []protocol.IRCMessage,
 	_ ...api.ToolDefinition,
 ) (api.CompletionResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.calls = append(c.calls, turnPrompt{history: bodies(history), triggers: bodies(events)})
+	c.calls = append(c.calls, turnPrompt{history: bodies(history.Messages()), triggers: bodies(events)})
 
 	if len(c.calls) <= len(c.errs) {
 		return api.CompletionResult{}, c.errs[len(c.calls)-1]
@@ -551,16 +552,15 @@ func TestDispatch_honours_retry_after_before_replaying_an_initial_request(t *tes
 		t.Fatalf("request repeated before retry delay was released: %#v", unexpected)
 	default:
 	}
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Prompt turnPrompt
 		Delay  time.Duration
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Prompt: turnPrompt{triggers: []string{"anyone about?"}},
 		Delay:  10 * time.Second,
-	}, struct {
-		Prompt turnPrompt
-		Delay  time.Duration
-	}{
+	}, assertionSnapshot{
 		Prompt: first,
 		Delay:  wait.delay,
 	})
@@ -691,19 +691,18 @@ func TestDispatch_same_window_replacement_inherits_the_pending_retry_delay(t *te
 		close(wait.release)
 		synctest.Wait()
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Delay   time.Duration
 			Prompts []turnPrompt
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Delay: 10 * time.Second,
 			Prompts: []turnPrompt{
 				{triggers: []string{"anyone about?"}},
 				{history: []string{"anyone about?"}, triggers: []string{"still here?"}},
 			},
-		}, struct {
-			Delay   time.Duration
-			Prompts []turnPrompt
-		}{
+		}, assertionSnapshot{
 			Delay:   wait.delay,
 			Prompts: upstream.prompts(),
 		})
@@ -745,11 +744,13 @@ func TestRedispatchMerge_keeps_failed_traffic_in_chronological_history(t *testin
 	})
 	merged, claimed := pending.claim(token)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Queued  *turnBatch
 		Claimed bool
 		Batch   turnBatch
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Claimed: true,
 		Batch: turnBatch{
 			channel: "#dev", history: []domain.StoredEvent{{Event: failed}},
@@ -757,11 +758,7 @@ func TestRedispatchMerge_keeps_failed_traffic_in_chronological_history(t *testin
 			causes:  []trace.SpanContext{currentCause},
 			retried: true,
 		},
-	}, struct {
-		Queued  *turnBatch
-		Claimed bool
-		Batch   turnBatch
-	}{
+	}, assertionSnapshot{
 		Queued:  queued,
 		Claimed: claimed,
 		Batch:   *merged,
@@ -827,10 +824,12 @@ func TestDispatch_DM_history_failure_never_calls_provider_with_incomplete_contex
 				synctest.Wait()
 
 				source := domain.ClientSource("inst-botty", "botty")
-				require.Equal(t, struct {
+				type assertionSnapshot struct {
 					Prompts []turnPrompt
 					Events  []domain.ProtocolEvent
-				}{
+				}
+
+				require.Equal(t, assertionSnapshot{
 					Prompts: []turnPrompt{{
 						history: []string{"earlier", "first"}, triggers: []string{"second"},
 					}},
@@ -839,10 +838,7 @@ func TestDispatch_DM_history_failure_never_calls_provider_with_incomplete_contex
 						domain.ModelDispatchStarted{Source: source, At: sess.Now()},
 						domain.ModelDispatchDone{Source: source, At: sess.Now()},
 					},
-				}, struct {
-					Prompts []turnPrompt
-					Events  []domain.ProtocolEvent
-				}{
+				}, assertionSnapshot{
 					Prompts: upstream.prompts(),
 					Events:  sess.emittedEvents(),
 				})
@@ -952,19 +948,18 @@ func TestDispatch_keeps_an_invitation_after_a_kick_in_the_same_burst(t *testing.
 		synctest.Wait()
 
 		source := domain.ClientSource("inst-botty", "botty")
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Prompts []turnPrompt
 			Events  []domain.ProtocolEvent
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Prompts: []turnPrompt{{triggers: []string{""}}},
 			Events: []domain.ProtocolEvent{
 				domain.ModelDispatchStarted{Source: source, At: sess.Now()},
 				domain.ModelDispatchDone{Source: source, At: sess.Now()},
 			},
-		}, struct {
-			Prompts []turnPrompt
-			Events  []domain.ProtocolEvent
-		}{
+		}, assertionSnapshot{
 			Prompts: upstream.prompts(),
 			Events:  sess.emittedEvents(),
 		})
@@ -996,4 +991,51 @@ func TestDispatch_abandons_a_pending_retry_on_teardown(t *testing.T) {
 
 		require.Equal(t, 1, upstream.callCount())
 	})
+}
+
+type replayableCase struct {
+	name string
+	err  error
+	want bool
+}
+
+type replayableEffect struct {
+	Replayable bool
+}
+
+// TestReplayableTurnError covers which failed turns the dispatch loop
+// hands back for a second attempt. A refusal for length is the case
+// [api.Retryable] declines and the dispatch loop still wants: the
+// refusal raises the model's recorded token ratio, so the second
+// attempt plans a smaller request.
+func TestReplayableTurnError(t *testing.T) {
+	t.Parallel()
+
+	tests := []replayableCase{
+		{name: "no failure", err: nil, want: false},
+		{
+			name: "a refusal for length",
+			err:  fmt.Errorf("send events: %w", api.ErrPromptTooLong),
+			want: true,
+		},
+		{
+			name: "an expired deadline",
+			err:  fmt.Errorf("send events: %w", context.DeadlineExceeded),
+			want: true,
+		},
+		{
+			name: "a cancelled turn",
+			err:  fmt.Errorf("send events: %w", context.Canceled),
+			want: false,
+		},
+		{name: "an ordinary refusal", err: errors.New("unknown model"), want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, replayableEffect{Replayable: tc.want}, replayableEffect{
+				Replayable: replayableTurnError(tc.err),
+			})
+		})
+	}
 }

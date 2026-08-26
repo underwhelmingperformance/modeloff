@@ -172,7 +172,9 @@ func TestManager_Forget_keeps_the_marker_when_the_index_is_unavailable(t *testin
 
 	inst := attachTestInstance(t, fx, sess, "inst-botty")
 	require.NoError(t, fx.store.DeleteInstanceByID(t.Context(), inst.ID()))
-	require.NoError(t, fx.store.WriteMemory(t.Context(), inst.ID(), "late", "orphan", time.Unix(1, 0)))
+	require.NoError(t, fx.store.WriteMemory(
+		t.Context(), inst.ID(), "late", "orphan", time.Unix(1, 0), false,
+	))
 
 	fx.mgr.Forget(protocol.ClientID(inst.ID()))
 	pending, err := fx.store.ListPendingMemoryDeletions(t.Context())
@@ -231,7 +233,10 @@ func TestManager_DetachAndForget_waits_for_the_dispatch_goroutine(t *testing.T) 
 		Content: "written while dispatch was stopping",
 		At:      time.Unix(1, 0),
 	}
-	require.NoError(t, fx.store.WriteMemory(t.Context(), inst.ID(), lateMemory.Key, lateMemory.Content, lateMemory.At))
+	require.NoError(t, fx.store.WriteMemory(
+		t.Context(), inst.ID(), lateMemory.Key, lateMemory.Content,
+		lateMemory.At, lateMemory.Pinned,
+	))
 	memories, err := fx.store.ReadMemories(t.Context(), inst.ID())
 	require.NoError(t, err)
 	pending, err := fx.store.ListPendingMemoryDeletions(t.Context())
@@ -418,16 +423,15 @@ func TestManager_failed_attachment_finishes_pending_memory_deletion(t *testing.T
 
 	pending, err := backing.ListPendingMemoryDeletions(ctx)
 	require.NoError(t, err)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		deleted []domain.InstanceID
 		pending []domain.InstanceID
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		deleted: []domain.InstanceID{inst.ID()},
 		pending: nil,
-	}, struct {
-		deleted []domain.InstanceID
-		pending []domain.InstanceID
-	}{
+	}, assertionSnapshot{
 		deleted: spy.deletedIDs(),
 		pending: pending,
 	})
@@ -539,18 +543,16 @@ func TestManager_Start_marks_a_stored_client_attachment_failure(t *testing.T) {
 	err := mgr.Start(ctx, sess)
 	var startErr *modelmanager.StartError
 	require.ErrorAs(t, err, &startErr)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		HistoryFailed    bool
 		AttachmentFailed bool
 		Connected        bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		HistoryFailed:    true,
 		AttachmentFailed: true,
-	}, struct {
-		HistoryFailed    bool
-		AttachmentFailed bool
-		Connected        bool
-	}{
+	}, assertionSnapshot{
 		HistoryFailed:    errors.Is(err, historyErr),
 		AttachmentFailed: startErr.AttachmentFailed(),
 		Connected:        sess.ClientConnected(protocol.ClientID(inst.ID())),

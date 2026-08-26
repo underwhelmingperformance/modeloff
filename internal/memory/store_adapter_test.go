@@ -49,11 +49,15 @@ func TestStoreAdapter_WriteAndRead_preservesAt(t *testing.T) {
 	id := domain.InstanceID("inst-bob")
 	at := time.Date(2025, 6, 1, 9, 0, 0, 0, time.UTC)
 
-	require.NoError(t, store.Write(ctx, id, Entry{Key: "greeting", Content: "hi", At: at}))
+	require.NoError(t, store.Write(ctx, id, Entry{
+		Key: "greeting", Content: "hi", At: at, Pinned: true,
+	}))
 
 	got, err := store.Read(ctx, id)
 	require.NoError(t, err)
-	require.Equal(t, []Entry{{Key: "greeting", Content: "hi", At: at}}, got)
+	require.Equal(t, []Entry{{
+		Key: "greeting", Content: "hi", At: at, Pinned: true,
+	}}, got)
 }
 
 func TestStoreAdapter_Write_recordsSpan(t *testing.T) {

@@ -778,16 +778,40 @@ func TestWindowGuard_returns_the_actor_visible_channel(t *testing.T) {
 
 	window, err := guard.Context(ctx)
 	require.NoError(t, err)
+	state, hasState := window.ChannelState()
 	topic, ok := window.Topic()
-	require.True(t, ok)
-	require.Equal(t, domain.TopicInfo{
-		Target:     "#anon",
-		Topic:      "quiet room",
-		TopicSetBy: domain.AnonymousNick,
-		TopicSetAt: fixedTime,
-		At:         fixedTime,
-	}, topic)
-	require.Equal(t, protocol.ChannelWindowTarget("#anon"), window.Target())
+	type assertionSnapshot struct {
+		Target   protocol.WindowTarget
+		State    protocol.ChannelState
+		HasState bool
+		Topic    domain.TopicInfo
+		HasTopic bool
+	}
+
+	require.Equal(t, assertionSnapshot{
+		Target: protocol.ChannelWindowTarget("#anon"),
+		State: protocol.ChannelState{
+			Modes: domain.ChannelModes{Anonymous: true},
+			Members: []protocol.ChannelMemberState{
+				{Nick: domain.AnonymousNick},
+			},
+		},
+		HasState: true,
+		Topic: domain.TopicInfo{
+			Target:     "#anon",
+			Topic:      "quiet room",
+			TopicSetBy: domain.AnonymousNick,
+			TopicSetAt: fixedTime,
+			At:         fixedTime,
+		},
+		HasTopic: true,
+	}, assertionSnapshot{
+		Target:   window.Target(),
+		State:    state,
+		HasState: hasState,
+		Topic:    topic,
+		HasTopic: ok,
+	})
 
 	require.NoError(t, userPart(ctx, t, sess, "#anon", "leaving"))
 	require.False(t, guard.Valid(ctx))
@@ -882,10 +906,25 @@ func TestInvitationGuard_does_not_reveal_topic_before_join(t *testing.T) {
 	require.NoError(t, err)
 	window, err := guard.Context(ctx)
 	require.NoError(t, err)
+	state, hasState := window.ChannelState()
 	topic, hasTopic := window.Topic()
-	require.Equal(t, protocol.ChannelWindowTarget("#private"), window.Target())
-	require.Equal(t, domain.TopicInfo{}, topic)
-	require.False(t, hasTopic)
+	type assertionSnapshot struct {
+		Target   protocol.WindowTarget
+		State    protocol.ChannelState
+		HasState bool
+		Topic    domain.TopicInfo
+		HasTopic bool
+	}
+
+	require.Equal(t, assertionSnapshot{
+		Target: protocol.ChannelWindowTarget("#private"),
+	}, assertionSnapshot{
+		Target:   window.Target(),
+		State:    state,
+		HasState: hasState,
+		Topic:    topic,
+		HasTopic: hasTopic,
+	})
 }
 
 func TestInvitationGuard_reports_a_closed_subscription_after_creation(t *testing.T) {
@@ -1182,16 +1221,15 @@ func TestSubscription_DirectoryChannels_preserves_visibility_after_a_failed_mode
 	require.ErrorIs(t, err, failing.saveWindowErr)
 	require.Equal(t, protocol.Response{}, resp)
 	modes, exists := sess.channelModes(ctx, "#public")
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Exists bool
 		Modes  domain.ChannelModes
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Exists: true,
 		Modes:  domain.ChannelModes{},
-	}, struct {
-		Exists bool
-		Modes  domain.ChannelModes
-	}{Exists: exists, Modes: modes})
+	}, assertionSnapshot{Exists: exists, Modes: modes})
 
 	entries, err := sub.DirectoryChannels(ctx)
 	require.NoError(t, err)
@@ -1595,7 +1633,7 @@ func TestSubscription_channel_event_failure_refuses_send_without_a_replay_gap(t 
 			}
 		}
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Response        protocol.Response
 			SendFailed      bool
 			Connected       bool
@@ -1609,7 +1647,9 @@ func TestSubscription_channel_event_failure_refuses_send_without_a_replay_gap(t 
 			ModelDeliveries []protocol.Delivery
 			UserEvents      []domain.Event
 			Failures        []persistenceFailurePoint
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			SendFailed:     true,
 			Connected:      true,
 			ModelInChannel: true,
@@ -1622,21 +1662,7 @@ func TestSubscription_channel_event_failure_refuses_send_without_a_replay_gap(t 
 				},
 				Value: 1,
 			}},
-		}, struct {
-			Response        protocol.Response
-			SendFailed      bool
-			Connected       bool
-			ModelInChannel  bool
-			AuditError      error
-			Audit           []domain.StoredEvent
-			StoredError     error
-			Stored          []domain.StoredEvent
-			WindowError     error
-			WindowHasModel  bool
-			ModelDeliveries []protocol.Delivery
-			UserEvents      []domain.Event
-			Failures        []persistenceFailurePoint
-		}{
+		}, assertionSnapshot{
 			Response:        response,
 			SendFailed:      persistenceErr != nil,
 			Connected:       sess.ClientConnected(protocol.ClientID(botty.ID())),
@@ -1681,18 +1707,17 @@ func TestProjectedScrollbackRecords_excludes_private_issuer_replies(t *testing.T
 
 	records, indexes := projectedScrollbackRecords(routes)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Records []store.ChannelScrollbackRecord
 		Indexes []map[domain.ChannelName]int
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Records: []store.ChannelScrollbackRecord{{
 			InstanceID: "inst-botty", Channel: "#general", Event: message,
 		}},
 		Indexes: []map[domain.ChannelName]int{nil, {"#general": 0}},
-	}, struct {
-		Records []store.ChannelScrollbackRecord
-		Indexes []map[domain.ChannelName]int
-	}{Records: records, Indexes: indexes})
+	}, assertionSnapshot{Records: records, Indexes: indexes})
 }
 
 func TestSubscription_DM_scrollback_excludes_the_first_live_delivery(t *testing.T) {
@@ -2014,26 +2039,21 @@ func TestEnqueueRoutes_rejects_a_previous_membership_interval(t *testing.T) {
 		queued := sess.enqueueRoutes(ctx, []routedDelivery{stale})
 		synctest.Wait()
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			PartResponse protocol.Response
 			PartError    error
 			JoinResponse protocol.Response
 			JoinError    error
 			Queued       []routedDelivery
 			Deliveries   []protocol.Delivery
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			JoinResponse: protocol.Response{Events: []protocol.Event{
 				domain.JoinedChannel{Channel: "#general"},
 			}},
 			Queued: []routedDelivery{},
-		}, struct {
-			PartResponse protocol.Response
-			PartError    error
-			JoinResponse protocol.Response
-			JoinError    error
-			Queued       []routedDelivery
-			Deliveries   []protocol.Delivery
-		}{
+		}, assertionSnapshot{
 			PartResponse: partResponse,
 			PartError:    partErr,
 			JoinResponse: joinResponse,
@@ -2188,22 +2208,19 @@ func TestQueueRoutesLocked_returns_only_accepted_routes(t *testing.T) {
 
 	queued, disconnected := queueRoutesLocked(routes, make([]map[domain.ChannelName]int, len(routes)), nil, 0)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Queued          []routedDelivery
 		Disconnected    []*serverClient
 		AcceptedEvent   protocol.Delivery
 		OverflowedQueue []queuedDelivery
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Queued:          []routedDelivery{acceptedRoute},
 		Disconnected:    []*serverClient{overflowed},
 		AcceptedEvent:   acceptedRoute.delivery,
 		OverflowedQueue: make([]queuedDelivery, sendQAllowance),
-	}, struct {
-		Queued          []routedDelivery
-		Disconnected    []*serverClient
-		AcceptedEvent   protocol.Delivery
-		OverflowedQueue []queuedDelivery
-	}{
+	}, assertionSnapshot{
 		Queued:          queued,
 		Disconnected:    disconnected,
 		AcceptedEvent:   <-accepted.events,

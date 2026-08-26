@@ -16,6 +16,7 @@ import (
 type Entry struct {
 	Key     string `json:"key"`
 	Content string `json:"content"`
+	Pinned  bool   `json:"pinned,omitempty"`
 
 	// At is when this entry was written. A caller that does not set
 	// it gets the zero value, which [Store] implementations persist

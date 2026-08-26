@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
@@ -20,33 +22,81 @@ import (
 // a model that needs more than this reaches for search_memory, which
 // exists for exactly this case.
 //
-// The cap is the whole reason [composeTranscriptBudget] can charge
-// the context lines to the turn's budget without trimming them.
+// The complete request planner measures this bounded block with the
+// system prompt, tools and transcript before it sends a turn.
 const (
 	maxMemoryEntries = 50
 	maxMemoryBytes   = 4000
 )
 
-// capMemoriesForPrompt returns the most recent entries that fit within
+// capMemoriesForPrompt returns the entries that fit within
 // [maxMemoryEntries] and [maxMemoryBytes] of combined key+content text,
-// and reports whether anything was left out. Keys order entries written
-// at the same time, including legacy entries with no write timestamp.
+// and reports whether anything was left out.
+//
+// The order is relevance to the turn, then pinned, then recency, then
+// key. Relevance comes first so a memory reaches the block when the
+// conversation is about it. `Pinned` decides between entries the
+// conversation points at equally, which is where a durable fact
+// nobody has mentioned still beats recent noise; it does not put an
+// entry at the top of every prompt whatever the subject. Keys order
+// entries written at the same time, including legacy entries with no
+// write timestamp.
 //
 // A single entry bigger than maxMemoryBytes on its own is kept, with
 // its content truncated to fit — dropping it outright would leave
 // the prompt's truncation note pointing at memories the model can't
 // see any of.
-func capMemoriesForPrompt(entries []memory.Entry) ([]memory.Entry, bool) {
-	truncated := false
+type promptMemorySelection struct {
+	Entries   []memory.Entry
+	Truncated bool
+}
 
-	capped := slices.Clone(entries)
-	slices.SortStableFunc(capped, func(a, b memory.Entry) int {
-		if byTime := b.At.Compare(a.At); byTime != 0 {
+// rankedMemory pairs one entry with its [memoryRelevance] score for
+// the turn being planned.
+type rankedMemory struct {
+	entry     memory.Entry
+	relevance int
+}
+
+func capMemoriesForPrompt(
+	entries []memory.Entry,
+	relevant []protocol.IRCMessage,
+) promptMemorySelection {
+	truncated := false
+	terms := memoryContextTerms(relevant)
+
+	// Score every entry once. memoryRelevance lowercases and splits
+	// the entry's whole text and allocates a map, which a comparator
+	// would repeat for both operands of every comparison.
+	ranked := make([]rankedMemory, len(entries))
+	for i, entry := range entries {
+		ranked[i] = rankedMemory{entry: entry, relevance: memoryRelevance(entry, terms)}
+	}
+
+	slices.SortStableFunc(ranked, func(a, b rankedMemory) int {
+		if a.relevance != b.relevance {
+			return b.relevance - a.relevance
+		}
+
+		if a.entry.Pinned != b.entry.Pinned {
+			if a.entry.Pinned {
+				return -1
+			}
+
+			return 1
+		}
+
+		if byTime := b.entry.At.Compare(a.entry.At); byTime != 0 {
 			return byTime
 		}
 
-		return strings.Compare(a.Key, b.Key)
+		return strings.Compare(a.entry.Key, b.entry.Key)
 	})
+
+	capped := slices.Clone(entries)
+	for i, scored := range ranked {
+		capped[i] = scored.entry
+	}
 
 	if len(capped) > maxMemoryEntries {
 		capped = capped[:maxMemoryEntries]
@@ -61,25 +111,84 @@ func capMemoriesForPrompt(entries []memory.Entry) ([]memory.Entry, bool) {
 		}
 
 		if i == 0 {
-			return []memory.Entry{truncateMemoryEntry(e, maxMemoryBytes)}, true
+			return promptMemorySelection{
+				Entries:   []memory.Entry{truncateMemoryEntry(e, maxMemoryBytes)},
+				Truncated: true,
+			}
 		}
 
-		return capped[:i], true
+		return promptMemorySelection{Entries: capped[:i], Truncated: true}
 	}
 
-	return capped, truncated
+	return promptMemorySelection{Entries: capped, Truncated: truncated}
 }
 
-// truncateMemoryEntry shortens e's content so its combined key+content
-// length fits within maxBytes, keeping the key intact.
-func truncateMemoryEntry(e memory.Entry, maxBytes int) memory.Entry {
-	room := max(maxBytes-len(e.Key), 0)
-
-	if len(e.Content) > room {
-		e.Content = e.Content[:room]
+func memoryContextTerms(messages []protocol.IRCMessage) map[string]struct{} {
+	terms := make(map[string]struct{})
+	for _, message := range messages {
+		for term := range memoryTerms(strings.Join([]string{
+			string(message.Source.Nick()), message.Target, message.Subject, message.Body,
+		}, " ")) {
+			terms[term] = struct{}{}
+		}
 	}
 
+	return terms
+}
+
+func memoryRelevance(entry memory.Entry, contextTerms map[string]struct{}) int {
+	relevance := 0
+	seen := make(map[string]struct{})
+	for term := range memoryTerms(entry.Key + " " + entry.Content) {
+		if _, duplicate := seen[term]; duplicate {
+			continue
+		}
+		seen[term] = struct{}{}
+
+		if _, relevant := contextTerms[term]; relevant {
+			relevance++
+		}
+	}
+
+	return relevance
+}
+
+func memoryTerms(text string) func(func(string) bool) {
+	return func(yield func(string) bool) {
+		for _, term := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		}) {
+			if len([]rune(term)) < 3 {
+				continue
+			}
+			if !yield(term) {
+				return
+			}
+		}
+	}
+}
+
+// truncateMemoryEntry shortens the displayed key and content so their
+// combined length fits within maxBytes. It does not split UTF-8 code points.
+func truncateMemoryEntry(e memory.Entry, maxBytes int) memory.Entry {
+	e.Key = truncateUTF8(e.Key, maxBytes)
+	e.Content = truncateUTF8(e.Content, max(maxBytes-len(e.Key), 0))
+
 	return e
+}
+
+func truncateUTF8(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
+		return text
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	for maxBytes > 0 && !utf8.RuneStart(text[maxBytes]) {
+		maxBytes--
+	}
+
+	return text[:maxBytes]
 }
 
 // personaLineFormat is the trailer buildSystemPrompt appends to state
@@ -191,7 +300,7 @@ The first message after these instructions is a CURRENT_INSTANCE_STATE record su
 
 // contextReplies renders the per-turn context an instance needs to
 // have but must not read as instructions: the channel's current
-// topic, and the instance's stored memories.
+// state and topic, and the instance's stored memories.
 //
 // A topic is written by whichever member set it, and a memory by the
 // instance itself, often at a peer's suggestion. Neither can go in
@@ -207,14 +316,22 @@ The first message after these instructions is a CURRENT_INSTANCE_STATE record su
 //
 // A DM window has no topic, so a DM turn carries the memory line
 // alone.
-func contextReplies(window protocol.WindowContext, memories []memory.Entry) []protocol.IRCMessage {
+func contextReplies(
+	window protocol.WindowContext,
+	memories []memory.Entry,
+	relevant []protocol.IRCMessage,
+) []protocol.IRCMessage {
 	var replies []protocol.IRCMessage
+
+	if state, ok := window.ChannelState(); ok {
+		replies = append(replies, channelStateReply(window.Target(), state))
+	}
 
 	if topic, ok := window.Topic(); ok {
 		replies = append(replies, topicReply(topic))
 	}
 
-	if body, ok := memoryReplyBody(memories); ok {
+	if body, ok := memoryReplyBody(memories, relevant); ok {
 		replies = append(replies, protocol.IRCMessage{
 			Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
 			Target: string(protocol.WindowKey(window.Target())), Body: body,
@@ -222,6 +339,23 @@ func contextReplies(window protocol.WindowContext, memories []memory.Entry) []pr
 	}
 
 	return replies
+}
+
+func channelStateReply(target protocol.WindowTarget, state protocol.ChannelState) protocol.IRCMessage {
+	members := make([]string, 0, len(state.Members))
+	for _, member := range state.Members {
+		members = append(members, member.Modes.Rank().String()+string(member.Nick))
+	}
+
+	body := fmt.Sprintf(
+		"current state for %s: modes %s; members %s",
+		protocol.WindowKey(target), state.Modes.IRCString(), strings.Join(members, " "),
+	)
+
+	return protocol.IRCMessage{
+		Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+		Target: string(protocol.WindowKey(target)), Body: body,
+	}
 }
 
 // topicReply renders a channel's current topic the way a server
@@ -247,22 +381,28 @@ func topicReply(topic domain.TopicInfo) protocol.IRCMessage {
 // the model knows it is looking at part of what it stored and can
 // reach for search_memory.
 //
-// The line carries no time, because a [memory.Entry] has none.
-func memoryReplyBody(memories []memory.Entry) (string, bool) {
+// The line omits write times because the selector has already used
+// them to choose and order the entries.
+func memoryReplyBody(memories []memory.Entry, relevant []protocol.IRCMessage) (string, bool) {
 	if len(memories) == 0 {
 		return "", false
 	}
 
-	capped, truncated := capMemoriesForPrompt(memories)
+	selection := capMemoriesForPrompt(memories, relevant)
 
 	var b strings.Builder
 
 	b.WriteString("your stored memories:")
-	for _, entry := range capped {
+	for _, entry := range selection.Entries {
+		if entry.Pinned {
+			fmt.Fprintf(&b, " [pinned %s=%s]", entry.Key, entry.Content)
+			continue
+		}
+
 		fmt.Fprintf(&b, " [%s=%s]", entry.Key, entry.Content)
 	}
 
-	if truncated {
+	if selection.Truncated {
 		b.WriteString(" (some left out; use search_memory for the rest)")
 	}
 

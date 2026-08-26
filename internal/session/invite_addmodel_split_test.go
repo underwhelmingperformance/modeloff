@@ -232,21 +232,18 @@ func TestAddModel_does_not_cross_the_issuers_connection_generation(t *testing.T)
 		addErr := <-added
 		_, resolveErr := s.ResolveNick(ctx, "fakenick")
 		channel, channelErr := sess.loadChannelWindow(ctx, "#general")
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			SubscriptionClosed bool
 			ModelAbsent        bool
 			ChannelError       error
 			Members            []domain.Nick
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			SubscriptionClosed: true,
 			ModelAbsent:        true,
 			Members:            []domain.Nick{userNick(t, sess)},
-		}, struct {
-			SubscriptionClosed bool
-			ModelAbsent        bool
-			ChannelError       error
-			Members            []domain.Nick
-		}{
+		}, assertionSnapshot{
 			SubscriptionClosed: errors.Is(addErr, protocol.ErrSubscriptionClosed),
 			ModelAbsent:        errors.Is(resolveErr, storemod.ErrNoSuchNick),
 			ChannelError:       channelErr,

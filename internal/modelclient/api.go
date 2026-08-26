@@ -26,7 +26,7 @@ type runTurnRequest struct {
 	target       protocol.MsgTarget
 	projection   providerTargetProjection
 	prompt       api.SystemPrompt
-	history      []protocol.IRCMessage
+	history      api.TurnHistory
 	events       []protocol.IRCMessage
 	registry     *ToolRegistry
 	pacer        *Pacer

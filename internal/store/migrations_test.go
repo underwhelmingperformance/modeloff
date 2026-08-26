@@ -568,6 +568,51 @@ func TestApplyMigrations_v5_to_v6_keeps_existing_instances_active(t *testing.T) 
 	})
 }
 
+func TestApplyMigrations_v12_to_v13_keeps_existing_memories_unpinned(t *testing.T) {
+	type migrationState struct {
+		Version int
+		Pinned  bool
+	}
+
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	for _, migration := range migrations {
+		if migration.Version > 12 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO memories (instance_id, key, content, at) VALUES (?, ?, ?, ?)`,
+		"inst-botty", "fact", "likes tea", "2026-08-26T12:00:00Z",
+	)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '12')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	require.NoError(t, applyMigrations(ctx, db))
+	version, err := readSchemaVersion(ctx, db)
+	require.NoError(t, err)
+	var pinned bool
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT pinned FROM memories WHERE instance_id = ? AND key = ?`,
+		"inst-botty", "fact",
+	).Scan(&pinned))
+	require.Equal(t, migrationState{Version: SchemaVersion}, migrationState{
+		Version: version,
+		Pinned:  pinned,
+	})
+}
+
 func TestApplyMigrations_backfills_safe_current_membership_scrollback(t *testing.T) {
 	ctx := t.Context()
 	db, err := sql.Open("sqlite3", ":memory:")

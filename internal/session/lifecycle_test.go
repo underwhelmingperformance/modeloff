@@ -171,12 +171,14 @@ func TestSession_terminal_error_ends_the_departing_clients_delivery_prefix(t *te
 		})
 		synctest.Wait()
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Response protocol.Response
 			Error    error
 			User     []domain.Event
 			Model    []domain.Event
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			User: []domain.Event{
 				domain.ModelDispatchStarted{
 					Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
@@ -205,12 +207,7 @@ func TestSession_terminal_error_ends_the_departing_clients_delivery_prefix(t *te
 					Reason: "Killed by testuser (enough)", At: fixedTime,
 				},
 			},
-		}, struct {
-			Response protocol.Response
-			Error    error
-			User     []domain.Event
-			Model    []domain.Event
-		}{
+		}, assertionSnapshot{
 			Response: response,
 			Error:    err,
 			User:     drainDeliveries(user),
@@ -288,13 +285,12 @@ func TestSession_shutdown_releases_a_terminal_reaper_blocked_on_outbound_deliver
 		defer cancel()
 		shutdownErr := sess.Shutdown(shutdownCtx)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			ShutdownError error
 			Queued        int
-		}{}, struct {
-			ShutdownError error
-			Queued        int
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{}, assertionSnapshot{
 			ShutdownError: shutdownErr,
 			Queued:        queuedDeliveries(sub),
 		})
@@ -452,16 +448,15 @@ func TestSession_sendQ_overflow_seals_the_accepted_prefix_during_teardown(t *tes
 			}},
 		)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Queued  []queuedDelivery
 			Drained []protocol.Delivery
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Queued:  acceptedAfterDrain,
 			Drained: expected,
-		}, struct {
-			Queued  []queuedDelivery
-			Drained []protocol.Delivery
-		}{
+		}, assertionSnapshot{
 			Queued:  queuedDuringTeardown,
 			Drained: actual,
 		})
@@ -518,7 +513,7 @@ func TestSession_channel_event_failure_keeps_the_recipient_connected(t *testing.
 		)
 		window, windowErr := sess.loadChannelWindow(ctx, "#general")
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Response          protocol.Response
 			PersistenceFailed bool
 			Connected         bool
@@ -528,7 +523,9 @@ func TestSession_channel_event_failure_keeps_the_recipient_connected(t *testing.
 			ProjectedError    error
 			Projected         []domain.StoredEvent
 			Deliveries        []protocol.Delivery
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			PersistenceFailed: true,
 			Connected:         true,
 			Member:            true,
@@ -537,17 +534,7 @@ func TestSession_channel_event_failure_keeps_the_recipient_connected(t *testing.
 			Deliveries: []protocol.Delivery{{Event: domain.PokeEvent{
 				Channel: "#general", At: fixedTime,
 			}}},
-		}, struct {
-			Response          protocol.Response
-			PersistenceFailed bool
-			Connected         bool
-			Member            bool
-			AuditError        error
-			Audit             []domain.StoredEvent
-			ProjectedError    error
-			Projected         []domain.StoredEvent
-			Deliveries        []protocol.Delivery
-		}{
+		}, assertionSnapshot{
 			Response:          response,
 			PersistenceFailed: persistenceErr != nil,
 			Connected:         sess.ClientConnected(protocol.ClientID(model.ID())),
@@ -607,6 +594,12 @@ func TestSession_sendQ_overflow_interrupts_turn_when_instance_deletion_fails(t *
 		}
 
 		synctest.Wait()
+		type assertionSnapshot struct {
+			TurnCancelled bool
+			Connected     bool
+			Member        bool
+		}
+
 		cancelledBeforeDrain := false
 		select {
 		case <-turnCancelled:
@@ -615,11 +608,7 @@ func TestSession_sendQ_overflow_interrupts_turn_when_instance_deletion_fails(t *
 		}
 		window, err := sess.loadChannelWindow(t.Context(), "#general")
 		require.NoError(t, err)
-		stateBeforeDrain := struct {
-			TurnCancelled bool
-			Connected     bool
-			Member        bool
-		}{
+		stateBeforeDrain := assertionSnapshot{
 			TurnCancelled: cancelledBeforeDrain,
 			Connected:     sess.ClientConnected(protocol.ClientID(botty.ID())),
 			Member:        window.Members.HasInstance(botty),
@@ -637,11 +626,7 @@ func TestSession_sendQ_overflow_interrupts_turn_when_instance_deletion_fails(t *
 		<-sub.Done()
 		require.NoError(t, sess.Shutdown(t.Context()))
 
-		require.Equal(t, struct {
-			TurnCancelled bool
-			Connected     bool
-			Member        bool
-		}{
+		require.Equal(t, assertionSnapshot{
 			TurnCancelled: true,
 		}, stateBeforeDrain)
 	})
@@ -920,25 +905,20 @@ func TestSession_dispatch_start_rejects_a_guard_from_an_earlier_membership(t *te
 		})
 		synctest.Wait()
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			PartResponse protocol.Response
 			PartError    error
 			JoinResponse protocol.Response
 			JoinError    error
 			UserEvents   []domain.Event
 			ActorEvents  []domain.Event
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			JoinResponse: protocol.Response{Events: []protocol.Event{
 				domain.JoinedChannel{Channel: "#general"},
 			}},
-		}, struct {
-			PartResponse protocol.Response
-			PartError    error
-			JoinResponse protocol.Response
-			JoinError    error
-			UserEvents   []domain.Event
-			ActorEvents  []domain.Event
-		}{
+		}, assertionSnapshot{
 			PartResponse: partResponse,
 			PartError:    partErr,
 			JoinResponse: joinResponse,
@@ -1189,11 +1169,13 @@ func TestSession_user_QUIT_revokes_connection_authority(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Terminal     []domain.Event
 			Disconnected []domain.Event
 			Reconnected  []domain.Event
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Terminal: []domain.Event{
 				domain.Quit{
 					Source:  domain.ClientSource(protocol.UserClientID, "testuser"),
@@ -1204,11 +1186,7 @@ func TestSession_user_QUIT_revokes_connection_authority(t *testing.T) {
 			Reconnected: []domain.Event{
 				domain.Welcome{ServerName: domain.StatusServerName, Nick: "testuser", At: fixedTime},
 			},
-		}, struct {
-			Terminal     []domain.Event
-			Disconnected []domain.Event
-			Reconnected  []domain.Event
-		}{
+		}, assertionSnapshot{
 			Terminal:     terminalEvents,
 			Disconnected: disconnectedEvents,
 			Reconnected:  reconnectedEvents,
@@ -1251,11 +1229,13 @@ func TestSession_dispatch_done_does_not_cross_a_user_reconnect(t *testing.T) {
 		synctest.Wait()
 		reconnected := collectEmittedEvents(t, sess)
 
-		require.Equal(t, struct {
+		type assertionSnapshot struct {
 			Started     []domain.Event
 			Terminal    []domain.Event
 			Reconnected []domain.Event
-		}{
+		}
+
+		require.Equal(t, assertionSnapshot{
 			Started: []domain.Event{domain.ModelDispatchStarted{
 				Source: domain.ClientSource(botty.ID(), botty.Nick()), At: fixedTime,
 			}},
@@ -1271,11 +1251,7 @@ func TestSession_dispatch_done_does_not_cross_a_user_reconnect(t *testing.T) {
 					ServerName: domain.StatusServerName, Nick: "testuser", At: fixedTime,
 				},
 			},
-		}, struct {
-			Started     []domain.Event
-			Terminal    []domain.Event
-			Reconnected []domain.Event
-		}{
+		}, assertionSnapshot{
 			Started: started, Terminal: terminal, Reconnected: reconnected,
 		})
 	})

@@ -2,8 +2,10 @@ package modelclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -51,21 +53,45 @@ type turnRequest struct {
 	// history is the window's transcript as it stood before the
 	// burst, replies is the instance's own point-to-point replies,
 	// and events is the current chronological burst. triggers is the
-	// subset that authorised the turn, while latestTrigger identifies
-	// its newest member within events.
-	history       []domain.StoredEvent
-	replies       []storedReply
-	events        []protocol.IRCMessage
-	triggers      []protocol.IRCMessage
-	latestTrigger int
+	// subset that authorised the turn.
+	history  []domain.StoredEvent
+	replies  []storedReply
+	events   []protocol.IRCMessage
+	triggers []protocol.IRCMessage
+}
 
-	// tokenBudget is the turn's transcript token budget (see
-	// [history.TokenBudget]). [composeTranscriptBudget] spends it once
-	// across the context lines, `history`, `replies` and `triggers`
-	// together before any of them is rendered. Trimming them
-	// independently would let each fit its own share of the budget
-	// while their sum still overran the model's context.
-	tokenBudget int
+// deferredTurnJournal opens the journal on the first request a turn
+// renders. Context compaction runs before the dispatch request, so
+// that first request may be a summary round trip.
+type deferredTurnJournal struct {
+	queue   *journalQueue
+	journal TurnJournal
+	guard   protocol.WindowGuard
+	turn    store.ModelTurn
+	now     func() time.Time
+
+	writer *turnJournalWriter
+}
+
+func (j *deferredTurnJournal) recordRequest(request api.RenderedEventRequest) {
+	if j.writer != nil {
+		j.writer.request(request)
+
+		return
+	}
+
+	j.turn.StartedAt = j.now()
+	j.writer = beginTurnJournal(
+		j.queue, j.journal, j.guard, j.turn, journalInput(request), j.now,
+	)
+}
+
+func (j *deferredTurnJournal) recordAssistant(result api.ContextSummaryResult) {
+	j.writer.assistant(api.CompletionResult{
+		AssistantText: result.Summary,
+		RequestID:     result.RequestID,
+		Usage:         result.Usage,
+	})
 }
 
 type timedMessage struct {
@@ -140,13 +166,15 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 			return fmt.Errorf("read memories for %s: %w", nick, err)
 		}
 
-		contextLines := contextReplies(turn.window, memories)
+		storedSummaries, err := mc.readContextSummaries(ctx, turn.guard)
+		if err != nil {
+			return err
+		}
 
 		if err := mc.ensure(ctx, inst.ModelID); err != nil {
 			return observability.ErrWithKind(fmt.Errorf("send events to %s: %w", nick, err), classifyEnsureModelError(err))
 		}
-		mc.hist.SetContextLen(mc.contextLenFn(inst.ModelID))
-		turn.tokenBudget = mc.hist.TokenBudget()
+		contextLength := mc.contextLenFn(inst.ModelID)
 
 		projection, err := newProviderTargetProjection(ctx, mc.sess, turn.window, inst.ID(), nick)
 		if err != nil {
@@ -156,13 +184,6 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 
 			return observability.ErrWithKind(err, observability.ErrorKindClientState)
 		}
-		historyEvents, replyEvents, events := composeProjectedTranscriptBudget(
-			projection, contextLines, turn.history, turn.replies, turn.events,
-			turn.latestTrigger, turn.tokenBudget,
-		)
-		history := renderTurnHistory(historyEvents, replyEvents, contextLines, projection)
-		events = projection.messages(events)
-
 		prompt := buildSystemPrompt(turn.window, nick, inst.Persona())
 
 		var mem MemoryExecutor
@@ -180,29 +201,67 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 		)
 
 		definitions := registry.Definitions()
-		renderedRequest, err := turn.api.RenderEventRequest(
-			inst.ModelID,
-			inst.ID(),
-			prompt,
-			history,
-			events,
-			definitions...,
+		rawRecent := renderTurnHistory(
+			turn.history, turn.replies, nil, providerTargetProjection{},
 		)
-		if err != nil {
-			return observability.ErrWithKind(err, observability.ErrorKindClientState)
-		}
-		var journal *turnJournalWriter
-		startJournal := func() *turnJournalWriter {
-			journal = beginTurnJournal(
-				mc.journalQueue, mc.journal, turn.guard, store.ModelTurn{
-					InstanceID: inst.ID(),
-					Window:     turn.window.Target(),
-					ModelID:    inst.ModelID,
-					StartedAt:  mc.sess.Now(),
-				}, journalInput(renderedRequest), mc.sess.Now,
-			)
+		relevantMemoryContext := slices.Concat(rawRecent, turn.events)
+		contextLines := contextReplies(turn.window, memories, relevantMemoryContext)
+		projectedRecent := renderTurnHistory(
+			turn.history, turn.replies, nil, projection,
+		)
+		summarized := summarizedPrefix(rawRecent, turn.events, storedSummaries)
 
-			return journal
+		journal := deferredTurnJournal{
+			queue:   mc.journalQueue,
+			journal: mc.journal,
+			guard:   turn.guard,
+			turn: store.ModelTurn{
+				InstanceID: inst.ID(),
+				Window:     turn.window.Target(),
+				ModelID:    inst.ModelID,
+			},
+			now: mc.sess.Now,
+		}
+
+		planRequest := contextPlanRequest{
+			renderer: turn.api,
+			modelID:  inst.ModelID, instanceID: inst.ID(),
+			prompt:       prompt,
+			currentState: projection.messages(contextLines),
+			summaries:    projection.messages(contextSummaryMessages(turn.window, storedSummaries)),
+			recent:       projectedRecent[summarized.recent:],
+			events:       projection.messages(turn.events[summarized.events:]),
+			tools:        definitions, contextLength: contextLength,
+		}
+		summarizer, _ := turn.api.(api.ContextSummarizer)
+		plan, err := compactContextPlan(ctx, contextCompactionRequest{
+			plan:      planRequest,
+			rawRecent: rawRecent[summarized.recent:],
+			rawEvents: turn.events[summarized.events:],
+			summaries: storedSummaries, window: turn.window, projection: projection,
+			contexts: mc.contexts, guard: turn.guard, summarizer: summarizer,
+			now:           mc.sess.Now,
+			recordRequest: journal.recordRequest, recordAssistant: journal.recordAssistant,
+		})
+		if err != nil {
+			journal.writer.outcome(turnOutcome{}, err)
+
+			return observability.ErrWithKind(err, contextPlanErrorKind(err))
+		}
+		history := plan.ProviderHistory()
+		events := plan.Events
+		renderedRequest := plan.Request
+		span.SetAttributes(
+			attribute.Int(observability.AttrContextLength, plan.Budget.ContextLength),
+			attribute.Int(observability.AttrPromptLimit, plan.Budget.PromptLimit),
+			attribute.Int(observability.AttrPromptEstimate, plan.Budget.EstimatedPrompt),
+			attribute.Int(observability.AttrRequestBytes, plan.Budget.RequestBytes),
+			attribute.Bool(observability.AttrContextFits, plan.Budget.Fits),
+		)
+		startJournal := func() *turnJournalWriter {
+			journal.recordRequest(renderedRequest)
+
+			return journal.writer
 		}
 
 		outcome, turnErr := runTurn(ctx, runTurnRequest{
@@ -221,7 +280,10 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 			startJournal: startJournal,
 			retry:        mc.retry,
 		})
-		journal.outcome(outcome, turnErr)
+		journal.writer.outcome(outcome, turnErr)
+		if errors.Is(turnErr, api.ErrPromptTooLong) && outcome.toolTurnCount == 0 {
+			recordPromptRejection(turn.api, inst.ModelID, plan.Budget)
+		}
 		if turnErr != nil {
 			return observability.ErrWithKind(
 				fmt.Errorf("send events to %s: %w", nick, turnErr),
@@ -246,6 +308,34 @@ func (mc *ModelClient) dispatchToInstance(ctx context.Context, turn turnRequest)
 
 		return nil
 	})
+}
+
+// recordPromptRejection tells the provider client that the request
+// this plan measured was refused for length, so the estimate it
+// answers with next puts a request that size over the limit and the
+// next plan compacts. It runs only for a refusal of the turn's own
+// dispatch request: a refused tool-loop continuation carries the
+// conversation so far and is larger than what `budget` measured.
+func recordPromptRejection(client api.Client, modelID domain.ModelID, budget ContextBudget) {
+	estimator, ok := client.(api.PromptTokenEstimator)
+	if !ok || budget.RequestBytes <= 0 || budget.PromptLimit <= 0 {
+		return
+	}
+
+	estimator.RecordPromptRejection(modelID, budget.RequestBytes, budget.PromptLimit)
+}
+
+func contextPlanErrorKind(err error) string {
+	if kind := observability.ErrorKindOf(err); kind != "" {
+		return kind
+	}
+
+	var contextWindowExceeded *ContextWindowExceededError
+	if errors.As(err, &contextWindowExceeded) || errors.Is(err, errDispatchWindowClosed) {
+		return observability.ErrorKindClientState
+	}
+
+	return observability.ErrorKindDispatch
 }
 
 // triggerSummary formats trigger events as a short description string.

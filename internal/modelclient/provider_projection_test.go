@@ -17,6 +17,7 @@ import (
 	"github.com/laney/modeloff/internal/api/apitest"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/protocol"
+	"github.com/laney/modeloff/internal/store"
 )
 
 type providerTranscript struct {
@@ -132,10 +133,8 @@ func TestModelClient_current_event_budget_keeps_the_dispatch_trigger(t *testing.
 	window := testChannelContext(domain.NewChannelWindow("#dev", at))
 	err := mc.dispatchToInstance(t.Context(), turnRequest{
 		api: upstream, window: window, target: protocol.ChannelTarget("#dev"),
-		events:        []protocol.IRCMessage{trigger, senderHistory},
-		triggers:      []protocol.IRCMessage{trigger},
-		latestTrigger: 0,
-		tokenBudget:   estimateMessageTokens(trigger),
+		events:   []protocol.IRCMessage{trigger, senderHistory},
+		triggers: []protocol.IRCMessage{trigger},
 	})
 	require.NoError(t, err)
 
@@ -151,12 +150,14 @@ func TestModelClient_current_event_budget_keeps_the_dispatch_trigger(t *testing.
 		records = append(records, record)
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Provider providerTranscript
 		Logs     []map[string]any
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Provider: providerTranscript{
-			History: []protocol.IRCMessage{},
+			History: nil,
 			Events:  []protocol.IRCMessage{trigger, senderHistory},
 		},
 		Logs: []map[string]any{{
@@ -171,10 +172,7 @@ func TestModelClient_current_event_budget_keeps_the_dispatch_trigger(t *testing.
 			"msg":             "dispatch to instance",
 			"level":           "INFO",
 		}},
-	}, struct {
-		Provider providerTranscript
-		Logs     []map[string]any
-	}{
+	}, assertionSnapshot{
 		Provider: provider,
 		Logs:     records,
 	})
@@ -212,36 +210,64 @@ func TestModelClient_refreshes_the_context_budget_before_the_first_request(t *te
 		}
 
 		return api.CompletionResult{}, nil
+	}, SummarizeContextFn: func(
+		_ context.Context,
+		_ domain.ModelID,
+		_ domain.InstanceID,
+		_ []string,
+		_ []protocol.IRCMessage,
+	) (api.ContextSummaryResult, error) {
+		return api.ContextSummaryResult{Summary: "Earlier context was compacted."}, nil
 	}}
+	contexts := &recordingContextStore{}
+	sess := newFakeSession()
 	mc := New(Config{
-		Instance: self, Session: newFakeSession(),
+		Instance: self, Session: sess,
 		APIClient: func() api.Client { return upstream },
 		Tools:     NewToolRegistry(),
 		EnsureModel: func(context.Context, domain.ModelID) error {
-			contextLen = 5000
+			contextLen = 6500
 
 			return nil
 		},
 		ContextLen: func(domain.ModelID) int { return contextLen },
+		Contexts:   contexts,
 	})
+	olderMessage, ok := protocol.FromChannelEvent(older.Event)
+	require.True(t, ok)
+	newerMessage, ok := protocol.FromChannelEvent(newer.Event)
+	require.True(t, ok)
 
 	err := mc.dispatchToInstance(t.Context(), turnRequest{
-		api:           upstream,
-		window:        testChannelContext(domain.NewChannelWindow("#dev", at)),
-		target:        protocol.ChannelTarget("#dev"),
-		history:       []domain.StoredEvent{older, newer},
-		events:        []protocol.IRCMessage{trigger},
-		triggers:      []protocol.IRCMessage{trigger},
-		latestTrigger: 0,
+		api:      upstream,
+		window:   testChannelContext(domain.NewChannelWindow("#dev", at)),
+		target:   protocol.ChannelTarget("#dev"),
+		history:  []domain.StoredEvent{older, newer},
+		events:   []protocol.IRCMessage{trigger},
+		triggers: []protocol.IRCMessage{trigger},
 	})
 	require.NoError(t, err)
 
-	newerMessage, ok := protocol.FromChannelEvent(newer.Event)
-	require.True(t, ok)
-	require.Equal(t, providerTranscript{
-		History: []protocol.IRCMessage{newerMessage},
-		Events:  []protocol.IRCMessage{trigger},
-	}, provider)
+	type assertionSnapshot struct {
+		Provider providerTranscript
+		Updates  []store.ContextSummaryUpdate
+	}
+
+	require.Equal(t, assertionSnapshot{
+		Provider: providerTranscript{
+			History: []protocol.IRCMessage{{
+				Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+				Target: "#dev", Body: "summary of earlier context: Earlier context was compacted.",
+				At: sess.Now(),
+			}},
+			Events: []protocol.IRCMessage{trigger},
+		},
+		Updates: []store.ContextSummaryUpdate{{
+			InstanceID: self.ID(), Window: protocol.ChannelWindowTarget("#dev"),
+			Summary: "Earlier context was compacted.",
+			Sources: []protocol.IRCMessage{olderMessage, newerMessage}, CreatedAt: sess.Now(),
+		}},
+	}, assertionSnapshot{Provider: provider, Updates: contexts.updates})
 }
 
 func TestModelClient_dispatch_log_counts_only_real_triggers(t *testing.T) {
@@ -295,10 +321,9 @@ func TestModelClient_dispatch_log_counts_only_real_triggers(t *testing.T) {
 	mc.sub = sess.sub
 
 	err := mc.dispatchTurn(t.Context(), &turnBatch{
-		channel:       "#dev",
-		events:        []protocol.IRCMessage{trigger, senderHistory},
-		triggers:      []protocol.IRCMessage{trigger},
-		latestTrigger: 0,
+		channel:  "#dev",
+		events:   []protocol.IRCMessage{trigger, senderHistory},
+		triggers: []protocol.IRCMessage{trigger},
 	})
 	require.NoError(t, err)
 
@@ -314,12 +339,14 @@ func TestModelClient_dispatch_log_counts_only_real_triggers(t *testing.T) {
 		records = append(records, record)
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Provider providerTranscript
 		Logs     []map[string]any
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Provider: providerTranscript{
-			History: []protocol.IRCMessage{},
+			History: nil,
 			Events:  []protocol.IRCMessage{trigger, senderHistory},
 		},
 		Logs: []map[string]any{{
@@ -334,10 +361,7 @@ func TestModelClient_dispatch_log_counts_only_real_triggers(t *testing.T) {
 			"msg":             "dispatch to instance",
 			"level":           "INFO",
 		}},
-	}, struct {
-		Provider providerTranscript
-		Logs     []map[string]any
-	}{
+	}, assertionSnapshot{
 		Provider: provider,
 		Logs:     records,
 	})
@@ -444,12 +468,14 @@ func TestModelClient_provider_transcript_uses_IRC_nicks_for_DM_targets(t *testin
 			})
 			require.NoError(t, err)
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				Provider    providerTranscript
 				RawTriggers []protocol.IRCMessage
 				Window      protocol.WindowTarget
 				ToolTarget  protocol.MsgTarget
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				Provider: providerTranscript{
 					History: []protocol.IRCMessage{
 						{
@@ -480,12 +506,7 @@ func TestModelClient_provider_transcript_uses_IRC_nicks_for_DM_targets(t *testin
 				RawTriggers: []protocol.IRCMessage{trigger},
 				Window:      protocol.DirectWindowTarget(tc.peerID),
 				ToolTarget:  protocol.ClientTarget(tc.peerID),
-			}, struct {
-				Provider    providerTranscript
-				RawTriggers []protocol.IRCMessage
-				Window      protocol.WindowTarget
-				ToolTarget  protocol.MsgTarget
-			}{
+			}, assertionSnapshot{
 				Provider:    provider,
 				RawTriggers: triggers,
 				Window:      window.Target(),

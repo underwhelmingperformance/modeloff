@@ -971,7 +971,9 @@ func TestManager_DetachAll_abandoned_turn_is_quiet_when_the_store_closes(t *test
 func writeMemoryToolCall(t *testing.T, key, content string) api.CompletionResult {
 	t.Helper()
 
-	args, err := json.Marshal(map[string]any{"key": key, "content": content})
+	args, err := json.Marshal(map[string]any{
+		"key": key, "content": content, "pinned": false,
+	})
 	require.NoError(t, err)
 
 	return api.CompletionResult{PendingToolCalls: []api.PendingToolCall{
@@ -1118,30 +1120,46 @@ func TestSession_AddModel_short_circuits_when_lazy_load_fails(t *testing.T) {
 		"second AddModel must short-circuit and not re-hit ListModels")
 }
 
-// TestDispatch_transcript_token_budget_from_catalogue_context_len
-// proves the transcript token budget engages through the real
-// dispatch/turn call graph, not just [history]'s own unit tests: a
-// model whose cached [api.ModelInfo.ContextLen] is small gets a
-// trimmed `history` argument on its `SendEvents` call once the
-// channel's transcript grows past the budget, while a model whose
-// catalogue entry reports no context length (the common shape for a
-// listing OpenRouter didn't attach one to) keeps the legacy
-// event-count-only bound and sees everything.
+// TestDispatch_context_compaction_uses_the_catalogue_context_length
+// proves the catalogue's context length reaches the complete request
+// planner through the real dispatch path. A known context length
+// compacts old traffic into a durable actor/window summary. An
+// unknown context length preserves the raw transcript.
 //
 // Each of three long messages is sent and waited on individually so
 // it becomes its own turn — the model's `history` argument for turn
 // N is the ring's contents from turns 1..N-1, growing one entry at a
 // time exactly the way a live channel would.
-func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.T) {
-	tests := []struct {
-		name              string
-		contextLen        int
-		wantHistoryLabels [][]string
-	}{
+type dispatchContextCompactionCase struct {
+	name              string
+	contextLen        int
+	wantHistoryLabels [][]string
+	wantSources       []string
+}
+
+type dispatchContextCompactionState struct {
+	Histories [][]protocol.IRCMessage
+	Summaries []storemod.ContextSummary
+}
+
+type contextCompactionTraffic struct {
+	Join     protocol.IRCMessage
+	Messages map[string]protocol.IRCMessage
+	Summary  protocol.IRCMessage
+	State    protocol.IRCMessage
+}
+
+func TestDispatch_context_compaction_uses_the_catalogue_context_length(t *testing.T) {
+	tests := []dispatchContextCompactionCase{
 		{
-			name:              "small ContextLen trims the transcript to the newest entry",
-			contextLen:        2000,
-			wantHistoryLabels: [][]string{{""}, {"first"}, {"second"}},
+			name:       "known context length compacts earlier traffic",
+			contextLen: 6500,
+			wantHistoryLabels: [][]string{
+				{"", "state"},
+				{"summary", "state"},
+				{"summary", "state"},
+			},
+			wantSources: []string{"", "first", "second"},
 		},
 		{
 			// The leading "" is the model's own JOIN, filed into
@@ -1152,89 +1170,173 @@ func TestDispatch_transcript_token_budget_from_catalogue_context_len(t *testing.
 			name:       "context length OpenRouter didn't report keeps every entry",
 			contextLen: 0,
 			wantHistoryLabels: [][]string{
-				{""},
-				{"", "first"},
-				{"", "first", "second"},
+				{"", "state"},
+				{"", "first", "state"},
+				{"", "first", "second", "state"},
 			},
+			wantSources: []string{},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				var histories [][]protocol.IRCMessage
-
-				fake := &apitest.Fake{
-					ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
-						return []api.ModelInfo{{ID: "test/model", ContextLen: tc.contextLen, SupportedParameters: []string{"tools"}}}, nil
-					},
-					SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, _ []protocol.IRCMessage) (api.CompletionResult, error) {
-						histories = append(histories, history)
-						return api.CompletionResult{}, nil
-					},
-				}
-
-				sess, _, mgr, user := newTestSessionWithManager(t, fake, "test-key")
-				ctx := t.Context()
-				eventAt := time.Now()
-
-				// Warm the catalogue cache up front so CachedContextLen
-				// has something to report from the model's very first
-				// turn, not just after it happens to lazy-load.
-				_, err := mgr.ListModels(ctx)
-				require.NoError(t, err)
-
-				seedChannel(t, user, "#dev")
-				require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", ""))
-				synctest.Wait()
-				modelID, modelNick, err := sess.ResolveNick(ctx, "fakenick")
-				require.NoError(t, err)
-
-				// Each body is long enough that two of them together
-				// overflow even the smallest budget
-				// [tokenBudgetForContextLen]'s floor allows, while one
-				// alone still fits comfortably under it.
-				big := strings.Repeat("x", 4000)
-
-				for _, label := range []string{"first", "second", "third"} {
-					_, err := user.SendMessage(ctx, domain.WindowKey("#dev"), label+" "+big)
-					require.NoError(t, err)
-					synctest.Wait()
-				}
-
-				join := protocol.IRCMessage{
-					Kind:   protocol.KindJoin,
-					Source: domain.ClientSource(modelID, modelNick),
-					Target: "#dev",
-					At:     eventAt,
-				}
-				messages := map[string]protocol.IRCMessage{}
-				for _, label := range []string{"first", "second", "third"} {
-					messages[label] = protocol.IRCMessage{
-						Kind:   protocol.KindPrivMsg,
-						Source: domain.ClientSource(protocol.UserClientID, "testuser"),
-						Target: "#dev",
-						Body:   label + " " + big,
-						At:     eventAt,
-					}
-				}
-
-				wantHistories := make([][]protocol.IRCMessage, len(tc.wantHistoryLabels))
-				for turn, labels := range tc.wantHistoryLabels {
-					for _, label := range labels {
-						if label == "" {
-							wantHistories[turn] = append(wantHistories[turn], join)
-							continue
-						}
-
-						wantHistories[turn] = append(wantHistories[turn], messages[label])
-					}
-				}
-
-				require.Equal(t, wantHistories, histories)
+				runDispatchContextCompactionCase(t, tc)
 			})
 		})
 	}
+}
+
+func runDispatchContextCompactionCase(t *testing.T, tc dispatchContextCompactionCase) {
+	t.Helper()
+
+	var histories [][]protocol.IRCMessage
+	fake := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return []api.ModelInfo{{
+				ID: "test/model", ContextLen: tc.contextLen,
+				SupportedParameters: []string{"tools"},
+			}}, nil
+		},
+		SendEventsFn: func(
+			_ context.Context,
+			_ domain.ModelID,
+			_ domain.InstanceID,
+			_ api.SystemPrompt,
+			history []protocol.IRCMessage,
+			_ []protocol.IRCMessage,
+		) (api.CompletionResult, error) {
+			histories = append(histories, slices.Clone(history))
+
+			return api.CompletionResult{}, nil
+		},
+		SummarizeContextFn: func(
+			context.Context,
+			domain.ModelID,
+			domain.InstanceID,
+			[]string,
+			[]protocol.IRCMessage,
+		) (api.ContextSummaryResult, error) {
+			return api.ContextSummaryResult{Summary: "Earlier channel traffic was compacted."}, nil
+		},
+	}
+
+	sess, eventStore, mgr, user := newTestSessionWithManager(t, fake, "test-key")
+	ctx := t.Context()
+	eventAt := time.Now()
+
+	_, err := mgr.ListModels(ctx)
+	require.NoError(t, err)
+
+	seedChannel(t, user, "#dev")
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", ""))
+	synctest.Wait()
+	modelID, modelNick, err := sess.ResolveNick(ctx, "fakenick")
+	require.NoError(t, err)
+
+	big := strings.Repeat("x", 4000)
+	for _, label := range []string{"first", "second", "third"} {
+		_, err := user.SendMessage(ctx, domain.WindowKey("#dev"), label+" "+big)
+		require.NoError(t, err)
+		synctest.Wait()
+	}
+
+	traffic := newContextCompactionTraffic(modelID, modelNick, eventAt, big)
+	summaries, err := eventStore.ContextSummaries(
+		ctx, modelID, protocol.ChannelWindowTarget("#dev"),
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, dispatchContextCompactionState{
+		Histories: contextCompactionHistories(tc.wantHistoryLabels, traffic),
+		Summaries: contextCompactionSummaries(tc.wantSources, modelID, eventAt, traffic),
+	}, dispatchContextCompactionState{
+		Histories: histories,
+		Summaries: summaries,
+	})
+}
+
+func newContextCompactionTraffic(
+	modelID domain.InstanceID,
+	modelNick domain.Nick,
+	eventAt time.Time,
+	largeBody string,
+) contextCompactionTraffic {
+	messages := make(map[string]protocol.IRCMessage)
+	for _, label := range []string{"first", "second", "third"} {
+		messages[label] = protocol.IRCMessage{
+			Kind: protocol.KindPrivMsg, Source: domain.ClientSource(protocol.UserClientID, "testuser"),
+			Target: "#dev", Body: label + " " + largeBody, At: eventAt,
+		}
+	}
+
+	return contextCompactionTraffic{
+		Join: protocol.IRCMessage{
+			Kind: protocol.KindJoin, Source: domain.ClientSource(modelID, modelNick),
+			Target: "#dev", At: eventAt,
+		},
+		Messages: messages,
+		Summary: protocol.IRCMessage{
+			Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+			Target: "#dev", Body: "summary of earlier context: Earlier channel traffic was compacted.",
+			At: eventAt.UTC(),
+		},
+		State: protocol.IRCMessage{
+			Kind: protocol.KindServerReply, Source: domain.ServerSource("modeloff"),
+			Target: "#dev", Body: "current state for #dev: modes +; members @testuser fakenick",
+		},
+	}
+}
+
+func contextCompactionHistories(
+	labels [][]string,
+	traffic contextCompactionTraffic,
+) [][]protocol.IRCMessage {
+	histories := make([][]protocol.IRCMessage, len(labels))
+	for turn, entries := range labels {
+		for _, label := range entries {
+			switch label {
+			case "state":
+				histories[turn] = append(histories[turn], traffic.State)
+			case "summary":
+				histories[turn] = append(histories[turn], traffic.Summary)
+			case "":
+				histories[turn] = append(histories[turn], traffic.Join)
+			default:
+				histories[turn] = append(histories[turn], traffic.Messages[label])
+			}
+		}
+	}
+
+	return histories
+}
+
+func contextCompactionSummaries(
+	labels []string,
+	modelID domain.InstanceID,
+	eventAt time.Time,
+	traffic contextCompactionTraffic,
+) []storemod.ContextSummary {
+	if len(labels) == 0 {
+		return []storemod.ContextSummary{}
+	}
+
+	sources := make([]protocol.IRCMessage, 0, len(labels))
+	for _, label := range labels {
+		source := traffic.Messages[label]
+		if label == "" {
+			source = traffic.Join
+		}
+		source.At = source.At.UTC()
+		sources = append(sources, source)
+	}
+
+	return []storemod.ContextSummary{{
+		ID: 1, InstanceID: modelID,
+		Window:  protocol.ChannelWindowTarget("#dev"),
+		Summary: "Earlier channel traffic was compacted.",
+		Sources: sources, CreatedAt: eventAt.UTC(),
+	}}
 }
 
 func TestSession_peer_departure_interrupts_active_model_DM_window(t *testing.T) {

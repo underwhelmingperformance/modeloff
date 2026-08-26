@@ -32,6 +32,11 @@ type sessionGuard interface {
 		turnID store.ModelTurnID,
 		entry store.ModelTurnEntry,
 	) error
+	contextSummaries(ctx context.Context) ([]store.ContextSummary, error)
+	commitContextSummary(
+		ctx context.Context,
+		update store.ContextSummaryUpdate,
+	) (store.ContextSummary, error)
 }
 
 // issuedGuard recovers the session-side authority behind `guard`.

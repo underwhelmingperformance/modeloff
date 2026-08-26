@@ -129,7 +129,7 @@ func TestToolResultPayload_JSON_round_trip(t *testing.T) {
 }
 
 type fakeMemoryExecutor struct {
-	written map[string]string
+	written map[string]memory.Entry
 	deleted []string
 
 	writeErr  error
@@ -138,20 +138,21 @@ type fakeMemoryExecutor struct {
 }
 
 func newFakeMemoryExecutor() *fakeMemoryExecutor {
-	return &fakeMemoryExecutor{written: make(map[string]string)}
+	return &fakeMemoryExecutor{written: make(map[string]memory.Entry)}
 }
 
 func (f *fakeMemoryExecutor) PrepareWriteMemory(
 	_ context.Context,
 	key string,
 	content string,
+	pinned bool,
 ) (memory.PreparedMutation, error) {
 	return memoryEffectFunc(func(context.Context) error {
 		if f.writeErr != nil {
 			return f.writeErr
 		}
 
-		f.written[key] = content
+		f.written[key] = memory.Entry{Key: key, Content: content, Pinned: pinned}
 		return nil
 	}), nil
 }
@@ -202,6 +203,32 @@ func TestMemoryToolRegistry_without_search(t *testing.T) {
 	require.Equal(t, []string{"write_memory", "delete_memory"}, names)
 }
 
+func TestMemoryToolRegistry_write_schema_requires_an_explicit_pin(t *testing.T) {
+	registry := memoryToolRegistry(newFakeMemoryExecutor(), false)
+	spec, ok := registry.Find("write_memory")
+	require.True(t, ok)
+
+	require.Equal(t, map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"key": map[string]any{
+				"type":        "string",
+				"description": "A short, stable identifier for the memory, such as user_name, favourite_topic, or preferred_editor.",
+			},
+			"content": map[string]any{
+				"type":        "string",
+				"description": "The durable fact, preference, or decision to remember.",
+			},
+			"pinned": map[string]any{
+				"type":        "boolean",
+				"description": "Whether this fact is preferred for the short memory line ahead of other memories the conversation does not point at.",
+			},
+		},
+		"required":             []string{"key", "content", "pinned"},
+		"additionalProperties": false,
+	}, spec.Definition.Parameters)
+}
+
 func TestMemoryToolRegistry_descriptions_hold_memory_guidance(t *testing.T) {
 	mem := newFakeMemoryExecutor()
 	registry := memoryToolRegistry(mem, true)
@@ -226,11 +253,13 @@ func TestMemoryToolRegistry_write_executes(t *testing.T) {
 	spec, ok := registry.Find("write_memory")
 	require.True(t, ok)
 
-	args := json.RawMessage(`{"key": "mood", "content": "happy"}`)
+	args := json.RawMessage(`{"key":"mood","content":"happy","pinned":true}`)
 	payload, err := spec.Execute(t.Context(), NewToolContext(validWindowGuard{}, nil, nil, nil), args)
 	require.NoError(t, err)
-	require.True(t, payload.OK)
-	require.Equal(t, "happy", mem.written["mood"])
+	require.Equal(t, ToolResultPayload{OK: true, Summary: `stored memory "mood"`}, payload)
+	require.Equal(t, map[string]memory.Entry{
+		"mood": {Key: "mood", Content: "happy", Pinned: true},
+	}, mem.written)
 }
 
 func TestMemoryToolRegistry_delete_executes(t *testing.T) {
@@ -272,20 +301,20 @@ func TestMemoryToolRegistry_store_failures_are_execution_errors(t *testing.T) {
 		{
 			name:     "write",
 			tool:     "write_memory",
-			args:     json.RawMessage(`{"key":"mood","content":"happy"}`),
-			executor: &fakeMemoryExecutor{written: make(map[string]string), writeErr: sentinel},
+			args:     json.RawMessage(`{"key":"mood","content":"happy","pinned":false}`),
+			executor: &fakeMemoryExecutor{written: make(map[string]memory.Entry), writeErr: sentinel},
 		},
 		{
 			name:     "delete",
 			tool:     "delete_memory",
 			args:     json.RawMessage(`{"key":"mood"}`),
-			executor: &fakeMemoryExecutor{written: make(map[string]string), deleteErr: sentinel},
+			executor: &fakeMemoryExecutor{written: make(map[string]memory.Entry), deleteErr: sentinel},
 		},
 		{
 			name:       "search",
 			tool:       "search_memory",
 			args:       json.RawMessage(`{"query":"mood","limit":5}`),
-			executor:   &fakeMemoryExecutor{written: make(map[string]string), searchErr: sentinel},
+			executor:   &fakeMemoryExecutor{written: make(map[string]memory.Entry), searchErr: sentinel},
 			withSearch: true,
 		},
 	}

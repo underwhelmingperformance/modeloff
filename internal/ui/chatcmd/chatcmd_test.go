@@ -58,20 +58,19 @@ func TestContext_errorResult_preserves_the_issuing_window(t *testing.T) {
 				result.Error.At = time.Time{}
 			}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				OK     bool
 				Result CommandErrorResult
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				OK: true,
 				Result: CommandErrorResult{
 					Error: domain.ErrorEvent{
 						Operation: "join", Err: wantErr, Target: tt.wantTarget,
 					},
 				},
-			}, struct {
-				OK     bool
-				Result CommandErrorResult
-			}{
+			}, assertionSnapshot{
 				OK:     ok,
 				Result: result,
 			})
@@ -113,10 +112,12 @@ func TestInviteCommand_Run_preserves_reply_events_with_a_typed_refusal(t *testin
 		reply.Error.Err = gotRefusal
 	}
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		OK    bool
 		Reply ReplyEvents
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		OK: true,
 		Reply: ReplyEvents{
 			Events: []domain.ProtocolEvent{notice},
@@ -126,10 +127,7 @@ func TestInviteCommand_Run_preserves_reply_events_with_a_typed_refusal(t *testin
 				Target:    "#dev",
 			},
 		},
-	}, struct {
-		OK    bool
-		Reply ReplyEvents
-	}{
+	}, assertionSnapshot{
 		OK:    ok,
 		Reply: reply,
 	})

@@ -164,11 +164,13 @@ func TestChatScreen_CommandError_preserves_a_closed_issuing_window(t *testing.T)
 
 	stored, err := f.store.InstanceRepliesBefore(t.Context(), "", nil, 10)
 	require.NoError(t, err)
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Handled bool
 		Active  domain.ChannelName
 		Stored  []storemod.InstanceReplyRecord
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		Handled: true,
 		Active:  "#other",
 		Stored: []storemod.InstanceReplyRecord{{
@@ -178,11 +180,7 @@ func TestChatScreen_CommandError_preserves_a_closed_issuing_window(t *testing.T)
 				Target: "#other", Err: "topic: store unavailable", At: at,
 			},
 		}},
-	}, struct {
-		Handled bool
-		Active  domain.ChannelName
-		Stored  []storemod.InstanceReplyRecord
-	}{
+	}, assertionSnapshot{
 		Handled: handled,
 		Active:  updated.activeName(),
 		Stored:  stored,

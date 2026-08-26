@@ -33,12 +33,12 @@ func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
 			got, err := queryRows(ctx, s.db,
-				`SELECT key, content, at FROM memories WHERE instance_id = ? ORDER BY key`,
+				`SELECT key, content, at, pinned FROM memories WHERE instance_id = ? ORDER BY key`,
 				[]any{string(id)},
 				func(r rowScanner) (MemoryEntry, error) {
 					var e MemoryEntry
 					var at string
-					if err := r.Scan(&e.Key, &e.Content, &at); err != nil {
+					if err := r.Scan(&e.Key, &e.Content, &at, &e.Pinned); err != nil {
 						return e, err
 					}
 
@@ -60,14 +60,24 @@ func (s *SQLiteStore) ReadMemories(ctx context.Context, id domain.InstanceID) ([
 // caller's clock reading at the moment it decided to remember this
 // fact; an overwrite of an existing key updates it too, so a memory
 // touched again is fresh again.
-func (s *SQLiteStore) WriteMemory(ctx context.Context, id domain.InstanceID, key, content string, at time.Time) error {
+func (s *SQLiteStore) WriteMemory(
+	ctx context.Context,
+	id domain.InstanceID,
+	key string,
+	content string,
+	at time.Time,
+	pinned bool,
+) error {
 	return s.inSpan(ctx, "store.sqlite.write_memory",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
 			return execMutation(ctx, s.db,
-				`INSERT INTO memories (instance_id, key, content, at) VALUES (?, ?, ?, ?)
-				 ON CONFLICT (instance_id, key) DO UPDATE SET content = excluded.content, at = excluded.at`,
-				string(id), key, content, at.Format(time.RFC3339Nano))
+				`INSERT INTO memories (instance_id, key, content, at, pinned) VALUES (?, ?, ?, ?, ?)
+				 ON CONFLICT (instance_id, key) DO UPDATE SET
+					content = excluded.content,
+					at = excluded.at,
+					pinned = excluded.pinned`,
+				string(id), key, content, at.Format(time.RFC3339Nano), pinned)
 		})
 }
 

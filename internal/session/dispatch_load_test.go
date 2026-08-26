@@ -83,7 +83,9 @@ func TestModelClient_load_is_join_scoped(t *testing.T) {
 
 		synctest.Wait()
 
-		require.Equal(t, [][]protocol.IRCMessage{nil}, captured.snapshot(),
+		require.Equal(t, [][]protocol.IRCMessage{{
+			currentChannelStateMessage("#room", "+", "@testuser", "botty"),
+		}}, captured.snapshot(),
 			"the pre-join message must not appear in the prompt history; "+
 				"the load is join-scoped")
 	})
@@ -122,7 +124,9 @@ func TestModelClient_load_fails_closed_on_zero_join(t *testing.T) {
 
 		synctest.Wait()
 
-		require.Equal(t, [][]protocol.IRCMessage{nil}, captured.snapshot(),
+		require.Equal(t, [][]protocol.IRCMessage{{
+			currentChannelStateMessage("#room", "+", "@testuser", "botty"),
+		}}, captured.snapshot(),
 			"a zero join time loads nothing: the load fails closed")
 	})
 }
@@ -180,7 +184,7 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 		synctest.Wait()
 
 		require.Equal(t, [][]protocol.IRCMessage{
-			nil,
+			{currentChannelStateMessage("#general", "+", "@testuser", "botty")},
 			{
 				{
 					Kind:   protocol.KindPrivMsg,
@@ -195,6 +199,7 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 					Body:   "whois target: test/model",
 					At:     fixedTime,
 				},
+				currentChannelStateMessage("#general", "+", "@testuser", "botty"),
 			},
 		}, captured.snapshot(),
 			"botty's own whois reply must re-appear in the latest dispatch's "+

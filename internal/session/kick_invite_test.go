@@ -55,22 +55,18 @@ func TestSession_failed_invitation_write_does_not_grant_join_authority(t *testin
 	window, windowErr := sess.loadChannelWindow(ctx, "#dev")
 
 	var inviteOnly domain.ChannelInviteOnlyError
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		Response          protocol.Response
 		SaveFailed        bool
 		JoinWasRefused    bool
 		WindowError       error
 		InvitationPresent bool
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{
 		SaveFailed:     true,
 		JoinWasRefused: true,
-	}, struct {
-		Response          protocol.Response
-		SaveFailed        bool
-		JoinWasRefused    bool
-		WindowError       error
-		InvitationPresent bool
-	}{
+	}, assertionSnapshot{
 		Response:          resp,
 		SaveFailed:        errors.Is(inviteErr, sentinel),
 		JoinWasRefused:    errors.As(joinErr, &inviteOnly),

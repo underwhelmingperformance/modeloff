@@ -192,13 +192,12 @@ func TestEvent_sum_does_not_expose_mutable_actor_handles(t *testing.T) {
 	sort.Strings(missing)
 	sort.Strings(mutable)
 
-	require.Equal(t, struct {
+	type assertionSnapshot struct {
 		MissingDeclarations []string
 		MutableActorHandles []string
-	}{}, struct {
-		MissingDeclarations []string
-		MutableActorHandles []string
-	}{
+	}
+
+	require.Equal(t, assertionSnapshot{}, assertionSnapshot{
 		MissingDeclarations: missing,
 		MutableActorHandles: mutable,
 	})

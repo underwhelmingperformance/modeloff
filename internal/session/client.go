@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -374,7 +375,19 @@ func (g windowGuard) Context(ctx context.Context) (protocol.WindowContext, error
 }
 
 func projectedChannelWindowContext(window *domain.ChannelWindow) channelWindowContext {
-	context := channelWindowContext{name: window.Name()}
+	members := window.Members
+	if window.Modes.Anonymous {
+		members = domain.AnonymousMembers()
+	}
+
+	state := protocol.ChannelState{Modes: window.Modes}
+	for member := range members.All() {
+		state.Members = append(state.Members, protocol.ChannelMemberState{
+			Nick: member.Nick, Modes: member.Modes,
+		})
+	}
+
+	context := channelWindowContext{name: window.Name(), state: &state}
 	if window.Topic != "" {
 		setter := window.TopicSetBy
 		if window.Modes.Anonymous && setter != "" {
@@ -395,11 +408,22 @@ func projectedChannelWindowContext(window *domain.ChannelWindow) channelWindowCo
 
 type channelWindowContext struct {
 	name  domain.ChannelName
+	state *protocol.ChannelState
 	topic *domain.TopicInfo
 }
 
 func (c channelWindowContext) Target() protocol.WindowTarget {
 	return protocol.ChannelWindowTarget(c.name)
+}
+func (c channelWindowContext) ChannelState() (protocol.ChannelState, bool) {
+	if c.state == nil {
+		return protocol.ChannelState{}, false
+	}
+
+	state := *c.state
+	state.Members = slices.Clone(state.Members)
+
+	return state, true
 }
 func (c channelWindowContext) Topic() (domain.TopicInfo, bool) {
 	if c.topic == nil {
@@ -415,6 +439,9 @@ type directWindowContext struct {
 
 func (c directWindowContext) Target() protocol.WindowTarget {
 	return protocol.DirectWindowTarget(c.peer)
+}
+func (directWindowContext) ChannelState() (protocol.ChannelState, bool) {
+	return protocol.ChannelState{}, false
 }
 func (directWindowContext) Topic() (domain.TopicInfo, bool) {
 	return domain.TopicInfo{}, false

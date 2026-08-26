@@ -314,11 +314,19 @@ func (validWindowGuard) Send(
 }
 
 type testWindowContext struct {
-	target protocol.WindowTarget
-	topic  *domain.TopicInfo
+	target       protocol.WindowTarget
+	channelState *protocol.ChannelState
+	topic        *domain.TopicInfo
 }
 
 func (c testWindowContext) Target() protocol.WindowTarget { return c.target }
+func (c testWindowContext) ChannelState() (protocol.ChannelState, bool) {
+	if c.channelState == nil {
+		return protocol.ChannelState{}, false
+	}
+
+	return *c.channelState, true
+}
 func (c testWindowContext) Topic() (domain.TopicInfo, bool) {
 	if c.topic == nil {
 		return domain.TopicInfo{}, false
@@ -527,24 +535,20 @@ func TestModelClient_Attach_refuses_incomplete_channel_history(t *testing.T) {
 			default:
 			}
 
-			require.Equal(t, struct {
+			type assertionSnapshot struct {
 				HistoryError   bool
 				Activated      bool
 				Closed         bool
 				ScrollbackRead int
 				ReplyReads     int
-			}{
+			}
+
+			require.Equal(t, assertionSnapshot{
 				HistoryError:   true,
 				Closed:         true,
 				ScrollbackRead: tc.wantScrollbackRead,
 				ReplyReads:     tc.wantReplyReads,
-			}, struct {
-				HistoryError   bool
-				Activated      bool
-				Closed         bool
-				ScrollbackRead int
-				ReplyReads     int
-			}{
+			}, assertionSnapshot{
 				HistoryError:   errors.Is(err, sentinel),
 				Activated:      sess.sub.activated,
 				Closed:         closed,
