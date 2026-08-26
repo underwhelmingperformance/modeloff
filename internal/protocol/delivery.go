@@ -40,6 +40,10 @@ import (
 // order and does not treat the event as a new-turn trigger or an IRC
 // echo.
 //
+// `History` identifies the durable rows that contain this recipient's
+// projected event. A replay-capable client can use these opaque references to
+// deduplicate private derived state across live delivery and later replay.
+//
 // Domain types stay free of observability metadata: the protocol
 // package owns the envelope; the persistence layer (`AppendEvent`
 // / `EventsBefore`) sees the inner [Event] only.
@@ -47,6 +51,7 @@ type Delivery struct {
 	Event       Event
 	Targets     []domain.ChannelName
 	Window      WindowTarget
+	History     []HistoryRef
 	SpanCtx     trace.SpanContext
 	HistoryOnly bool
 }

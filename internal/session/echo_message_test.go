@@ -123,6 +123,7 @@ func TestReplayClient_receives_its_own_message_for_ordered_history(t *testing.T)
 
 		require.Equal(t, []protocol.Delivery{{
 			Event:       message,
+			History:     []protocol.HistoryRef{protocol.ChannelHistoryRef(1, "#chan")},
 			HistoryOnly: true,
 		}}, collectProtocolDeliveries(client))
 	})

@@ -39,6 +39,7 @@ import (
 	"github.com/laney/modeloff/internal/observability"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/session"
+	"github.com/laney/modeloff/internal/store"
 )
 
 // Store is the persistence surface the manager depends on. The
@@ -58,6 +59,12 @@ type Store interface {
 	SavePersona(ctx context.Context, p domain.Persona) error
 	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
 	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
+	AppendReflectionEvents(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		candidates []store.ReflectionEventCandidate,
+		createdAt time.Time,
+	) error
 }
 
 // Config is the construction-time configuration for a [Manager].
@@ -881,6 +888,8 @@ func (m *Manager) Attach(
 		Pacer:           m.pacer,
 		Journal:         sess,
 		Contexts:        sess,
+		Reflections:     m.store,
+		Now:             m.now,
 	})
 	attaching := &clientAttachment{done: make(chan struct{})}
 	m.clients[id] = mc

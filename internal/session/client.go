@@ -1199,7 +1199,11 @@ func (c *serverClient) channelScrollback(
 		}
 	}
 
-	return scrollbackEntries(stored), nil
+	return scrollbackEntries(
+		stored,
+		protocol.HistorySourceChannelScrollback,
+		protocol.ChannelWindowTarget(window),
+	), nil
 }
 
 // firstQueuedScrollbackID returns the first projected row for
@@ -1269,20 +1273,45 @@ func (c *serverClient) dmScrollback(
 	}
 	c.outMu.Unlock()
 
-	return scrollbackEntries(stored), nil
+	return scrollbackEntries(
+		stored,
+		protocol.HistorySourceEvent,
+		protocol.DirectWindowTarget(peer),
+	), nil
 }
 
-func scrollbackEntries(stored []domain.StoredEvent) []protocol.ScrollbackEntry {
+func scrollbackEntries(
+	stored []domain.StoredEvent,
+	kind protocol.HistorySourceKind,
+	window protocol.WindowTarget,
+) []protocol.ScrollbackEntry {
 	entries := make([]protocol.ScrollbackEntry, 0, len(stored))
 	for _, event := range stored {
 		if event.Event == nil {
 			continue
 		}
 
-		entries = append(entries, protocol.ScrollbackEntry{Event: event.Event})
+		entries = append(entries, protocol.ScrollbackEntry{
+			Event:   event.Event,
+			History: historyRef(kind, event.ID, window),
+		})
 	}
 
 	return entries
+}
+
+func historyRef(
+	kind protocol.HistorySourceKind,
+	id int64,
+	window protocol.WindowTarget,
+) protocol.HistoryRef {
+	if kind == protocol.HistorySourceChannelScrollback {
+		channel, _ := protocol.ChannelWindowName(window)
+		return protocol.ChannelHistoryRef(id, channel)
+	}
+
+	peer, _ := protocol.DirectWindowPeer(window)
+	return protocol.DirectHistoryRef(id, peer)
 }
 
 // Unsubscribe removes the client from the session's subscriber

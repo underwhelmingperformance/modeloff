@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 15
+const SchemaVersion = 16
 
 type schemaTooNewError struct {
 	Found     int
@@ -596,6 +596,39 @@ var migrations = []migration{
 				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
 					return fmt.Errorf("%s: %w", statement.name, err)
 				}
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 16,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE reflection_events (
+					sequence     INTEGER PRIMARY KEY,
+					instance_id  TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+					source_kind  INTEGER NOT NULL,
+					source_id    INTEGER NOT NULL,
+					window_kind  INTEGER NOT NULL,
+					window_key   TEXT NOT NULL,
+					message      TEXT NOT NULL,
+					substantive  INTEGER NOT NULL,
+					event_at     TEXT NOT NULL,
+					created_at   TEXT NOT NULL,
+					UNIQUE (
+						instance_id, source_kind, source_id,
+						window_kind, window_key, message
+					)
+				)
+			`); err != nil {
+				return fmt.Errorf("create reflection events: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX idx_reflection_events_instance
+					ON reflection_events (instance_id, sequence)
+			`); err != nil {
+				return fmt.Errorf("index reflection events: %w", err)
 			}
 
 			return nil

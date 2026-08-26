@@ -207,7 +207,9 @@ func TestSession_anonymous_member_mode_hides_the_user_subject(t *testing.T) {
 				modeChanges = append(modeChanges, entry)
 			}
 		}
-		require.Equal(t, []protocol.ScrollbackEntry{{Event: masked}}, modeChanges)
+		require.Equal(t, []protocol.ScrollbackEntry{{
+			Event: masked, History: protocol.ChannelHistoryRef(2, "#anon"),
+		}}, modeChanges)
 	})
 }
 

@@ -77,9 +77,18 @@ func newFakeSession() *fakeSession {
 		stored := append([]domain.StoredEvent(nil), f.dmThreads[peer]...)
 		f.mu.Unlock()
 
+		// A real DM scrollback entry carries the history reference its
+		// row was read under, which is what makes the entry replayable
+		// and what the reflection stream records it by.
 		entries := make([]protocol.ScrollbackEntry, 0, len(stored))
 		for _, event := range stored {
-			entries = append(entries, protocol.ScrollbackEntry{Event: event.Event})
+			entries = append(entries, protocol.ScrollbackEntry{
+				Event: event.Event,
+				History: protocol.HistoryRef{
+					Kind: protocol.HistorySourceEvent, ID: event.ID,
+					Window: protocol.DirectWindowTarget(peer),
+				},
+			})
 		}
 
 		return entries, nil

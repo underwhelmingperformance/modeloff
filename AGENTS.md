@@ -1099,7 +1099,8 @@ the private reply log, and runs an orphan pass that removes rows whose
 instance or channel has been deleted. Model turns are trimmed inside
 the transaction that opens one, by turn count and by total entry
 bytes. Context summary sources are trimmed per actor and window by the
-transaction that commits a summary.
+transaction that commits a summary. The reflection inbox is trimmed on
+every append.
 
 ### Window authority and the turn journal
 
@@ -1241,6 +1242,28 @@ A tendency leaves the active set three ways: a retraction, a
 supersession by a newer tendency, or consolidation into an accepted
 description. All three keep the row and its citations, so the trail
 from a description back to what it was built from survives.
+
+### The reflection inbox
+
+Reflection reads from a private per-instance stream and not from the
+shared channel log. Each model-client files the deliveries of every
+dispatch batch, and the scrollback it loads at attach, into
+`reflection_events` under its own instance id. A row records the
+delivery's history reference, the rendered IRC message, and whether it
+is substantive, which means a message somebody else wrote. The insert
+is idempotent on the instance, the history reference, the window and
+the rendered message together, so replaying a source the client has
+already filed allocates no second sequence.
+
+The stream is trimmed on every append to the newest
+`reflectionEventRetentionHeadroom` events that no accepted experience
+cites. An event a revision was built from is therefore kept for as
+long as the experience citing it is kept, which is what lets an
+operator read back what a clause rests on.
+
+With reflection disabled the manager records nothing, so a default
+configuration pays no store write per dispatch batch, and enabling
+reflection starts the stream from that point.
 
 ## External libraries
 

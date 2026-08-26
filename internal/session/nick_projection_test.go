@@ -163,6 +163,9 @@ func TestSession_nick_projection_failure_rolls_back_the_rename(t *testing.T) {
 			ModelConnected: true,
 			Deliveries: []protocol.Delivery{{
 				Event: nickChange, Targets: []domain.ChannelName{"#general"},
+				History: []protocol.HistoryRef{
+					protocol.ChannelHistoryRef(expectedProjection[len(expectedProjection)-1].ID, "#general"),
+				},
 			}},
 		}, nickProjectionState{
 			Response:           retryResponse,

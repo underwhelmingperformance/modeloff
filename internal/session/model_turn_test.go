@@ -227,6 +227,9 @@ func testSessionQuitCommitsRecipientProjectionWithDeletion(t *testing.T, anonymo
 			Projection:   wantProjection,
 			Deliveries: []protocol.Delivery{{
 				Event: deliveryEvent, Targets: deliveryTargets,
+				History: []protocol.HistoryRef{
+					protocol.ChannelHistoryRef(wantProjection[len(wantProjection)-1].ID, "#dev"),
+				},
 			}},
 		}, assertionSnapshot{
 			Result:          actualResult,
@@ -315,13 +318,20 @@ func TestSession_quit_serialises_committed_projection_with_replay(t *testing.T) 
 		require.Equal(t, assertionSnapshot{
 			Snapshot: []protocol.ScrollbackEntry{},
 			Deliveries: []protocol.Delivery{
-				{Event: peerJoin},
+				{Event: peerJoin, History: []protocol.HistoryRef{
+					protocol.ChannelHistoryRef(1, "#dev"),
+				}},
 				{Event: domain.NamesReplyEvent{
 					Channel: "#dev", Members: joinedMembers, At: fixedTime,
 				}},
 				{Event: domain.NamesEnd{Channel: "#dev", At: fixedTime}},
-				{Event: actorJoin},
-				{Event: quit, Targets: []domain.ChannelName{"#dev"}},
+				{Event: actorJoin, History: []protocol.HistoryRef{
+					protocol.ChannelHistoryRef(2, "#dev"),
+				}},
+				{
+					Event: quit, Targets: []domain.ChannelName{"#dev"},
+					History: []protocol.HistoryRef{protocol.ChannelHistoryRef(3, "#dev")},
+				},
 			},
 		}, assertionSnapshot{
 			Result:             actualResult,

@@ -248,11 +248,48 @@ type ModelDispatch interface {
 	Done(ctx context.Context, event domain.ModelDispatchDone)
 }
 
-// ScrollbackEntry is one ordered event in an actor's visible
-// scrollback. Store row identifiers remain inside the session; the
-// actor receives only the event it could have observed.
+// HistorySourceKind identifies the durable log that supplied an actor-visible
+// event.
+type HistorySourceKind uint8
+
+const (
+	// HistorySourceEvent identifies a row in the canonical event log.
+	HistorySourceEvent HistorySourceKind = iota + 1
+	// HistorySourceChannelScrollback identifies a recipient-projected channel
+	// scrollback row.
+	HistorySourceChannelScrollback
+)
+
+// HistoryRef is an opaque identity for one event in an actor's visible
+// history. It allows private derived state to deduplicate live delivery and
+// replay without granting access to the underlying store row.
+type HistoryRef struct {
+	Kind   HistorySourceKind
+	ID     int64
+	Window WindowTarget
+}
+
+// ChannelHistoryRef identifies one recipient-projected channel row.
+func ChannelHistoryRef(id int64, channel domain.ChannelName) HistoryRef {
+	return HistoryRef{
+		Kind: HistorySourceChannelScrollback, ID: id,
+		Window: ChannelWindowTarget(channel),
+	}
+}
+
+// DirectHistoryRef identifies one canonical event row in a direct
+// conversation.
+func DirectHistoryRef(id int64, peer domain.InstanceID) HistoryRef {
+	return HistoryRef{
+		Kind: HistorySourceEvent, ID: id,
+		Window: DirectWindowTarget(peer),
+	}
+}
+
+// ScrollbackEntry is one ordered event in an actor's visible scrollback.
 type ScrollbackEntry struct {
-	Event domain.PersistableEvent
+	Event   domain.PersistableEvent
+	History HistoryRef
 }
 
 // ReplyEntry is one private issuer reply together with the window in

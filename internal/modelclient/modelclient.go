@@ -10,7 +10,10 @@ package modelclient
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"slices"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -100,6 +103,8 @@ type ModelClient struct {
 	pacer        *Pacer
 	journal      TurnJournal
 	contexts     ContextStore
+	reflections  ReflectionInbox
+	now          func() time.Time
 
 	dispatchContext context.Context
 	journalQueue    *journalQueue
@@ -156,6 +161,16 @@ type ContextStore interface {
 	) (store.ContextSummary, error)
 }
 
+// ReflectionInbox is the durable candidate stream used by persona reflection.
+type ReflectionInbox interface {
+	AppendReflectionEvents(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		candidates []store.ReflectionEventCandidate,
+		createdAt time.Time,
+	) error
+}
+
 // Config contains the lifetime dependencies of a [ModelClient].
 type Config struct {
 	Instance        *domain.Instance
@@ -171,6 +186,8 @@ type Config struct {
 	Pacer           *Pacer
 	Journal         TurnJournal
 	Contexts        ContextStore
+	Reflections     ReflectionInbox
+	Now             func() time.Time
 }
 
 // New returns an unattached `ModelClient` for cfg.Instance. The client is
@@ -216,7 +233,10 @@ func New(cfg Config) *ModelClient {
 	if cfg.JournalContext == nil {
 		cfg.JournalContext = dispatchContext
 	}
-	return &ModelClient{
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	mc := &ModelClient{
 		instance:        cfg.Instance,
 		attachment:      cfg.Attachment,
 		sess:            cfg.Session,
@@ -228,12 +248,17 @@ func New(cfg Config) *ModelClient {
 		pacer:           cfg.Pacer,
 		journal:         cfg.Journal,
 		contexts:        cfg.Contexts,
+		reflections:     cfg.Reflections,
+		now:             cfg.Now,
 		dispatchContext: dispatchContext,
 		journalQueue:    newJournalQueue(cfg.JournalContext),
 		hist:            newHistory(),
 		retry:           defaultRetryPolicy(),
 		redispatch:      make(chan *turnBatch),
 	}
+	mc.hist.observeSeed = mc.recordReflectionEntries
+
+	return mc
 }
 
 // noContextLen is the permissive default consulted when a
@@ -514,6 +539,7 @@ func (mc *ModelClient) Detach() {
 // so loaded events are never delivered as triggers. DM targets are not
 // loaded here; they lazy-seed in [history.snapshot] on the first turn.
 func (mc *ModelClient) loadHistory(ctx context.Context, sub protocol.Subscription) error {
+	var reflectionSeed []protocol.ScrollbackEntry
 	if channels := mc.instance.Channels(); channels != nil {
 		for pair := channels.Oldest(); pair != nil; pair = pair.Next() {
 			ch := pair.Key
@@ -528,6 +554,7 @@ func (mc *ModelClient) loadHistory(ctx context.Context, sub protocol.Subscriptio
 				return fmt.Errorf("load channel %q replies: %w", ch, err)
 			}
 
+			reflectionSeed = append(reflectionSeed, seed...)
 			mc.hist.seedChannel(ch, storedScrollback(seed))
 			mc.hist.seedReplies(protocol.ChannelWindowTarget(ch), replies)
 		}
@@ -539,6 +566,10 @@ func (mc *ModelClient) loadHistory(ctx context.Context, sub protocol.Subscriptio
 	}
 
 	mc.hist.seedReplies(nil, replies)
+	slices.SortStableFunc(reflectionSeed, func(a, b protocol.ScrollbackEntry) int {
+		return domain.EventTime(a.Event).Compare(domain.EventTime(b.Event))
+	})
+	mc.recordReflectionEntries(ctx, reflectionSeed)
 
 	return nil
 }
@@ -550,6 +581,81 @@ func storedScrollback(entries []protocol.ScrollbackEntry) []domain.StoredEvent {
 	}
 
 	return stored
+}
+
+func (mc *ModelClient) recordReflectionEntries(
+	ctx context.Context,
+	entries []protocol.ScrollbackEntry,
+) {
+	if mc.reflections == nil {
+		return
+	}
+
+	candidates := make([]store.ReflectionEventCandidate, 0, len(entries))
+	for _, entry := range entries {
+		candidate, ok := mc.reflectionCandidate(entry.Event, entry.History)
+		if ok {
+			candidates = append(candidates, candidate)
+		}
+	}
+	mc.appendReflectionCandidates(ctx, candidates)
+}
+
+func (mc *ModelClient) recordReflectionDeliveries(
+	ctx context.Context,
+	deliveries []protocol.Delivery,
+) {
+	if mc.reflections == nil {
+		return
+	}
+
+	var candidates []store.ReflectionEventCandidate
+	for _, delivery := range deliveries {
+		event, ok := delivery.Event.(domain.PersistableEvent)
+		if !ok {
+			continue
+		}
+		for _, history := range delivery.History {
+			candidate, ok := mc.reflectionCandidate(event, history)
+			if ok {
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
+	mc.appendReflectionCandidates(ctx, candidates)
+}
+
+func (mc *ModelClient) reflectionCandidate(
+	event domain.PersistableEvent,
+	history protocol.HistoryRef,
+) (store.ReflectionEventCandidate, bool) {
+	if history.ID == 0 || history.Window == nil {
+		return store.ReflectionEventCandidate{}, false
+	}
+	message, ok := protocol.FromChannelEvent(event)
+	if !ok {
+		return store.ReflectionEventCandidate{}, false
+	}
+	activity, substantive := event.(domain.Message)
+	substantive = substantive && !activity.AuthoredBy(mc.instance.ID())
+
+	return store.ReflectionEventCandidate{
+		Source: history, Message: message, Substantive: substantive,
+	}, true
+}
+
+func (mc *ModelClient) appendReflectionCandidates(
+	ctx context.Context,
+	candidates []store.ReflectionEventCandidate,
+) {
+	if len(candidates) == 0 {
+		return
+	}
+	if err := mc.reflections.AppendReflectionEvents(
+		ctx, mc.instance.ID(), candidates, mc.now(),
+	); err != nil {
+		slog.Default().ErrorContext(ctx, "append reflection events", "error", err)
+	}
 }
 
 // inSpan brackets fn with a span and result-recording on the

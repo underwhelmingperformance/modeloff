@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -1158,6 +1159,7 @@ func queueRoutesLocked(
 			eventID:       route.eventID,
 			terminal:      route.terminal,
 		}
+		queued.delivery.History = historyRefs(route, byWindow)
 		if route.historyOnly {
 			queued.delivery.HistoryOnly = true
 		}
@@ -1171,6 +1173,27 @@ func queueRoutesLocked(
 	}
 
 	return queuedRoutes, overflowed
+}
+
+func historyRefs(
+	route routedDelivery,
+	byWindow map[domain.ChannelName]int64,
+) []protocol.HistoryRef {
+	var refs []protocol.HistoryRef
+	for _, window := range slices.Sorted(maps.Keys(byWindow)) {
+		refs = append(refs, protocol.ChannelHistoryRef(byWindow[window], window))
+	}
+
+	message, ok := route.delivery.Event.(domain.Message)
+	if !ok || route.eventID == 0 {
+		return refs
+	}
+	window, involved := message.RoutingKey(route.sub.instance.ID())
+	if !involved || domain.InferChannelKind(window) != domain.KindDM {
+		return refs
+	}
+
+	return append(refs, protocol.DirectHistoryRef(route.eventID, domain.InstanceID(window)))
 }
 
 func eventTerminatesRecipient(event domain.ProtocolEvent, recipient *serverClient) bool {

@@ -36,6 +36,7 @@ type history struct {
 	unseeded     map[domain.ChannelName][]domain.StoredEvent
 	replies      []storedReply
 	subscription protocol.Subscription
+	observeSeed  func(context.Context, []protocol.ScrollbackEntry)
 }
 
 type storedReply struct {
@@ -289,6 +290,9 @@ func (h *history) seedDM(ctx context.Context, target domain.ChannelName) error {
 	}
 	delete(h.unseeded, target)
 	h.seedRepliesLocked(protocol.DirectWindowTarget(domain.InstanceID(target)), replies)
+	if h.observeSeed != nil {
+		h.observeSeed(ctx, seed)
+	}
 
 	return nil
 }

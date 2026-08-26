@@ -1835,9 +1835,11 @@ func TestSubscription_records_and_delivers_a_model_senders_channel_history(t *te
 		entries, err := sub.Scrollback(ctx, protocol.ChannelWindowTarget("#general"), 100)
 		require.NoError(t, err)
 		require.Equal(t, []string{"", "my own line"}, scrollbackBodies(entries))
+		sentHistory := entries[len(entries)-1].History
 		synctest.Wait()
 		require.Equal(t, []protocol.Delivery{{
 			Event:       sent,
+			History:     []protocol.HistoryRef{sentHistory},
 			HistoryOnly: true,
 		}}, collectSubscriptionDeliveries(sub))
 	})
@@ -1957,7 +1959,8 @@ func TestSubscription_channel_departure_commits_projection_and_revokes_context(t
 		require.Equal(t, departureState{
 			ActorDeliveries: []protocol.Delivery{{Event: part}},
 			ObserverDeliveries: []protocol.Delivery{{
-				Event: part,
+				Event:   part,
+				History: []protocol.HistoryRef{protocol.ChannelHistoryRef(4, "#general")},
 			}},
 			ObserverScrollback: []domain.StoredEvent{
 				{ID: 3, Event: domain.Join{
@@ -2262,9 +2265,11 @@ func TestSubscription_excludes_a_model_senders_first_DM_from_its_seed_and_delive
 		entries, err = sub.Scrollback(ctx, protocol.DirectWindowTarget(protocol.UserClientID), 100)
 		require.NoError(t, err)
 		require.Equal(t, []string{"hello from a new DM"}, scrollbackBodies(entries))
+		sentHistory := entries[0].History
 		synctest.Wait()
 		require.Equal(t, []protocol.Delivery{{
 			Event:       sent,
+			History:     []protocol.HistoryRef{sentHistory},
 			HistoryOnly: true,
 		}}, collectSubscriptionDeliveries(sub))
 	})

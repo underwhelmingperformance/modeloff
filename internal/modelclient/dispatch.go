@@ -372,7 +372,13 @@ type turnBatch struct {
 // a model catching up on five messages has to see the topic or mode
 // changes that happened between them in the same positions.
 func (mc *ModelClient) fileBatch(ctx context.Context, deliveries []protocol.Delivery) []*turnBatch {
+	// Opening the batches is what loads a direct-message window's stored
+	// thread, which files into the reflection stream through the seed
+	// callback. Recording the burst first would put a message that starts
+	// the turn ahead of the conversation it answers, and the prompt reads
+	// them the other way round.
 	batches, byWindow := mc.openBatches(ctx, deliveries)
+	mc.recordReflectionDeliveries(ctx, deliveries)
 
 	for _, delivery := range deliveries {
 		ch, irc, isTrigger := dispatchTrigger(mc.instance, delivery.Event)
