@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 	storemod "github.com/laney/modeloff/internal/store"
 	"github.com/laney/modeloff/internal/store/storetest"
 )
@@ -73,6 +74,7 @@ func TestSQLiteStore_instance_deletion_removes_persona_lineage(t *testing.T) {
 	base, err := store.PersonaLineage(t.Context(), instance.ID())
 	require.NoError(t, err)
 	at := time.Date(2026, 8, 26, 11, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 1, at)
 	_, err = store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
 		RunID: "reflection-before-delete", InstanceID: instance.ID(),
 		BaseRevisionID:  base.CurrentRevisionID,
@@ -107,6 +109,7 @@ func TestSQLiteStore_commits_reflection_state_atomically_and_idempotently(t *tes
 	startedAt := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(2 * time.Second)
 	occurredAt := startedAt.Add(-time.Minute)
+	appendReflectionSources(t, store, instance.ID(), 3, occurredAt)
 	subject := domain.InstanceID("inst-alice")
 	acceptance := storemod.PersonaReflectionAcceptance{
 		RunID: "reflection-1", InstanceID: instance.ID(),
@@ -256,6 +259,7 @@ func TestSQLiteStore_successive_reflections_accumulate_experiences(t *testing.T)
 	require.NoError(t, err)
 
 	firstAt := time.Date(2026, 8, 26, 14, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 2, firstAt)
 
 	first, err := store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
 		RunID: "reflection-first", InstanceID: instance.ID(),
@@ -334,6 +338,7 @@ func TestSQLiteStore_rollback_and_reset_select_exact_immutable_revisions(t *test
 	base, err := store.PersonaLineage(t.Context(), instance.ID())
 	require.NoError(t, err)
 	firstAt := time.Date(2026, 8, 26, 14, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 2, firstAt)
 
 	first, err := store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
 		RunID: "reflection-first", InstanceID: instance.ID(),
@@ -417,6 +422,32 @@ func TestSQLiteStore_rollback_and_reset_select_exact_immutable_revisions(t *test
 			FromRevisionID: first.Revision.ID, ToRevisionID: base.CurrentRevisionID,
 			Kind: domain.PersonaTransitionReset, At: resetAt},
 	}, transitions)
+}
+
+func appendReflectionSources(
+	t *testing.T,
+	stored *storemod.SQLiteStore,
+	instanceID domain.InstanceID,
+	count int,
+	at time.Time,
+) {
+	t.Helper()
+
+	candidates := make([]storemod.ReflectionEventCandidate, 0, count)
+	for sequence := 1; sequence <= count; sequence++ {
+		candidates = append(candidates, storemod.ReflectionEventCandidate{
+			Source: protocol.ChannelHistoryRef(int64(sequence), "#dev"),
+			Message: protocol.IRCMessage{
+				Kind:   protocol.KindPrivMsg,
+				Source: domain.ClientSource("inst-alice", "alice"),
+				Target: "#dev", Body: "reflection evidence", At: at,
+			},
+			Substantive: true,
+		})
+	}
+	require.NoError(t, stored.AppendReflectionEvents(
+		t.Context(), instanceID, candidates, at,
+	))
 }
 
 // TestSQLiteStore_persona_edit_alone_creates_a_revision covers a reflection
@@ -589,6 +620,7 @@ func TestSQLiteStore_consolidation_drains_the_active_set_and_keeps_the_row(t *te
 	require.NoError(t, err)
 
 	firstAt := time.Date(2026, 8, 26, 14, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 2, firstAt)
 
 	first, err := store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
 		RunID: "reflection-first", InstanceID: instance.ID(),
@@ -695,6 +727,7 @@ func TestSQLiteStore_a_revision_keeps_the_citations_for_its_description(t *testi
 	require.NoError(t, err)
 
 	firstAt := time.Date(2026, 8, 27, 14, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 3, firstAt)
 
 	description := "Cares more about being right than about being easy to be around."
 	changed, err := store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
@@ -783,6 +816,7 @@ func TestSQLiteStore_an_operator_description_is_a_revision_in_the_same_lineage(t
 	require.NoError(t, err)
 
 	reflectedAt := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 1, reflectedAt)
 	reflected, err := store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
 		RunID: "reflection-before-the-edit", InstanceID: instance.ID(),
 		BaseRevisionID:  base.CurrentRevisionID,
@@ -878,6 +912,49 @@ func TestSQLiteStore_an_operator_description_refuses_a_stale_revision(t *testing
 	_, err = store.WritePersonaDescription(
 		t.Context(), instance.ID(), base.CurrentRevisionID, "chatty",
 		at.Add(time.Minute),
+	)
+
+	require.ErrorIs(t, err, storemod.ErrPersonaLineageChanged)
+}
+
+// TestSQLiteStore_an_operator_description_refuses_a_revision_a_reflection_moved
+// covers the case the sequential test does not: an edit whose revision a
+// reflection has already replaced.
+//
+// The edit compares only the revision, and a reflection that changes the
+// description moves it, so the edit is refused. A reflection that changes
+// nothing else still advances the checkpoint, which the edit does not read,
+// so those two can both land; the compare-and-swap the edit runs under is
+// not the one a reflection runs under.
+func TestSQLiteStore_an_operator_description_refuses_a_revision_a_reflection_moved(t *testing.T) {
+	ctx := t.Context()
+	store := storetest.NewMemoryStore(t)
+	instance := domain.NewModelInstance("inst-botty", "botty", "test/model", "quiet", nil)
+	require.NoError(t, store.SaveInstance(ctx, instance))
+	base, err := store.PersonaLineage(ctx, instance.ID())
+	require.NoError(t, err)
+
+	at := time.Date(2026, 8, 28, 11, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 1, at)
+	description := "Cares more about being right than about being easy to be around."
+	_, err = store.CommitPersonaReflection(ctx, storemod.PersonaReflectionAcceptance{
+		RunID: "reflection-before-the-edit", InstanceID: instance.ID(),
+		BaseRevisionID:  base.CurrentRevisionID,
+		PriorCheckpoint: 0, HighWaterMark: 1,
+		ModelID: "test/reflection", StartedAt: at, FinishedAt: at,
+		Description: &description,
+		Experiences: []storemod.PersonaExperienceDraft{{
+			Key: "reproduction", Kind: domain.ExperienceObservation,
+			Summary:    "Alice supplied a reproduction.",
+			Confidence: domain.ConfidenceHigh, OccurredAt: at,
+			Sources: []domain.ReflectionEventRef{{Sequence: 1}},
+		}},
+		DescriptionEvidenceKeys: []string{"reproduction"},
+	})
+	require.NoError(t, err)
+
+	_, err = store.WritePersonaDescription(
+		ctx, instance.ID(), base.CurrentRevisionID, "terse", at.Add(time.Minute),
 	)
 
 	require.ErrorIs(t, err, storemod.ErrPersonaLineageChanged)

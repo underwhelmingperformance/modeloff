@@ -21,6 +21,15 @@ type reflectionSnapshotStore interface {
 	) (store.PendingReflectionSnapshot, error)
 }
 
+type reflectionStateStore interface {
+	reflectionSnapshotStore
+	CommitPersonaReflection(
+		ctx context.Context,
+		acceptance store.PersonaReflectionAcceptance,
+	) (store.PersonaReflectionCommit, error)
+	RecordReflectionRun(ctx context.Context, run domain.ReflectionRun) error
+}
+
 type reflectionSnapshotRunner func(context.Context, store.PendingReflectionSnapshot)
 
 type reflectionWorker struct {

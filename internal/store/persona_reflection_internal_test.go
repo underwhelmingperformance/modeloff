@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/protocol"
 )
 
 type reflectionTablesState struct {
@@ -70,7 +71,6 @@ func TestCommitPersonaReflection_rolls_back_every_record_when_the_run_cannot_com
 	require.NoError(t, store.SaveInstance(t.Context(), instance))
 	base, err := store.PersonaLineage(t.Context(), instance.ID())
 	require.NoError(t, err)
-	before := readReflectionTablesState(t, store, instance.ID())
 	_, err = store.db.ExecContext(t.Context(), `
 		CREATE TRIGGER fail_reflection_run
 		BEFORE INSERT ON reflection_runs
@@ -81,6 +81,18 @@ func TestCommitPersonaReflection_rolls_back_every_record_when_the_run_cannot_com
 	require.NoError(t, err)
 
 	at := time.Date(2026, 8, 26, 15, 0, 0, 0, time.UTC)
+	require.NoError(t, store.AppendReflectionEvents(
+		t.Context(), instance.ID(), []ReflectionEventCandidate{{
+			Source: protocol.ChannelHistoryRef(1, "#dev"),
+			Message: protocol.IRCMessage{
+				Kind:   protocol.KindPrivMsg,
+				Source: domain.ClientSource("inst-alice", "alice"),
+				Target: "#dev", Body: "reflection evidence", At: at,
+			},
+			Substantive: true,
+		}}, at,
+	))
+	before := readReflectionTablesState(t, store, instance.ID())
 	_, commitErr := store.CommitPersonaReflection(t.Context(), PersonaReflectionAcceptance{
 		RunID: "reflection-fails", InstanceID: instance.ID(),
 		BaseRevisionID:  base.CurrentRevisionID,

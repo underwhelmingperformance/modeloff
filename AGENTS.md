@@ -1100,7 +1100,8 @@ instance or channel has been deleted. Model turns are trimmed inside
 the transaction that opens one, by turn count and by total entry
 bytes. Context summary sources are trimmed per actor and window by the
 transaction that commits a summary. The reflection inbox is trimmed on
-every append.
+every append. The reflection run log is trimmed per instance when a
+run is recorded.
 
 ### Window authority and the turn journal
 
@@ -1261,9 +1262,18 @@ cites. An event a revision was built from is therefore kept for as
 long as the experience citing it is kept, which is what lets an
 operator read back what a clause rests on.
 
-With reflection disabled the manager records nothing, so a default
-configuration pays no store write per dispatch batch, and enabling
-reflection starts the stream from that point.
+A run's own citations do not exist while it is still deciding on them,
+so a burst long enough to fill the headroom during one run takes that
+run's evidence with it. The acceptance transaction rechecks that every
+cited event is still there and refuses the commit with
+`store.ErrReflectionSourceMissing`, which the worker records as a
+`stale` run: the state it lost to is the state the next run starts
+from. An accepted experience therefore never names evidence nobody can
+read back.
+
+The stream is recorded whatever the mode. An operator who turns
+reflection on can therefore reflect over what already happened. Only
+the scheduler follows the mode.
 
 ### Reflection
 
@@ -1283,6 +1293,40 @@ scoped to its own instance id, and every one of them is read-only
 apart from the single commit at the end of a run. Anything added to
 the worker's reach has to keep that property, because there is no
 guard to catch a call that reads another actor's rows.
+
+`/config reflection-mode` decides what a run may do. `disabled`
+records no candidates at all. `shadow` makes the provider call, runs
+the validator, and records the outcome without changing any state,
+which is the mode for evaluating the feature. `active` commits an
+accepted proposal. The mode is read at the start of a run and again after
+validation, so turning reflection off mid-flight discards the
+proposal.
+
+Every terminal outcome writes a `reflection_runs` row: `accepted`,
+`no_change`, `rejected`, `stale`, `failed`, `shadow` or `discarded`.
+The write runs under a short timeout on a context detached from the
+run's own, because disabling reflection and draining the manager both
+cancel that context, and a run leaving no row would leave the cooldown
+with nothing to measure from.
+
+Committing is one transaction and one compare-and-swap. The store
+requires the lineage still to name the revision and the checkpoint the
+run started from, rechecks every citation independently of the
+validator so that each cited event lies in the run's own range and
+belongs to this instance, inserts the experiences and tendencies,
+builds the next revision, and advances the checkpoint to the
+snapshot's high-water mark. A lost race is recorded as `stale` and not
+as a failure, because the state it lost to is the state the next run
+will start from.
+
+The request carries no internal identifier. A per-run alias table
+gives every other participant a token (`p1`, `p2`) and every active
+tendency a token (`a1`, `a2`), and a proposal names them only by those
+tokens. The reflecting instance gets no token of its own, so no token
+a proposal can name resolves to the proposer. An instance id is
+addressable on the protocol and a persona row id is stable across
+runs, and a model needs neither in order to reason about what
+happened.
 
 ## External libraries
 

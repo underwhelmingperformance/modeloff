@@ -2,6 +2,7 @@ package modelmanager
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -37,7 +38,10 @@ func TestManager_schedules_committed_reflection_candidates(t *testing.T) {
 	stored, instance := reflectionSchedulerStore(t)
 	recordedAt := time.Now()
 	observed := make(chan reflectionRunRange, 1)
-	manager := New(Config{Store: stored, BaseContext: t.Context})
+	manager := New(Config{
+		Store: stored, BaseContext: t.Context,
+		ReflectionMode: ReflectionShadow, ReflectionModel: "test/reflection",
+	})
 	manager.reflections.run = func(
 		_ context.Context,
 		snapshot store.PendingReflectionSnapshot,
@@ -282,4 +286,129 @@ func drainReflectionRanges(ranges <-chan reflectionRunRange) []reflectionRunRang
 			return drained
 		}
 	}
+}
+
+// reflectionRunRecorder is a scheduler runner that records one terminal
+// reflection run per attempt, the way `Manager.runReflection` does for
+// every outcome.
+type reflectionRunRecorder struct {
+	stored *store.SQLiteStore
+	ranges chan reflectionRunRange
+	errs   chan error
+	runs   int
+}
+
+func (r *reflectionRunRecorder) run(
+	ctx context.Context,
+	snapshot store.PendingReflectionSnapshot,
+) {
+	r.runs++
+	r.ranges <- reflectionRange(snapshot)
+	now := time.Now()
+	r.errs <- r.stored.RecordReflectionRun(ctx, domain.ReflectionRun{
+		ID:               domain.ReflectionRunID(fmt.Sprintf("shadow-%d", r.runs)),
+		InstanceID:       snapshot.Persona.Lineage.InstanceID,
+		BaseRevisionID:   snapshot.Persona.Revision.ID,
+		PriorCheckpoint:  snapshot.Status.Checkpoint,
+		HighWaterMark:    snapshot.Status.HighWaterMark,
+		ResultRevisionID: snapshot.Persona.Revision.ID,
+		ModelID:          "test/reflection", Outcome: domain.ReflectionShadow,
+		StartedAt: now, FinishedAt: now,
+	})
+}
+
+func TestReflectionScheduler_waits_after_a_run_that_committed_nothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stored, instance := reflectionSchedulerStore(t)
+		at := time.Now()
+		require.NoError(t, stored.AppendReflectionEvents(
+			t.Context(), instance.ID(),
+			reflectionCandidates(1, reflectionSubstantiveThreshold, at), at,
+		))
+		recorder := &reflectionRunRecorder{
+			stored: stored,
+			ranges: make(chan reflectionRunRange, 8),
+			errs:   make(chan error, 8),
+		}
+		scheduler := newReflectionScheduler(
+			t.Context(), stored, time.Now, recorder.run,
+		)
+
+		scheduler.notify(instance.ID())
+		synctest.Wait()
+		for burst := range 5 {
+			sequence := reflectionSubstantiveThreshold + 1 + burst
+			require.NoError(t, stored.AppendReflectionEvents(
+				t.Context(), instance.ID(),
+				reflectionCandidates(sequence, sequence, at), at,
+			))
+			scheduler.notify(instance.ID())
+			synctest.Wait()
+		}
+		require.NoError(t, scheduler.stop(t.Context()))
+		close(recorder.errs)
+		for err := range recorder.errs {
+			require.NoError(t, err)
+		}
+
+		require.Equal(t, reflectionWorkerState{
+			Runs: []reflectionRunRange{{
+				Through:       reflectionSubstantiveThreshold,
+				HighWaterMark: reflectionSubstantiveThreshold,
+				Sequences:     reflectionSequences(1, reflectionSubstantiveThreshold),
+			}},
+		}, reflectionWorkerState{Runs: drainReflectionRanges(recorder.ranges)})
+	})
+}
+
+func TestReflectionScheduler_runs_again_past_the_input_event_limit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stored, instance := reflectionSchedulerStore(t)
+		at := time.Now()
+		backlog := reflectionInputEventLimit + 5
+		require.NoError(t, stored.AppendReflectionEvents(
+			t.Context(), instance.ID(),
+			reflectionCandidates(1, backlog, at), at,
+		))
+		recorder := &reflectionRunRecorder{
+			stored: stored,
+			ranges: make(chan reflectionRunRange, 8),
+			errs:   make(chan error, 8),
+		}
+		scheduler := newReflectionScheduler(
+			t.Context(), stored, time.Now, recorder.run,
+		)
+
+		scheduler.notify(instance.ID())
+		synctest.Wait()
+		first := drainReflectionRanges(recorder.ranges)
+		require.NoError(t, stored.AppendReflectionEvents(
+			t.Context(), instance.ID(),
+			reflectionCandidates(backlog+1, backlog+25, at), at,
+		))
+		scheduler.notify(instance.ID())
+		time.Sleep(reflectionCooldown)
+		synctest.Wait()
+		second := drainReflectionRanges(recorder.ranges)
+		require.NoError(t, scheduler.stop(t.Context()))
+		close(recorder.errs)
+		for err := range recorder.errs {
+			require.NoError(t, err)
+		}
+
+		require.Equal(t, reflectionWorkerState{
+			Runs: []reflectionRunRange{
+				{
+					Through:       reflectionInputEventLimit,
+					HighWaterMark: domain.ReflectionSequence(backlog),
+					Sequences:     reflectionSequences(1, reflectionInputEventLimit),
+				},
+				{
+					Through:       reflectionInputEventLimit,
+					HighWaterMark: domain.ReflectionSequence(backlog + 25),
+					Sequences:     reflectionSequences(1, reflectionInputEventLimit),
+				},
+			},
+		}, reflectionWorkerState{Runs: append(first, second...)})
+	})
 }

@@ -15,6 +15,17 @@ import (
 // older revision or checkpoint.
 var ErrPersonaLineageChanged = errors.New("persona lineage changed")
 
+// ErrReflectionSourceOwnership reports a cited event belonging to another
+// instance's private candidate stream.
+var ErrReflectionSourceOwnership = errors.New("reflection source belongs to another instance")
+
+// ErrReflectionSourceMissing reports a cited event the stream no longer
+// holds. Retention trims the stream on every append, keeping what an
+// accepted experience cites, and a run's own citations do not exist yet
+// while it is deciding on them. A run whose evidence is trimmed away
+// before it commits has lost a race with its instance's own traffic.
+var ErrReflectionSourceMissing = errors.New("reflection source no longer exists")
+
 // PersonaExperienceDraft is one validated experience awaiting durable IDs.
 type PersonaExperienceDraft struct {
 	Key        string
@@ -295,6 +306,11 @@ func insertPersonaExperiencesTx(
 					acceptance.HighWaterMark,
 				)
 			}
+			if err := requireReflectionSourceOwnershipTx(
+				ctx, tx, acceptance.InstanceID, source.Sequence,
+			); err != nil {
+				return nil, nil, err
+			}
 		}
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO persona_experiences
@@ -331,6 +347,29 @@ func insertPersonaExperiencesTx(
 	}
 
 	return experiences, byKey, nil
+}
+
+func requireReflectionSourceOwnershipTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	instanceID domain.InstanceID,
+	sequence domain.ReflectionSequence,
+) error {
+	var owner domain.InstanceID
+	err := tx.QueryRowContext(ctx, `
+		SELECT instance_id FROM reflection_events WHERE sequence = ?
+	`, sequence).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrReflectionSourceMissing
+	}
+	if err != nil {
+		return fmt.Errorf("check reflection source ownership: %w", err)
+	}
+	if owner != instanceID {
+		return ErrReflectionSourceOwnership
+	}
+
+	return nil
 }
 
 func insertPersonaAmendmentsTx(

@@ -72,6 +72,9 @@ const (
 	ReflectionStale ReflectionOutcome = "stale"
 	// ReflectionFailed records a reflection that did not produce a proposal.
 	ReflectionFailed ReflectionOutcome = "failed"
+	// ReflectionShadow records a validated proposal without changing persona
+	// state.
+	ReflectionShadow ReflectionOutcome = "shadow"
 )
 
 // PersonaTransitionKind describes why the active revision pointer changed.

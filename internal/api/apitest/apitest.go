@@ -44,12 +44,19 @@ type Fake struct {
 		previous []string,
 		sources []protocol.IRCMessage,
 	) (api.ContextSummaryResult, error)
+	ReflectPersonaFn func(
+		ctx context.Context,
+		modelID domain.ModelID,
+		instanceID domain.InstanceID,
+		input api.ReflectionInput,
+	) (api.ReflectionResult, error)
 	GenerateNickFn     func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
 	GeneratePersonasFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
 }
 
 var _ api.Client = (*Fake)(nil)
 var _ api.ContextSummarizer = (*Fake)(nil)
+var _ api.ReflectionGenerator = (*Fake)(nil)
 
 // ListModels answers through [Fake.ListModelsFn], or nil results
 // with no error.
@@ -119,6 +126,25 @@ func (f *Fake) SummarizeContext(
 	}
 
 	return api.ContextSummaryResult{Summary: "compacted context"}, nil
+}
+
+// ReflectPersona answers through [Fake.ReflectPersonaFn], or returns an empty
+// no-change proposal.
+func (f *Fake) ReflectPersona(
+	ctx context.Context,
+	modelID domain.ModelID,
+	instanceID domain.InstanceID,
+	input api.ReflectionInput,
+) (api.ReflectionResult, error) {
+	if f.ReflectPersonaFn != nil {
+		return f.ReflectPersonaFn(ctx, modelID, instanceID, input)
+	}
+
+	return api.ReflectionResult{Proposal: api.ReflectionProposal{
+		Experiences: []api.ReflectionExperienceProposal{},
+		Amendments:  []api.ReflectionAmendmentProposal{},
+		Retract:     []string{},
+	}}, nil
 }
 
 // SendEvents answers through [Fake.SendEventsFn], or an empty

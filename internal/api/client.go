@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 	"go.opentelemetry.io/otel/attribute"
@@ -268,6 +269,132 @@ type ContextSummarizer interface {
 		previous []string,
 		sources []protocol.IRCMessage,
 	) (ContextSummaryResult, error)
+}
+
+// ReflectionParticipant is one other client a reflection request names.
+// Token is the handle a proposal uses to scope a relationship experience
+// or amendment to this participant. Nick is the display name, present
+// where the request carries an event this participant authored.
+type ReflectionParticipant struct {
+	Token string      `json:"token"`
+	Nick  domain.Nick `json:"nick,omitempty"`
+}
+
+// ReflectionInputEvent is one sequenced candidate supplied to private persona
+// reflection. Participant is the token of the client that authored the
+// message, empty for a server line or for the reflecting instance itself.
+// Window groups events by conversation: a channel by name, a direct message
+// by the counterpart's token.
+type ReflectionInputEvent struct {
+	Sequence    domain.ReflectionSequence `json:"sequence"`
+	WindowKind  domain.ChannelKind        `json:"window_kind"`
+	Window      string                    `json:"window"`
+	Participant string                    `json:"participant,omitempty"`
+	Message     protocol.IRCMessage       `json:"message"`
+	Substantive bool                      `json:"substantive"`
+}
+
+// ReflectionInputExperience is one active experience as the reflecting
+// model reads it. Subject is a participant token.
+type ReflectionInputExperience struct {
+	Kind       domain.ExperienceKind       `json:"kind"`
+	Summary    string                      `json:"summary"`
+	Subject    string                      `json:"subject,omitempty"`
+	Confidence domain.Confidence           `json:"confidence"`
+	OccurredAt time.Time                   `json:"occurred_at"`
+	Sources    []domain.ReflectionSequence `json:"sources"`
+}
+
+// ReflectionInputAmendment is one active tendency as the reflecting model
+// reads it. Token is what a proposal names to retract or supersede it, and
+// Counterpart is a participant token.
+type ReflectionInputAmendment struct {
+	Token       string                `json:"token"`
+	Scope       domain.AmendmentScope `json:"scope"`
+	Counterpart string                `json:"counterpart,omitempty"`
+	Tendency    string                `json:"tendency"`
+	Confidence  domain.Confidence     `json:"confidence"`
+	CreatedAt   time.Time             `json:"created_at"`
+	ExpiresAt   *time.Time            `json:"expires_at,omitempty"`
+}
+
+// ReflectionInput is the closed set of persona information and the event
+// range supplied to one reflection request. Description is the persona in
+// force, which is the active revision's; Baseline is revision zero's,
+// which a reset returns to.
+type ReflectionInput struct {
+	Description  string                      `json:"description"`
+	Baseline     string                      `json:"baseline"`
+	Participants []ReflectionParticipant     `json:"participants"`
+	Experiences  []ReflectionInputExperience `json:"active_experiences"`
+	Amendments   []ReflectionInputAmendment  `json:"active_amendments"`
+	Events       []ReflectionInputEvent      `json:"events"`
+}
+
+// ReflectionExperienceProposal is one bounded experience proposed from the
+// supplied event range. Sources contains reflection sequence numbers and
+// Subject a participant token.
+type ReflectionExperienceProposal struct {
+	Key        string                      `json:"key"`
+	Kind       domain.ExperienceKind       `json:"kind"`
+	Summary    string                      `json:"summary"`
+	Subject    string                      `json:"subject"`
+	Confidence domain.Confidence           `json:"confidence"`
+	Sources    []domain.ReflectionSequence `json:"sources"`
+}
+
+// ReflectionAmendmentProposal is one tendency proposed from experiences in
+// the same response. Counterpart is a participant token, and Supersedes the
+// token of the active amendment this one replaces, empty when it replaces
+// nothing.
+type ReflectionAmendmentProposal struct {
+	Scope        domain.AmendmentScope `json:"scope"`
+	Counterpart  string                `json:"counterpart"`
+	Tendency     string                `json:"tendency"`
+	Confidence   domain.Confidence     `json:"confidence"`
+	EvidenceKeys []string              `json:"evidence_keys"`
+	Supersedes   string                `json:"supersedes"`
+}
+
+// ReflectionPersonaProposal is a replacement persona description drawn
+// from experiences in the same response. An empty Description proposes no
+// change and leaves the next revision on the parent's text.
+//
+// Consolidates holds the tokens of active amendments the description
+// absorbs. Each leaves the active set and keeps its row, so the trail from
+// a description back to the tendencies behind it survives.
+type ReflectionPersonaProposal struct {
+	Description  string   `json:"description"`
+	EvidenceKeys []string `json:"evidence_keys"`
+	Consolidates []string `json:"consolidates"`
+}
+
+// ReflectionProposal is the structured output of one private reflection.
+// Empty slices and an empty description mean no change. Retract holds
+// active amendment tokens.
+type ReflectionProposal struct {
+	Experiences []ReflectionExperienceProposal `json:"experiences"`
+	Amendments  []ReflectionAmendmentProposal  `json:"amendments"`
+	Persona     ReflectionPersonaProposal      `json:"persona"`
+	Retract     []string                       `json:"retract_amendments"`
+}
+
+// ReflectionResult carries a structured proposal and its provider evidence.
+type ReflectionResult struct {
+	Proposal  ReflectionProposal
+	RequestID string
+	Usage     Usage
+}
+
+// ReflectionGenerator is the optional provider capability used by the
+// manager-owned private reflection scheduler.
+type ReflectionGenerator interface {
+	ReflectPersona(
+		ctx context.Context,
+		modelID domain.ModelID,
+		instanceID domain.InstanceID,
+		input ReflectionInput,
+	) (ReflectionResult, error)
 }
 
 // Client defines the interface for all API interactions. Both the

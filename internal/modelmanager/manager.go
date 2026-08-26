@@ -69,14 +69,17 @@ type Store interface {
 
 // Config is the construction-time configuration for a [Manager].
 type Config struct {
-	Store         Store
-	Memory        memory.Store
-	APIClient     api.Client
-	APIFactory    func(apiKey, baseURL string) (api.Client, error)
-	InitialAPIKey string
-	SmallModel    domain.ModelID
-	Tools         *modelclient.ToolRegistry
-	BaseContext   func() context.Context
+	Store           Store
+	Memory          memory.Store
+	APIClient       api.Client
+	APIFactory      func(apiKey, baseURL string) (api.Client, error)
+	InitialAPIKey   string
+	SmallModel      domain.ModelID
+	ReflectionModel domain.ModelID
+	ReflectionMode  ReflectionMode
+	ReflectionRunID func() domain.ReflectionRunID
+	Tools           *modelclient.ToolRegistry
+	BaseContext     func() context.Context
 
 	// Now overrides the manager's clock. Defaults to [time.Now].
 	Now func() time.Time
@@ -122,11 +125,14 @@ type Manager struct {
 	pacer            *modelclient.Pacer
 	reflections      *reflectionScheduler
 
-	mu         sync.RWMutex
-	api        api.Client
-	apiKey     string
-	smallModel domain.ModelID
-	factory    func(apiKey, baseURL string) (api.Client, error)
+	mu              sync.RWMutex
+	api             api.Client
+	apiKey          string
+	smallModel      domain.ModelID
+	reflectionModel domain.ModelID
+	reflectionMode  ReflectionMode
+	reflectionRunID func() domain.ReflectionRunID
+	factory         func(apiKey, baseURL string) (api.Client, error)
 
 	cacheMu              sync.Mutex
 	supportedModels      map[domain.ModelID]api.ModelInfo
@@ -226,16 +232,25 @@ func New(cfg Config) *Manager {
 		api:                  cfg.APIClient,
 		apiKey:               strings.TrimSpace(cfg.InitialAPIKey),
 		smallModel:           smallModel,
+		reflectionModel:      cfg.ReflectionModel,
+		reflectionMode:       cfg.ReflectionMode,
+		reflectionRunID:      cfg.ReflectionRunID,
 		factory:              cfg.APIFactory,
 		clients:              make(map[protocol.ClientID]*modelclient.ModelClient),
 		attaching:            make(map[protocol.ClientID]*clientAttachment),
 		draining:             make(map[protocol.ClientID]*drainingClient),
 		pendingMemoryDeletes: make(map[protocol.ClientID]struct{}),
 	}
+	if manager.reflectionRunID == nil {
+		manager.reflectionRunID = func() domain.ReflectionRunID {
+			return domain.ReflectionRunID(domain.GenerateInstanceID())
+		}
+	}
 	manager.sizeCompletions(cfg.APIClient)
-	if reflectionStore, ok := cfg.Store.(reflectionSnapshotStore); ok {
+	if reflectionStore, ok := cfg.Store.(reflectionStateStore); ok &&
+		cfg.ReflectionMode != ReflectionDisabled {
 		manager.reflections = newReflectionScheduler(
-			lifecycleContext, reflectionStore, now, manager.observeReflectionSnapshot,
+			lifecycleContext, reflectionStore, now, manager.runReflection,
 		)
 	}
 
@@ -260,20 +275,6 @@ func (m *Manager) AppendReflectionEvents(
 	}
 
 	return nil
-}
-
-func (m *Manager) observeReflectionSnapshot(
-	ctx context.Context,
-	snapshot store.PendingReflectionSnapshot,
-) {
-	slog.Default().InfoContext(ctx, "reflection eligible",
-		"component", "modelmanager",
-		"instance_id", snapshot.Persona.Lineage.InstanceID,
-		"checkpoint", snapshot.Status.Checkpoint,
-		"high_water_mark", snapshot.Status.HighWaterMark,
-		"event_count", snapshot.Status.PendingEvents,
-		"substantive_event_count", snapshot.Status.SubstantiveEvents,
-	)
 }
 
 // WithTracerProvider returns m with its tracer provider replaced
