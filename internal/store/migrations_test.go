@@ -130,6 +130,78 @@ func TestApplyMigrations_fresh_database_records_current_version(t *testing.T) {
 	require.Equal(t, SchemaVersion, got)
 }
 
+type personaBackfillState struct {
+	InstanceID  domain.InstanceID
+	Baseline    string
+	Description string
+	ParentID    *int64
+	Checkpoint  int64
+	CreatedAt   string
+}
+
+func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	for _, migration := range migrations {
+		if migration.Version > 13 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+	modelData, err := json.Marshal(domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "careful and curious", nil,
+	))
+	require.NoError(t, err)
+	userData, err := json.Marshal(domain.NewUserInstance("testuser"))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO instances (instance_id, nick, data) VALUES
+			('inst-botty', 'botty', ?),
+			('', 'testuser', ?)
+	`, string(modelData), string(userData))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', '13')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	require.NoError(t, applyMigrations(ctx, db))
+	var got personaBackfillState
+	require.NoError(t, db.QueryRowContext(ctx, `
+		SELECT state.instance_id, state.baseline, revision.description,
+		       revision.parent_id,
+		       state.checkpoint, state.created_at
+		FROM persona_lineages AS state
+		JOIN persona_revisions AS revision
+		  ON revision.id = state.current_revision_id
+	`).Scan(
+		&got.InstanceID,
+		&got.Baseline,
+		&got.Description,
+		&got.ParentID,
+		&got.Checkpoint,
+		&got.CreatedAt,
+	))
+	// Reading the baseline alone would pass against a migration that
+	// backfilled revision zero with an empty description.
+	require.Equal(t, personaBackfillState{
+		InstanceID:  "inst-botty",
+		Baseline:    "careful and curious",
+		Description: "careful and curious",
+		CreatedAt:   "0001-01-01T00:00:00Z",
+	}, got)
+	var states int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM persona_lineages`).Scan(&states))
+	require.Equal(t, 1, states)
+}
+
 func TestApplyMigrations_scopes_private_replies_by_issuing_window(t *testing.T) {
 	ctx := t.Context()
 	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))

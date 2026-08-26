@@ -2320,31 +2320,50 @@ func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domai
 // `instances` row. Registering the handle in the canonical map
 // ensures a subsequent `GetInstanceByID` returns the same pointer.
 func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) error {
-	// Snapshot the nick once so the span attribute, the INSERT column
-	// value, and the marshaled data blob all agree. The data blob is
-	// already atomic with the marshal-time snapshot under the handle's
-	// read lock; pairing the column value and span attribute with a
-	// single nick read closes the divergence window.
-	nick := inst.Nick()
+	// One snapshot answers every read this save makes: the span
+	// attribute, the INSERT columns, the marshaled data blob and the
+	// persona revision zero is created with. Reading the live instance
+	// twice leaves a window for a concurrent SetPersona between them, and
+	// the row would then hold one persona while the lineage held the
+	// other, so the instance would speak under the old text and a reset
+	// would restore the new one.
+	saved := inst.Snapshot()
+	nick := saved.Nick()
 
 	return s.inSpan(ctx, "store.sqlite.save_instance",
 		[]attribute.KeyValue{
-			attribute.String(observability.AttrInstanceID, string(inst.ID())),
+			attribute.String(observability.AttrInstanceID, string(saved.ID())),
 			attribute.String(observability.AttrNick, string(nick)),
 		},
 		func(ctx context.Context, _ trace.Span) error {
-			data, err := json.Marshal(inst)
+			data, err := json.Marshal(saved)
 			if err != nil {
 				return err
 			}
 
-			if err := execMutation(ctx, s.db,
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("begin save instance: %w", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO instances (instance_id, nick, data) VALUES (?, ?, ?)
 				 ON CONFLICT (instance_id) DO UPDATE SET
 				     nick = excluded.nick,
 				     data = excluded.data`,
-				string(inst.ID()), string(nick), string(data)); err != nil {
-				return err
+				string(saved.ID()), string(nick), string(data)); err != nil {
+				return fmt.Errorf("save instance: %w", err)
+			}
+
+			if saved.IsModel() {
+				if err := ensurePersonaLineageTx(ctx, tx, saved.ID(), saved.Persona()); err != nil {
+					return err
+				}
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit save instance: %w", err)
 			}
 
 			// Register the saved handle as canonical if there isn't

@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 type schemaTooNewError struct {
 	Found     int
@@ -410,6 +410,71 @@ var migrations = []migration{
 				ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0
 			`); err != nil {
 				return fmt.Errorf("add memories.pinned: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 14,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE persona_revisions (
+					id          INTEGER PRIMARY KEY,
+					instance_id TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+					parent_id   INTEGER REFERENCES persona_revisions(id),
+					description TEXT NOT NULL,
+					created_at  TEXT NOT NULL
+				)
+			`); err != nil {
+				return fmt.Errorf("create persona revisions: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				CREATE INDEX idx_persona_revisions_instance
+					ON persona_revisions (instance_id, id)
+			`); err != nil {
+				return fmt.Errorf("index persona revisions: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				CREATE TABLE persona_lineages (
+					instance_id         TEXT PRIMARY KEY REFERENCES instances(instance_id) ON DELETE CASCADE,
+					baseline            TEXT NOT NULL,
+					current_revision_id INTEGER NOT NULL REFERENCES persona_revisions(id),
+					checkpoint          INTEGER NOT NULL DEFAULT 0,
+					created_at          TEXT NOT NULL,
+					reflected_at        TEXT
+				)
+			`); err != nil {
+				return fmt.Errorf("create persona lineages: %w", err)
+			}
+
+			const zeroTime = "0001-01-01T00:00:00Z"
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO persona_revisions
+					(instance_id, parent_id, description, created_at)
+				SELECT instance_id, NULL,
+				       coalesce(json_extract(data, '$.Persona'), ''), ?
+				FROM instances
+				WHERE coalesce(json_extract(data, '$.ModelID'), '') != ''
+				ORDER BY instance_id
+			`, zeroTime); err != nil {
+				return fmt.Errorf("backfill persona revisions: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO persona_lineages
+					(instance_id, baseline, current_revision_id, checkpoint, created_at)
+				SELECT instance_id,
+				       coalesce(json_extract(data, '$.Persona'), ''),
+				       (SELECT id FROM persona_revisions
+				         WHERE persona_revisions.instance_id = instances.instance_id
+				         ORDER BY id LIMIT 1),
+				       0,
+				       ?
+				FROM instances
+				WHERE coalesce(json_extract(data, '$.ModelID'), '') != ''
+				ORDER BY instance_id
+			`, zeroTime); err != nil {
+				return fmt.Errorf("backfill persona lineages: %w", err)
 			}
 
 			return nil

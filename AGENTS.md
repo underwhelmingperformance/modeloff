@@ -1204,6 +1204,23 @@ length and the estimated prompt size.
   payload, including for `RPL_LIST`, which has no addressable target
   on the wire.
 
+## Persona and reflection
+
+### The persona lineage
+
+Each model instance has one `persona_lineages` row and a tree of
+`persona_revisions` under it. A revision carries the description in
+force while it is current, the experiences that description was built
+from, the experiences and tendencies active under it, and a pointer to
+its parent. The lineage names the current revision, the reflection
+checkpoint and the baseline.
+
+Revision zero is the root of the tree: no parent, the description the
+instance was created with, and no citations, because that description
+is given and not argued for. It is immutable. Its text is kept on the
+lineage as `Baseline` as well, so it can be read without walking the
+tree to its root.
+
 ## External libraries
 
 - [Bubble Tea] for the TUI framework.
