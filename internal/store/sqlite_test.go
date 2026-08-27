@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ncruces/go-sqlite3"
 	_ "github.com/ncruces/go-sqlite3/driver"
 	"github.com/stretchr/testify/require"
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -986,6 +988,226 @@ func TestNewSQLiteStore_sets_pragmas(t *testing.T) {
 	want := pragmas{JournalMode: "wal", BusyTimeout: 5000, ForeignKeys: 1}
 	require.Equal(t, want, readPragmas(t, c1))
 	require.Equal(t, want, readPragmas(t, c2))
+}
+
+// txModeCase is one transaction opened on the store's own DSN while a
+// second pooled connection writes to the same database.
+type txModeCase struct {
+	name string
+	opts *sql.TxOptions
+	// writesAfterRead says whether the transaction attempts a write of
+	// its own once the second connection has had its turn. A read-only
+	// transaction cannot.
+	writesAfterRead bool
+}
+
+// txModeEffect records how the two connections fared. Each write is
+// recorded as what actually happened, so an unexpected error is
+// distinguishable from success: reducing a write to "was it SQLITE_BUSY"
+// makes every other failure, including one that never inserted anything,
+// look the same as a clean run.
+type txModeEffect struct {
+	// SecondWrite is the second connection's write: "ok", "busy", or the
+	// error it failed with.
+	SecondWrite string
+	// HeldWrite is the transaction's own write after its read: "ok",
+	// "busy_snapshot", "skipped", or the error it failed with.
+	HeldWrite string
+	// Committed reports whether the transaction committed.
+	Committed bool
+	// Keys is what the state table holds afterwards, so a write that
+	// reported success is shown to have landed.
+	Keys []string
+}
+
+// writeOutcome names what one write did, so the assertion compares an
+// outcome and not a boolean that hides every case it does not name.
+func writeOutcome(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, sqlite3.BUSY_SNAPSHOT):
+		return "busy_snapshot"
+	case errors.Is(err, sqlite3.BUSY):
+		return "busy"
+	}
+
+	return err.Error()
+}
+
+// TestSQLitePragmaDSN_begins_write_transactions_immediately covers the
+// two transaction modes the store opens. A read-write transaction takes
+// the write lock at BEGIN, so a second connection writing during it is
+// refused with SQLITE_BUSY, which the busy handler retries for as long
+// as `busy_timeout` allows. A read-only transaction takes no write lock
+// and the second connection writes straight through.
+//
+// Without the write lock at BEGIN, the read fixes a WAL snapshot the
+// second connection's commit then moves past, and the transaction's own
+// write is refused with SQLITE_BUSY_SNAPSHOT. SQLite does not invoke
+// the busy handler for that code, so no `busy_timeout` recovers it and
+// a read-modify-write fails outright.
+//
+// The DSN appends a second `busy_timeout` of zero so contention is
+// reported as soon as it occurs. Both connections are taken from the
+// pool before the transaction opens, because a connection opened during
+// it applies `journal_mode(WAL)` and blocks on the same write lock.
+func TestSQLitePragmaDSN_begins_write_transactions_immediately(t *testing.T) {
+	cases := []struct {
+		txModeCase
+
+		want txModeEffect
+	}{
+		{
+			txModeCase: txModeCase{
+				name:            "read-write transaction holds the write lock",
+				opts:            nil,
+				writesAfterRead: true,
+			},
+			want: txModeEffect{
+				SecondWrite: "busy",
+				HeldWrite:   "ok",
+				Committed:   true,
+				Keys:        []string{"held", "schema_version"},
+			},
+		},
+		{
+			txModeCase: txModeCase{
+				name:            "read-only transaction leaves writers alone",
+				opts:            &sql.TxOptions{ReadOnly: true},
+				writesAfterRead: false,
+			},
+			want: txModeEffect{
+				SecondWrite: "ok",
+				HeldWrite:   "skipped",
+				Committed:   true,
+				Keys:        []string{"schema_version", "second"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+
+			dsn := SQLitePragmaDSN(filepath.Join(t.TempDir(), "txmode.db")) + "&_pragma=busy_timeout(0)"
+			db, err := sql.Open("sqlite3", dsn)
+			require.NoError(t, err)
+
+			s, err := NewSQLiteStore(ctx, db)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close() })
+
+			held, err := db.Conn(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = held.Close() })
+
+			other, err := db.Conn(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = other.Close() })
+
+			tx, err := held.BeginTx(ctx, tc.opts)
+			require.NoError(t, err)
+
+			var version string
+			require.NoError(t, tx.QueryRowContext(ctx,
+				`SELECT value FROM state WHERE key = 'schema_version'`).Scan(&version))
+
+			_, secondErr := other.ExecContext(ctx,
+				`INSERT INTO state (key, value) VALUES ('second', '1')`)
+
+			got := txModeEffect{
+				SecondWrite: writeOutcome(secondErr),
+				HeldWrite:   "skipped",
+			}
+
+			if tc.writesAfterRead {
+				_, writeErr := tx.ExecContext(ctx,
+					`INSERT INTO state (key, value) VALUES ('held', '1')`)
+				got.HeldWrite = writeOutcome(writeErr)
+			}
+
+			got.Committed = tx.Commit() == nil
+			got.Keys = stateKeys(ctx, t, db)
+
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// stateKeys reads every key the state table holds, in order, so a test
+// can show which writes landed.
+func stateKeys(ctx context.Context, t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	rows, err := db.QueryContext(ctx, `SELECT key FROM state ORDER BY key`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		require.NoError(t, rows.Scan(&key))
+		keys = append(keys, key)
+	}
+	require.NoError(t, rows.Err())
+
+	return keys
+}
+
+// contendedWriteEffect is what a competing writer saw.
+type contendedWriteEffect struct {
+	Err  error
+	Keys []string
+}
+
+// TestSQLitePragmaDSN_makes_a_contended_write_wait_and_succeed pins the
+// user-visible result, which the mode test does not reach: a second
+// store operation arriving during a write transaction waits for the
+// lock and then completes.
+//
+// The mode test disables `busy_timeout` so contention is visible at all,
+// and that leaves it verifying only that BEGIN IMMEDIATE takes the lock.
+// A regression that made a contended writer fail rather than wait would
+// pass it.
+func TestSQLitePragmaDSN_makes_a_contended_write_wait_and_succeed(t *testing.T) {
+	ctx := t.Context()
+
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(filepath.Join(t.TempDir(), "contended.db")))
+	require.NoError(t, err)
+
+	s, err := NewSQLiteStore(ctx, db)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	held, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Close() })
+
+	other, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = other.Close() })
+
+	tx, err := held.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO state (key, value) VALUES ('held', '1')`)
+	require.NoError(t, err)
+
+	contended := make(chan error, 1)
+	go func() {
+		_, execErr := other.ExecContext(ctx,
+			`INSERT INTO state (key, value) VALUES ('second', '1')`)
+		contended <- execErr
+	}()
+
+	require.NoError(t, tx.Commit())
+
+	got := contendedWriteEffect{Err: <-contended}
+	got.Keys = stateKeys(ctx, t, db)
+
+	require.Equal(t, contendedWriteEffect{
+		Keys: []string{"held", "schema_version", "second"},
+	}, got)
 }
 
 // TestWipe_removes_database_and_sidecars exercises the startup

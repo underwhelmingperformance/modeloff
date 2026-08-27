@@ -112,9 +112,23 @@ type SQLiteStore struct {
 
 // SQLitePragmaDSN appends the connection-time PRAGMAs that the store
 // requires (`busy_timeout`, `auto_vacuum`, `journal_mode`,
-// `foreign_keys`) to the given filename or `file:` URI. The
-// `ncruces/go-sqlite3` driver applies `_pragma=` parameters on every
-// connection it opens, so any pool size sees the same configuration.
+// `foreign_keys`) and the default transaction mode to the given
+// filename or `file:` URI. The `ncruces/go-sqlite3` driver applies
+// `_pragma=` parameters on every connection it opens, so any pool size
+// sees the same configuration.
+//
+// `_txlock=immediate` makes every read-write transaction take the
+// write lock at BEGIN. A transaction that reads before it writes would
+// otherwise fix a WAL snapshot another connection's commit can move
+// past, and the upgrade to a write is then refused with
+// SQLITE_BUSY_SNAPSHOT, which SQLite does not invoke the busy handler
+// for, so `busy_timeout` cannot recover it. Taking the lock up front
+// turns the conflict into an ordinary SQLITE_BUSY on whichever
+// connection arrives second, which the busy handler does retry. A
+// transaction that writes first was never exposed to this and is
+// unaffected. The driver leaves a read-only transaction deferred
+// whatever `_txlock` says, so the store's `ReadOnly` transactions still
+// take no write lock.
 //
 // Order matters, and not only for the reason the driver's own docs
 // give (`busy_timeout` and the locking mode must come first):
@@ -142,7 +156,8 @@ func SQLitePragmaDSN(path string) string {
 		sep = "&"
 	}
 
-	return dsn + sep + "_pragma=busy_timeout(5000)&_pragma=auto_vacuum(incremental)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
+	return dsn + sep + "_txlock=immediate" +
+		"&_pragma=busy_timeout(5000)&_pragma=auto_vacuum(incremental)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)"
 }
 
 // DefaultSQLitePath returns the on-disk location of the default
