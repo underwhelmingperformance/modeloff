@@ -55,7 +55,7 @@ func ensurePersonaLineageTx(
 			templateHash = foundation.Template.DescriptionHash
 		}
 	}
-	createdAtText := createdAt.Format(time.RFC3339Nano)
+	createdAtText := formatTime(createdAt)
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO persona_revisions
 			(instance_id, parent_id, description, created_at)

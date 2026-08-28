@@ -133,7 +133,7 @@ func TestManager_abandoned_finaliser_does_not_delete_memory(t *testing.T) {
 	restored := storemod.MemoryEntry{
 		Key:     "late",
 		Content: "written before the stalled turn returned",
-		At:      time.Unix(1, 0),
+		At:      time.Unix(1, 0).UTC(),
 	}
 	require.NoError(t, backing.SaveInstance(ctx, inst))
 	require.NoError(t, backing.DeleteInstanceByID(ctx, id))

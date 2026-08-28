@@ -778,7 +778,7 @@ func writeChannelJoin(
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
 		join.Window.Name(), domain.EventType(join.Event), string(data.event),
-		domain.EventTime(join.Event).Format(time.RFC3339Nano))
+		formatTime(domain.EventTime(join.Event)))
 	if err != nil {
 		return 0, fmt.Errorf("append join event: %w", err)
 	}
@@ -860,7 +860,7 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, ch domain.ChannelName, ev
 
 			id, err = execInsert(ctx, s.db,
 				`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
-				ch, domain.EventType(event), string(data), domain.EventTime(event).Format(time.RFC3339Nano))
+				ch, domain.EventType(event), string(data), formatTime(domain.EventTime(event)))
 			return err
 		})
 
@@ -909,7 +909,7 @@ func appendChannelAuditEvents(
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
 			event.channel, event.eventType, string(event.data),
-			event.at.Format(time.RFC3339Nano)); err != nil {
+			formatTime(event.at)); err != nil {
 			return fmt.Errorf("append audit event for %q: %w", event.channel, err)
 		}
 	}
@@ -1365,7 +1365,7 @@ func appendChannelEvent(
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
 		channel, domain.EventType(event), string(data),
-		domain.EventTime(event).Format(time.RFC3339Nano))
+		formatTime(domain.EventTime(event)))
 	if err != nil {
 		return 0, fmt.Errorf("append channel event: %w", err)
 	}
@@ -1442,7 +1442,7 @@ func appendChannelScrollbackTx(
 				(instance_id, channel, type, data, at)
 			VALUES (?, ?, ?, ?, ?)
 		`, record.InstanceID, record.Channel, domain.EventType(record.Event),
-			string(data[i]), domain.EventTime(record.Event).Format(time.RFC3339Nano))
+			string(data[i]), formatTime(domain.EventTime(record.Event)))
 		if err != nil {
 			return nil, fmt.Errorf("append projected event: %w", err)
 		}
@@ -1487,7 +1487,7 @@ func (s *SQLiteStore) AppendChannelScrollback(
 						(instance_id, channel, type, data, at)
 					VALUES (?, ?, ?, ?, ?)
 				`, record.InstanceID, record.Channel, domain.EventType(record.Event),
-					string(data), domain.EventTime(record.Event).Format(time.RFC3339Nano))
+					string(data), formatTime(domain.EventTime(record.Event)))
 				if err != nil {
 					return err
 				}
@@ -1635,7 +1635,7 @@ func (s *SQLiteStore) AppendInstanceReply(
 				`INSERT INTO instance_replies
 				 (instance_id, window_kind, window_key, type, data, at)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
-				id, kind, key, domain.EventType(event), string(data), domain.EventTime(event).Format(time.RFC3339Nano))
+				id, kind, key, domain.EventType(event), string(data), formatTime(domain.EventTime(event)))
 			return err
 		})
 
@@ -1773,7 +1773,7 @@ func (s *SQLiteStore) BeginModelTurn(
 				INSERT INTO model_turns
 					(instance_id, window_kind, window_key, model_id, started_at)
 				VALUES (?, ?, ?, ?, ?)
-			`, turn.InstanceID, kind, key, turn.ModelID, turn.StartedAt.Format(time.RFC3339Nano))
+			`, turn.InstanceID, kind, key, turn.ModelID, formatTime(turn.StartedAt))
 			if err != nil {
 				return err
 			}
@@ -1785,7 +1785,7 @@ func (s *SQLiteStore) BeginModelTurn(
 				INSERT INTO model_turn_entries (turn_id, seq, kind, data, at)
 				VALUES (?, ?, ?, ?, ?)
 			`, id, input.Seq, input.Kind, string(input.Data),
-				input.At.Format(time.RFC3339Nano)); err != nil {
+				formatTime(input.At)); err != nil {
 				return err
 			}
 			if err := trimModelTurns(
@@ -1823,7 +1823,7 @@ func (s *SQLiteStore) AppendModelTurnEntry(
 				INSERT INTO model_turn_entries (turn_id, seq, kind, data, at)
 				SELECT id, ?, ?, ?, ? FROM model_turns WHERE id = ?
 			`, entry.Seq, entry.Kind, string(entry.Data),
-				entry.At.Format(time.RFC3339Nano), turnID)
+				formatTime(entry.At), turnID)
 			if err != nil {
 				return err
 			}
@@ -1941,7 +1941,7 @@ func queryModelTurnRows(
 		if err != nil {
 			return nil, fmt.Errorf("read model turn window: %w", err)
 		}
-		parsedStartedAt, err := time.Parse(time.RFC3339Nano, startedAt)
+		parsedStartedAt, err := parseTime(startedAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse model turn start time: %w", err)
 		}
@@ -1980,7 +1980,7 @@ func (s *SQLiteStore) ModelTurnEntries(ctx context.Context, turnID ModelTurnID) 
 			return nil, err
 		}
 
-		parsedAt, err := time.Parse(time.RFC3339Nano, at)
+		parsedAt, err := parseTime(at)
 		if err != nil {
 			return nil, fmt.Errorf("parse model turn entry time: %w", err)
 		}

@@ -200,6 +200,12 @@ func TestManager_DetachAndForget_waits_for_the_dispatch_goroutine(t *testing.T) 
 	baseCtx, cancelBase := context.WithCancel(t.Context())
 	started := make(chan struct{})
 	release := make(chan struct{})
+	// The stalled turn holds the dispatch goroutine, and this test's
+	// cleanups wait for it. A failed assertion between here and the
+	// release below would otherwise hang the package instead of
+	// reporting itself.
+	releaseTurn := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseTurn)
 	fake := &apitest.Fake{
 		SendEventsFn: func(context.Context, domain.ModelID, domain.InstanceID, api.SystemPrompt, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error) {
 			close(started)
@@ -231,7 +237,7 @@ func TestManager_DetachAndForget_waits_for_the_dispatch_goroutine(t *testing.T) 
 	lateMemory := storemod.MemoryEntry{
 		Key:     "late",
 		Content: "written while dispatch was stopping",
-		At:      time.Unix(1, 0),
+		At:      time.Unix(1, 0).UTC(),
 	}
 	require.NoError(t, fx.store.WriteMemory(
 		t.Context(), inst.ID(), lateMemory.Key, lateMemory.Content,
@@ -260,7 +266,7 @@ func TestManager_DetachAndForget_waits_for_the_dispatch_goroutine(t *testing.T) 
 	})
 
 	cancelBase()
-	close(release)
+	releaseTurn()
 	require.NoError(t, fx.mgr.DetachAll(t.Context()))
 	pending, err = fx.store.ListPendingMemoryDeletions(t.Context())
 	require.NoError(t, err)

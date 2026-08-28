@@ -1598,7 +1598,7 @@ func TestSQLiteStore_EventsBefore_skips_unrecognised_row(t *testing.T) {
 	legacy := `{"type":"help","data":{"channel":"#general","at":"2025-01-15T10:29:00Z"}}`
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
-		"#general", "help", legacy, testTime.Add(-time.Minute).Format(time.RFC3339Nano))
+		"#general", "help", legacy, formatTime(testTime.Add(-time.Minute)))
 	require.NoError(t, err)
 
 	good := domain.Join{Source: domain.LegacyClientSource("alice"), Target: "#general", At: testTime}

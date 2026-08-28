@@ -228,7 +228,7 @@ func (s *SQLiteStore) CommitPersonaReflection(
 			VALUES (?, ?, ?, ?, ?)
 		`, acceptance.InstanceID, acceptance.BaseRevisionID, revision.ID,
 			domain.PersonaTransitionReflection,
-			acceptance.FinishedAt.Format(time.RFC3339Nano)); err != nil {
+			formatTime(acceptance.FinishedAt)); err != nil {
 			return PersonaReflectionCommit{}, fmt.Errorf("insert persona transition: %w", err)
 		}
 	}
@@ -239,7 +239,7 @@ func (s *SQLiteStore) CommitPersonaReflection(
 	`,
 		revision.ID,
 		acceptance.HighWaterMark,
-		acceptance.FinishedAt.Format(time.RFC3339Nano),
+		formatTime(acceptance.FinishedAt),
 		acceptance.InstanceID,
 		acceptance.BaseRevisionID,
 		acceptance.PriorCheckpoint,
@@ -336,8 +336,8 @@ func insertPersonaExperiencesTx(
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`,
 			acceptance.InstanceID, draft.Kind, draft.Summary, draft.SubjectID,
-			draft.Confidence, draft.OccurredAt.Format(time.RFC3339Nano),
-			acceptance.FinishedAt.Format(time.RFC3339Nano),
+			draft.Confidence, formatTime(draft.OccurredAt),
+			formatTime(acceptance.FinishedAt),
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("insert persona experience: %w", err)
@@ -432,7 +432,7 @@ func insertPersonaAmendmentsTx(
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			acceptance.InstanceID, draft.Scope, draft.Counterpart, draft.Tendency,
-			draft.Confidence, acceptance.FinishedAt.Format(time.RFC3339Nano),
+			draft.Confidence, formatTime(acceptance.FinishedAt),
 			formatOptionalTime(draft.ExpiresAt), draft.SupersedesID,
 		)
 		if err != nil {
@@ -505,7 +505,7 @@ func nextPersonaRevisionTx(
 			(instance_id, parent_id, description, created_at)
 		VALUES (?, ?, ?, ?)
 	`, acceptance.InstanceID, acceptance.BaseRevisionID, description,
-		acceptance.FinishedAt.Format(time.RFC3339Nano))
+		formatTime(acceptance.FinishedAt))
 	if err != nil {
 		return domain.PersonaRevision{}, fmt.Errorf("insert persona revision: %w", err)
 	}
@@ -590,7 +590,7 @@ func nextRevisionAmendmentsTx(
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE persona_amendments SET consolidated_at = ?
 			WHERE id = ? AND instance_id = ?
-		`, acceptance.FinishedAt.Format(time.RFC3339Nano),
+		`, formatTime(acceptance.FinishedAt),
 			id, acceptance.InstanceID); err != nil {
 			return nil, fmt.Errorf("consolidate persona amendment %d: %w", id, err)
 		}
@@ -687,12 +687,12 @@ func personaLineageTx(
 			DescriptionHash: templateHash.String,
 		}
 	}
-	state.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	state.CreatedAt, err = parseTime(createdAt)
 	if err != nil {
 		return domain.PersonaLineage{}, fmt.Errorf("parse persona lineage creation time: %w", err)
 	}
 	if reflectedAt.Valid {
-		at, err := time.Parse(time.RFC3339Nano, reflectedAt.String)
+		at, err := parseTime(reflectedAt.String)
 		if err != nil {
 			return domain.PersonaLineage{}, fmt.Errorf("parse persona reflection time: %w", err)
 		}
@@ -727,7 +727,7 @@ func personaRevisionTx(
 		parent := domain.PersonaRevisionID(parentID.Int64)
 		revision.ParentID = &parent
 	}
-	revision.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	revision.CreatedAt, err = parseTime(createdAt)
 	if err != nil {
 		return domain.PersonaRevision{}, fmt.Errorf("parse persona revision creation time: %w", err)
 	}
@@ -903,7 +903,7 @@ func insertReflectionRunTx(
 		run.HighWaterMark, run.ResultRevisionID, run.ModelID, run.Outcome,
 		run.RejectionReason, run.ProposedExperiences, run.AcceptedExperiences,
 		run.ProposedAmendments, run.AcceptedAmendments,
-		run.StartedAt.Format(time.RFC3339Nano), run.FinishedAt.Format(time.RFC3339Nano),
+		formatTime(run.StartedAt), formatTime(run.FinishedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert reflection run: %w", err)
@@ -1023,11 +1023,11 @@ func scanReflectionRun(scanner reflectionRunScanner) (domain.ReflectionRun, erro
 	if err != nil {
 		return domain.ReflectionRun{}, fmt.Errorf("read reflection run: %w", err)
 	}
-	run.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt)
+	run.StartedAt, err = parseTime(startedAt)
 	if err != nil {
 		return domain.ReflectionRun{}, fmt.Errorf("parse reflection start: %w", err)
 	}
-	run.FinishedAt, err = time.Parse(time.RFC3339Nano, finishedAt)
+	run.FinishedAt, err = parseTime(finishedAt)
 	if err != nil {
 		return domain.ReflectionRun{}, fmt.Errorf("parse reflection finish: %w", err)
 	}
@@ -1061,11 +1061,11 @@ func personaExperiencesTx(
 			experience.SubjectID = &subjectID
 		}
 		var err error
-		experience.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		experience.OccurredAt, err = parseTime(occurredAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse persona experience occurrence: %w", err)
 		}
-		experience.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		experience.CreatedAt, err = parseTime(createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse persona experience creation: %w", err)
 		}
@@ -1125,12 +1125,12 @@ func personaAmendmentsTx(
 			amendment.Counterpart = &counterpartID
 		}
 		var err error
-		amendment.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		amendment.CreatedAt, err = parseTime(createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse persona amendment creation: %w", err)
 		}
 		if expiresAt.Valid {
-			at, err := time.Parse(time.RFC3339Nano, expiresAt.String)
+			at, err := parseTime(expiresAt.String)
 			if err != nil {
 				return nil, fmt.Errorf("parse persona amendment expiry: %w", err)
 			}
@@ -1141,7 +1141,7 @@ func personaAmendmentsTx(
 			amendment.SupersedesID = &supersedesID
 		}
 		if consolidatedAt.Valid {
-			at, err := time.Parse(time.RFC3339Nano, consolidatedAt.String)
+			at, err := parseTime(consolidatedAt.String)
 			if err != nil {
 				return nil, fmt.Errorf("parse persona amendment consolidation: %w", err)
 			}
@@ -1179,5 +1179,5 @@ func formatOptionalTime(at *time.Time) any {
 		return nil
 	}
 
-	return at.Format(time.RFC3339Nano)
+	return formatTime(*at)
 }

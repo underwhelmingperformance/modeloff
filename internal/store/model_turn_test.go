@@ -75,7 +75,7 @@ func TestSQLiteStore_AppendModelTurnEntry_leaves_retention_to_admission(t *testi
 		INSERT INTO model_turns
 			(instance_id, window_kind, window_key, model_id, started_at)
 		SELECT ?, 1, '#dev', 'test/model', ? FROM counter
-	`, seeded, actor, testTime.Format(time.RFC3339Nano))
+	`, seeded, actor, formatTime(testTime))
 	require.NoError(t, err)
 
 	appended := ModelTurnEntry{

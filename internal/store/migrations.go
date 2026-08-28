@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 17
+const SchemaVersion = 18
 
 type schemaTooNewError struct {
 	Found     int
@@ -453,7 +453,7 @@ var migrations = []migration{
 				return fmt.Errorf("create persona lineages: %w", err)
 			}
 
-			const zeroTime = "0001-01-01T00:00:00Z"
+			zeroTime := formatTime(time.Time{})
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO persona_revisions
 					(instance_id, parent_id, description, created_at)
@@ -651,6 +651,10 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		Version: 18,
+		Apply:   normaliseStoredTimes,
+	},
 }
 
 type migrationStoredEvent struct {
@@ -804,7 +808,7 @@ func backfillMemberScrollback(
 				(instance_id, channel, type, data, at)
 			VALUES (?, ?, ?, ?, ?)
 		`, actor, channel, domain.EventType(projected), string(data),
-			domain.EventTime(projected).Format(time.RFC3339Nano)); err != nil {
+			formatTime(domain.EventTime(projected))); err != nil {
 			return fmt.Errorf("backfill scrollback event %d for %q: %w", stored.id, actor, err)
 		}
 	}

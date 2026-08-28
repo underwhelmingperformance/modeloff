@@ -183,8 +183,8 @@ func appendReflectionEventTx(
 	`,
 		instanceID, candidate.Source.Kind, candidate.Source.ID, windowKind, windowKey,
 		string(message), candidate.Substantive,
-		candidate.Message.At.Format(time.RFC3339Nano),
-		createdAt.Format(time.RFC3339Nano),
+		formatTime(candidate.Message.At),
+		formatTime(createdAt),
 	)
 	if err != nil {
 		return fmt.Errorf("append reflection event: %w", err)
@@ -449,7 +449,7 @@ func scanReflectionEvent(
 			"decode reflection event %d: %w", event.Sequence, err,
 		)
 	}
-	event.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	event.CreatedAt, err = parseTime(createdAt)
 	if err != nil {
 		return ReflectionEvent{}, fmt.Errorf(
 			"parse reflection event %d creation time: %w", event.Sequence, err,
@@ -512,7 +512,7 @@ func readReflectionInboxStatus(
 		return ReflectionInboxStatus{}, fmt.Errorf("read last reflection attempt: %w", err)
 	}
 	if lastAttemptAt.Valid {
-		at, err := time.Parse(time.RFC3339Nano, lastAttemptAt.String)
+		at, err := parseTime(lastAttemptAt.String)
 		if err != nil {
 			return ReflectionInboxStatus{}, fmt.Errorf(
 				"parse last reflection attempt time: %w", err,

@@ -18,7 +18,7 @@ import (
 // to the caller, since ordering by the zero time already gives the
 // legacy-row behaviour ReadMemories wants.
 func parseMemoryAt(s string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, s)
+	t, err := parseTime(s)
 	if err != nil {
 		return time.Time{}
 	}
@@ -77,7 +77,7 @@ func (s *SQLiteStore) WriteMemory(
 					content = excluded.content,
 					at = excluded.at,
 					pinned = excluded.pinned`,
-				string(id), key, content, at.Format(time.RFC3339Nano), pinned)
+				string(id), key, content, formatTime(at), pinned)
 		})
 }
 

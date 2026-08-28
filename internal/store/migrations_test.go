@@ -202,7 +202,7 @@ func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.
 		InstanceID:  "inst-botty",
 		Baseline:    "careful and curious",
 		Description: "careful and curious",
-		CreatedAt:   "0001-01-01T00:00:00Z",
+		CreatedAt:   formatTime(time.Time{}),
 	}, got)
 	var states int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM persona_lineages`).Scan(&states))

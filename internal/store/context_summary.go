@@ -97,7 +97,7 @@ func (s *SQLiteStore) CommitContextSummary(
 			INSERT INTO context_summary_sources
 				(instance_id, window_kind, window_key, data, at)
 			VALUES (?, ?, ?, ?, ?)
-		`, update.InstanceID, kind, key, string(data), source.At.Format(time.RFC3339Nano))
+		`, update.InstanceID, kind, key, string(data), formatTime(source.At))
 		if err != nil {
 			return ContextSummary{}, fmt.Errorf("insert context summary source: %w", err)
 		}
@@ -114,7 +114,7 @@ func (s *SQLiteStore) CommitContextSummary(
 		return ContextSummary{}, fmt.Errorf("commit context summary: no sources")
 	}
 
-	createdAt := update.CreatedAt.Format(time.RFC3339Nano)
+	createdAt := formatTime(update.CreatedAt)
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO context_summaries
 			(instance_id, window_kind, window_key, summary, first_source_id, last_source_id, created_at)
@@ -281,7 +281,7 @@ func (s *SQLiteStore) ContextSummaries(
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan context summary: %w", err)
 		}
-		row.createdAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		row.createdAt, err = parseTime(createdAt)
 		if err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("parse context summary time: %w", err)
@@ -322,7 +322,7 @@ func (s *SQLiteStore) contextSummaryByID(ctx context.Context, id ContextSummaryI
 	if err != nil {
 		return ContextSummary{}, fmt.Errorf("read context summary: %w", err)
 	}
-	row.createdAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	row.createdAt, err = parseTime(createdAt)
 	if err != nil {
 		return ContextSummary{}, fmt.Errorf("parse context summary time: %w", err)
 	}

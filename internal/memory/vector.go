@@ -713,10 +713,15 @@ func (s *IndexedStore) ensureIndexed(ctx context.Context, id domain.InstanceID) 
 }
 
 func indexedDocumentMatches(entry Entry, document chromem.Document) bool {
+	// The write time is compared as an instant. Two spellings of one
+	// instant are the same write, and re-indexing on a spelling would
+	// spend an embedding call to record what the document already says.
+	at, indexed := document.Metadata["at"]
+
 	return document.Content == memoryDocumentContent(entry) &&
 		document.Metadata["key"] == entry.Key &&
 		document.Metadata["content"] == entry.Content &&
-		document.Metadata["at"] == entry.At.Format(time.RFC3339Nano) &&
+		indexed && parseEntryAt(at).Equal(entry.At) &&
 		document.Metadata["pinned"] == strconv.FormatBool(entry.Pinned)
 }
 

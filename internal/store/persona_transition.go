@@ -158,7 +158,7 @@ func insertDescribedRevisionTx(
 		INSERT INTO persona_revisions
 			(instance_id, parent_id, description, created_at)
 		VALUES (?, ?, ?, ?)
-	`, parent.InstanceID, parent.ID, description, at.Format(time.RFC3339Nano))
+	`, parent.InstanceID, parent.ID, description, formatTime(at))
 	if err != nil {
 		return 0, fmt.Errorf("insert persona revision: %w", err)
 	}
@@ -210,7 +210,7 @@ func movePersonaRevisionTx(
 			(instance_id, from_revision_id, to_revision_id, kind, at)
 		VALUES (?, ?, ?, ?, ?)
 	`, instanceID, expectedRevision, targetRevision, kind,
-		at.Format(time.RFC3339Nano)); err != nil {
+		formatTime(at)); err != nil {
 		return domain.PersonaLineage{}, fmt.Errorf("insert persona transition: %w", err)
 	}
 
@@ -292,7 +292,7 @@ func scanPersonaTransition(
 	); err != nil {
 		return domain.PersonaTransition{}, fmt.Errorf("scan persona transition: %w", err)
 	}
-	parsed, err := time.Parse(time.RFC3339Nano, at)
+	parsed, err := parseTime(at)
 	if err != nil {
 		return domain.PersonaTransition{}, fmt.Errorf("parse persona transition time: %w", err)
 	}
