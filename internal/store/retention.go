@@ -40,6 +40,25 @@ const (
 	modelTurnRetentionHeadroom = 500
 	modelTurnRetentionBytes    = 64 << 20
 
+	// memoryRetentionHeadroom bounds the memories retained for each
+	// instance. An instance writes memories through write_memory for as
+	// long as it exists. What takes one back is its own delete_memory,
+	// which a model has little reason to call, and the deletion of the
+	// instance itself. Without this pass an instance's row count and its
+	// share of the vector index grow for its whole life.
+	//
+	// The prompt's memory block renders at most maxMemoryEntries
+	// (internal/modelclient, 50) of them, and search_memory is what
+	// reaches the rest. Keeping four times the block leaves search a
+	// wide margin of entries the block cannot show, the same
+	// multiplier eventRetentionHeadroom applies to the largest read
+	// its own consumer makes. Beyond that the pass does discard
+	// memories a search could have found, which is the cost of
+	// bounding a table nothing else bounds. Overwriting a memory
+	// updates its write time, so the ones an instance keeps using are
+	// the ones that stay.
+	memoryRetentionHeadroom = 4 * 50
+
 	// eventDeleteBatchSize bounds how many rows one DELETE statement
 	// in a retention pass removes. A database that has never been
 	// pruned before, or has run for a long time between opens, can be
@@ -83,6 +102,7 @@ func (s *SQLiteStore) retentionPasses() []retentionPass {
 		{"instance_replies", s.pruneInstanceReplies},
 		{"dm", s.pruneAllDMEvents},
 		{"model_turns", s.pruneModelTurns},
+		{"memories", s.pruneMemories},
 	}
 }
 
@@ -132,6 +152,7 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			attribute.Int64("modeloff.retention.instance_replies_orphaned_removed", orphans.instanceReplies),
 			attribute.Int64("modeloff.retention.model_turns_orphaned_removed", orphans.modelTurns),
 			attribute.Int64("modeloff.retention.context_summaries_orphaned_removed", orphans.contextSummaries),
+			attribute.Int64("modeloff.retention.memories_orphaned_removed", orphans.memories),
 		}
 		fields := []any{
 			"component", "store.sqlite",
@@ -141,6 +162,7 @@ func (s *SQLiteStore) pruneEvents(ctx context.Context) error {
 			"instance_replies_orphaned_removed", orphans.instanceReplies,
 			"model_turns_orphaned_removed", orphans.modelTurns,
 			"context_summaries_orphaned_removed", orphans.contextSummaries,
+			"memories_orphaned_removed", orphans.memories,
 		}
 		for _, pass := range s.retentionPasses() {
 			attrs = append(attrs, attribute.Int64(
@@ -215,11 +237,12 @@ type orphanRetention struct {
 	instanceReplies   int64
 	modelTurns        int64
 	contextSummaries  int64
+	memories          int64
 }
 
 func (r orphanRetention) total() int64 {
 	return r.channelEvents + r.dmEvents + r.channelScrollback +
-		r.instanceReplies + r.modelTurns + r.contextSummaries
+		r.instanceReplies + r.modelTurns + r.contextSummaries + r.memories
 }
 
 func (s *SQLiteStore) pruneOrphans(ctx context.Context) (orphanRetention, error) {
@@ -254,6 +277,11 @@ func (s *SQLiteStore) pruneOrphans(ctx context.Context) (orphanRetention, error)
 	removed.contextSummaries, err = s.pruneOrphanContextSummaries(ctx)
 	if err != nil {
 		return orphanRetention{}, fmt.Errorf("prune orphaned context summaries: %w", err)
+	}
+
+	removed.memories, err = s.pruneOrphanMemories(ctx)
+	if err != nil {
+		return orphanRetention{}, fmt.Errorf("prune orphaned memories: %w", err)
 	}
 
 	return removed, nil
@@ -395,6 +423,44 @@ func (s *SQLiteStore) pruneModelTurnsTo(
 		maxTurns,
 		maxBytes,
 	})
+}
+
+// pruneOrphanMemories removes the memories of an instance that no
+// longer has a row in instances. The memories table has no foreign
+// key to cascade through, and DeleteMemoriesByInstance runs only on
+// the departure path, so these are the rows a run that ended without
+// one left behind.
+func (s *SQLiteStore) pruneOrphanMemories(ctx context.Context) (int64, error) {
+	query := `DELETE FROM memories WHERE rowid IN (
+		SELECT rowid FROM memories
+		WHERE instance_id != ''
+			AND instance_id NOT IN (SELECT instance_id FROM instances)
+		ORDER BY rowid LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, nil)
+}
+
+// pruneMemories trims each instance's memories down to
+// memoryRetentionHeadroom, keeping the most recently written and
+// breaking ties on key so the pass removes the same rows whatever
+// order SQLite reads them in.
+//
+// The write time is what WriteMemory stamps, which an overwrite
+// refreshes. Reading a memory or finding it through search_memory does
+// not, so a memory an instance goes on consulting is trimmed at the age
+// it was last written.
+func (s *SQLiteStore) pruneMemories(ctx context.Context) (int64, error) {
+	query := `DELETE FROM memories WHERE rowid IN (
+		SELECT rowid FROM (
+			SELECT rowid, row_number() OVER (
+				PARTITION BY instance_id ORDER BY at DESC, key ASC
+			) AS position
+			FROM memories
+		) WHERE position > ? LIMIT ?
+	)`
+
+	return deleteEventsBatched(ctx, s.db, query, []any{memoryRetentionHeadroom})
 }
 
 func (s *SQLiteStore) pruneChannelScrollback(ctx context.Context) (int64, error) {

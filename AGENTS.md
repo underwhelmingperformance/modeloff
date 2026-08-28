@@ -1116,7 +1116,15 @@ the transaction that opens one, by turn count and by total entry
 bytes. Context summary sources are trimmed per actor and window by the
 transaction that commits a summary. The reflection inbox is trimmed on
 every append. The reflection run log is trimmed per instance when a
-run is recorded.
+run is recorded. Memories are trimmed on open, keeping each instance's
+most recently written `memoryRetentionHeadroom`: what else takes a
+memory back is the instance's own `delete_memory`, which a model has
+little reason to call, and the deletion of the instance. The vector
+index follows the same bound. `IndexedStore` reconciles a collection
+against the backing store after a write as well as on a search, so an
+instance that writes memories and never searches them stays bounded,
+and opening the index drops any collection the backing store holds
+nothing for.
 
 ### Window authority and the turn journal
 

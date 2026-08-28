@@ -936,3 +936,166 @@ func TestSQLiteStore_pruneEvents_removes_context_summaries_outside_actor_visibil
 		ORDER BY instance_id, window_kind, window_key
 	`))
 }
+
+// writeTestMemories writes n memories for one instance, one second
+// apart, and returns their keys in write order.
+func writeTestMemories(t *testing.T, s *SQLiteStore, id domain.InstanceID, n int) []string {
+	t.Helper()
+
+	keys := make([]string, n)
+	for i := range n {
+		keys[i] = fmt.Sprintf("fact_%04d", i)
+		require.NoError(t, s.WriteMemory(
+			t.Context(), id, keys[i], fmt.Sprintf("value %d", i),
+			testTime.Add(time.Duration(i)*time.Second), false,
+		))
+	}
+
+	return keys
+}
+
+func memoryKeys(entries []MemoryEntry) []string {
+	keys := make([]string, len(entries))
+	for i, e := range entries {
+		keys[i] = e.Key
+	}
+
+	return keys
+}
+
+// TestSQLiteStore_pruneEvents_trims_each_instance_memories pins the
+// per-instance bound: an instance holding more than
+// memoryRetentionHeadroom memories keeps exactly that many, the ones
+// written most recently.
+func TestSQLiteStore_pruneEvents_trims_each_instance_memories(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		actor = domain.InstanceID("inst-botty")
+		extra = 23
+	)
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(actor, "botty", "test/model", "", nil)))
+
+	keys := writeTestMemories(t, s, actor, memoryRetentionHeadroom+extra)
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got, err := s.ReadMemories(ctx, actor)
+	require.NoError(t, err)
+	require.Equal(t, keys[extra:], memoryKeys(got))
+}
+
+// TestSQLiteStore_pruneEvents_trims_every_instance_separately pins
+// that the bound is per instance: one instance over the headroom does
+// not cost another instance the memories it is under the headroom
+// with.
+func TestSQLiteStore_pruneEvents_trims_every_instance_separately(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		busy  = domain.InstanceID("inst-busy")
+		quiet = domain.InstanceID("inst-quiet")
+		extra = 7
+	)
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(busy, "busy", "test/model", "", nil)))
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(quiet, "quiet", "test/model", "", nil)))
+
+	busyKeys := writeTestMemories(t, s, busy, memoryRetentionHeadroom+extra)
+	quietKeys := writeTestMemories(t, s, quiet, 3)
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	gotBusy, err := s.ReadMemories(ctx, busy)
+	require.NoError(t, err)
+	gotQuiet, err := s.ReadMemories(ctx, quiet)
+	require.NoError(t, err)
+
+	type retained struct {
+		Busy  []string
+		Quiet []string
+	}
+
+	require.Equal(t, retained{
+		Busy:  busyKeys[extra:],
+		Quiet: quietKeys,
+	}, retained{
+		Busy:  memoryKeys(gotBusy),
+		Quiet: memoryKeys(gotQuiet),
+	})
+}
+
+// TestSQLiteStore_pruneEvents_keeps_a_rewritten_memory pins that
+// overwriting a memory makes it recent again. WriteMemory stamps the
+// entry's write time and retention orders on that, so rewriting the
+// oldest memory carries it past newer ones the instance has left
+// alone. Reading a memory does not refresh it; only a write does.
+func TestSQLiteStore_pruneEvents_keeps_a_rewritten_memory(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		actor = domain.InstanceID("inst-botty")
+		extra = 5
+	)
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(actor, "botty", "test/model", "", nil)))
+
+	keys := writeTestMemories(t, s, actor, memoryRetentionHeadroom+extra)
+
+	rewritten := keys[0]
+	require.NoError(t, s.WriteMemory(ctx, actor, rewritten, "still true",
+		testTime.Add(time.Duration(len(keys))*time.Second), false))
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	got, err := s.ReadMemories(ctx, actor)
+	require.NoError(t, err)
+
+	want := append([]string{rewritten}, keys[extra+1:]...)
+	sort.Strings(want)
+	require.Equal(t, want, memoryKeys(got))
+}
+
+// TestSQLiteStore_pruneEvents_removes_a_departed_instance_memories
+// covers the run that ended without the departure that would have
+// called DeleteMemoriesByInstance: the memories table has no foreign
+// key to cascade through, so nothing else removes those rows.
+func TestSQLiteStore_pruneEvents_removes_a_departed_instance_memories(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	const (
+		present = domain.InstanceID("inst-present")
+		gone    = domain.InstanceID("inst-gone")
+	)
+
+	require.NoError(t, s.SaveInstance(ctx,
+		domain.NewModelInstance(present, "present", "test/model", "", nil)))
+
+	require.NoError(t, s.WriteMemory(ctx, present, "kept", "value", testTime, false))
+	require.NoError(t, s.WriteMemory(ctx, gone, "orphaned", "value", testTime, false))
+
+	require.NoError(t, s.pruneEvents(ctx))
+
+	gotPresent, err := s.ReadMemories(ctx, present)
+	require.NoError(t, err)
+	gotGone, err := s.ReadMemories(ctx, gone)
+	require.NoError(t, err)
+
+	type retained struct {
+		Present []string
+		Gone    []string
+	}
+
+	require.Equal(t, retained{
+		Present: []string{"kept"},
+		Gone:    []string{},
+	}, retained{
+		Present: memoryKeys(gotPresent),
+		Gone:    memoryKeys(gotGone),
+	})
+}

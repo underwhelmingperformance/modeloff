@@ -1057,3 +1057,85 @@ func TestIndexedStore_ReconcileEmbeddingModel_persists_across_reopen(t *testing.
 		{Entry: Entry{Key: "cat_fact", Content: "cats are great"}, Similarity: 1.0},
 	}, results)
 }
+
+// indexedCollectionEffect is how many documents an instance's collection
+// holds, and whether the collection exists at all.
+type indexedCollectionEffect struct {
+	Exists bool
+	Count  int
+}
+
+func collectionEffect(
+	s *IndexedStore,
+	id domain.InstanceID,
+	embedder chromem.EmbeddingFunc,
+) indexedCollectionEffect {
+	col := s.db.GetCollection(string(id), embedder)
+	if col == nil {
+		return indexedCollectionEffect{}
+	}
+
+	return indexedCollectionEffect{Exists: true, Count: col.Count()}
+}
+
+// TestIndexedStore_write_reconciles_the_collection pins that a write brings
+// the collection back in line with the backing store.
+//
+// The backing store's retention deletes memories, and the index hears
+// nothing about it. Reconciling only on search would leave an instance that
+// writes memories and never searches them with a collection that grows for
+// as long as the index directory lives.
+func TestIndexedStore_write_reconciles_the_collection(t *testing.T) {
+	ctx := t.Context()
+	embedder := trivialEmbedder()
+	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
+	s := NewIndexedStoreFromDB(ctx, backing, chromem.NewDB(), embedder)
+	const actor = domain.InstanceID("inst-botty")
+
+	for _, key := range []string{"first", "second", "third"} {
+		require.NoError(t, s.Write(ctx, actor, Entry{Key: key, Content: key}))
+	}
+	indexed := collectionEffect(s, actor, embedder)
+
+	// Delete behind the index, which is what the backing store's own
+	// retention pass does.
+	require.NoError(t, backing.Delete(ctx, actor, "first"))
+	require.NoError(t, backing.Delete(ctx, actor, "second"))
+	require.NoError(t, s.Write(ctx, actor, Entry{Key: "fourth", Content: "fourth"}))
+
+	require.Equal(t, []indexedCollectionEffect{
+		{Exists: true, Count: 3},
+		{Exists: true, Count: 2},
+	}, []indexedCollectionEffect{indexed, collectionEffect(s, actor, embedder)})
+}
+
+// TestIndexedStore_drops_orphaned_collections pins that opening the index
+// removes a collection whose instance the backing store holds nothing for.
+//
+// A deleted instance never searches again, so nothing else would ever reach
+// its collection, and what it wrote would stay in the index directory for as
+// long as the directory lives.
+func TestIndexedStore_drops_orphaned_collections(t *testing.T) {
+	ctx := t.Context()
+	embedder := trivialEmbedder()
+	backing := NewStoreAdapter(storetest.NewMemoryStore(t))
+	db := chromem.NewDB()
+	s := NewIndexedStoreFromDB(ctx, backing, db, embedder)
+	const (
+		departed = domain.InstanceID("inst-gone")
+		present  = domain.InstanceID("inst-here")
+	)
+
+	require.NoError(t, s.Write(ctx, departed, Entry{Key: "fact", Content: "fact"}))
+	require.NoError(t, s.Write(ctx, present, Entry{Key: "fact", Content: "fact"}))
+	require.NoError(t, backing.Delete(ctx, departed, "fact"))
+
+	reopened := NewIndexedStoreFromDB(ctx, backing, db, embedder)
+
+	require.Equal(t, []indexedCollectionEffect{
+		{}, {Exists: true, Count: 1},
+	}, []indexedCollectionEffect{
+		collectionEffect(reopened, departed, embedder),
+		collectionEffect(reopened, present, embedder),
+	})
+}

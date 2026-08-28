@@ -130,6 +130,7 @@ func NewIndexedStore(ctx context.Context, backing Store, indexDir string, embedd
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
 	s.storeProbeResult(probeEmbeddingFunc(ctx, embeddingFunc))
+	s.dropOrphanedCollections(ctx)
 
 	return s, nil
 }
@@ -148,6 +149,7 @@ func NewIndexedStoreFromDB(ctx context.Context, backing Store, db *chromem.DB, e
 	}
 	s.embeddingFunc = s.instrumentEmbedding(embeddingFunc)
 	s.storeProbeResult(probeEmbeddingFunc(ctx, embeddingFunc))
+	s.dropOrphanedCollections(ctx)
 
 	return s
 }
@@ -408,11 +410,50 @@ func (s *IndexedStore) finishPreparedWrite(
 	err := s.inSpan(ctx, "memory.finish_write",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
 		func(ctx context.Context, _ trace.Span) error {
-			return s.indexPrepared(ctx, id, entry, embedding)
+			if err := s.indexPrepared(ctx, id, entry, embedding); err != nil {
+				return err
+			}
+
+			// The backing store's retention deletes memories without the
+			// index hearing about it. Reconciling here bounds the
+			// collection by the same rule, for an instance that writes
+			// memories and never searches them.
+			if !s.Searchable() {
+				return nil
+			}
+
+			return s.ensureIndexed(ctx, id)
 		})
 	if err != nil {
 		slog.Default().WarnContext(ctx, "failed to index memory",
 			"instance_id", string(id), "key", entry.Key, "error", err)
+	}
+}
+
+// dropOrphanedCollections removes every collection the backing store holds
+// no memories for.
+//
+// ensureIndexed reaches a collection only when its instance searches, and
+// an instance whose row has been deleted never searches again. Without this
+// its collection stays in the index directory for as long as the directory
+// does, still holding what that instance wrote.
+func (s *IndexedStore) dropOrphanedCollections(ctx context.Context) {
+	for name := range s.db.ListCollections() {
+		entries, err := s.backing.Read(ctx, domain.InstanceID(name))
+		if err != nil {
+			slog.Default().WarnContext(ctx,
+				"read memories while dropping orphaned index collections",
+				"instance_id", name, "error", err)
+
+			continue
+		}
+		if len(entries) > 0 {
+			continue
+		}
+		if err := s.db.DeleteCollection(name); err != nil {
+			slog.Default().WarnContext(ctx, "failed to drop orphaned index collection",
+				"instance_id", name, "error", err)
+		}
 	}
 }
 
