@@ -312,7 +312,7 @@ func TestChannelSidebar_dm_cursor_uses_dm_style(t *testing.T) {
 	m, _ = m.Update(ctrlKey("alt+down"))
 
 	v := renderToBuffer(m, 30, 10)
-	require.Equal(t, []string{"Channels", "#general", "Queries", "▸botty"}, visibleLines(v))
+	require.Equal(t, []string{"Channels", "▸#general", "Queries", "▹botty"}, visibleLines(v))
 }
 
 func TestChannelSidebar_cursor_follows_active_on_set_channels(t *testing.T) {
@@ -561,4 +561,97 @@ func TestChannelSidebar_lifecycle_clears_on_activation(t *testing.T) {
 
 	require.NotEqual(t, flagged, cleared, "lifecycle styling should clear after activation")
 	require.False(t, italicSGR.MatchString(cleared), "post-clear style should not be italic")
+}
+
+// cursorCase drives a sidebar built from `channels` with `active`
+// activated, then applies `msgs` in order.
+type cursorCase struct {
+	name     string
+	channels []domain.Window
+	active   domain.ChannelName
+	msgs     []tea.Msg
+	want     cursorEffect
+}
+
+// cursorEffect records the rendered sidebar and the window ctrl+o then
+// activates. In the rendered lines "▸" marks the active window and "▹"
+// marks a cursor sitting somewhere else.
+type cursorEffect struct {
+	lines     []string
+	activates domain.ChannelName
+}
+
+// TestChannelSidebar_cursor_belongs_to_the_user pins which sidebar
+// messages move the cursor. The chat screen queues ChannelActiveMsg,
+// so it can arrive after the user has navigated somewhere else, and
+// dragging the cursor back would undo that navigation. Removing the
+// cursor's own window also moves the cursor; inserting another window
+// must leave it on the window it was already on.
+func TestChannelSidebar_cursor_belongs_to_the_user(t *testing.T) {
+	// testChannels sorts as #dev, #general, #random.
+	tests := []cursorCase{
+		{
+			name:     "a late activation leaves the cursor alone",
+			channels: testChannels,
+			active:   "#general",
+			msgs: []tea.Msg{
+				ctrlKey("alt+down"),
+				components.ChannelActiveMsg{Channel: "#general"},
+			},
+			want: cursorEffect{
+				lines:     []string{"Channels", "#dev", "▸#general", "▹#random"},
+				activates: "#random",
+			},
+		},
+		{
+			name: "the first activation places the cursor",
+			msgs: []tea.Msg{
+				components.ChannelAddedMsg{Channel: testChannels[0]},
+				components.ChannelAddedMsg{Channel: testChannels[1]},
+				components.ChannelAddedMsg{Channel: testChannels[2]},
+				components.ChannelActiveMsg{Channel: "#random"},
+			},
+			want: cursorEffect{
+				lines:     []string{"Channels", "#dev", "#general", "▸#random"},
+				activates: "#random",
+			},
+		},
+		{
+			name:     "removing the cursor's window drops the cursor to the window taking its place",
+			channels: testChannels,
+			active:   "#general",
+			msgs:     []tea.Msg{components.ChannelRemovedMsg{Channel: "#general"}},
+			want: cursorEffect{
+				lines:     []string{"Channels", "#dev", "▹#random"},
+				activates: "#random",
+			},
+		},
+		{
+			name:     "a window inserted above the cursor leaves it on the same window",
+			channels: []domain.Window{testChannels[0], testChannels[1]},
+			active:   "#random",
+			msgs:     []tea.Msg{components.ChannelAddedMsg{Channel: testChannels[2]}},
+			want: cursorEffect{
+				lines:     []string{"Channels", "#dev", "#general", "▸#random"},
+				activates: "#random",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChannelSidebar(tt.channels, tt.active, nil)
+
+			for _, msg := range tt.msgs {
+				m, _ = m.Update(msg)
+			}
+
+			_, activated := activateAndGetChannel(t, m, ctrlKey("ctrl+o"))
+
+			require.Equal(t, tt.want, cursorEffect{
+				lines:     visibleLines(renderToBuffer(m, 30, 10)),
+				activates: activated,
+			})
+		})
+	}
 }

@@ -64,7 +64,7 @@ func sidebarUpdate(t *testing.T, sb components.Sidebar[sidebarItem, string], msg
 
 func TestSidebar_mouse_wheel_outside_bounds_is_ignored(t *testing.T) {
 	sb, _ := newTestSidebar("alpha", "beta", "gamma")
-	sb = sb.SetActiveKey("alpha")
+	sb = sb.SetCursorKey("alpha")
 	sb, _ = sidebarUpdate(t, sb, ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 10)})
 
 	require.Equal(t, "alpha", sb.CursorKey())

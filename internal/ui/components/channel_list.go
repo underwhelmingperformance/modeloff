@@ -79,9 +79,17 @@ func windowView(
 			style = theme.SidebarLifecycle
 		}
 
+		// ▸ marks the window the user is reading. ▹ marks the
+		// cursor, which they can move to another window without
+		// switching to it.
 		prefix := " "
-		if state == StateSelected || state == StateActiveSelected {
+
+		switch state {
+		case StateActive, StateActiveSelected:
 			prefix = "▸"
+		case StateSelected:
+			prefix = "▹"
+		case StateNone:
 		}
 
 		return style.Render(prefix + name)
@@ -152,7 +160,7 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		return cl.setChannels(msg), nil
 
 	case ChannelAddedMsg:
-		cl.panel.items.Insert(msg.Channel)
+		cl.panel = cl.panel.Insert(msg.Channel)
 
 		if msg.Unread > 0 {
 			cl.unread[msg.Channel.Name()] = msg.Unread
@@ -161,7 +169,7 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		return cl, nil
 
 	case ChannelRemovedMsg:
-		cl.panel.items.Remove(domain.WindowKey(msg.Channel))
+		cl.panel = cl.panel.Remove(domain.WindowKey(msg.Channel))
 		delete(cl.unread, msg.Channel)
 		delete(cl.mentions, msg.Channel)
 		delete(cl.lifecycle, msg.Channel)
@@ -170,6 +178,16 @@ func (cl ChannelSidebar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 
 	case ChannelActiveMsg:
 		cl.panel = cl.panel.SetActiveKey(msg.Channel)
+
+		// The chat screen queues this message, so it can arrive
+		// after the user has moved the cursor to another window.
+		// Moving the cursor here would undo that navigation. On the
+		// first activation there is no cursor yet, so it starts on
+		// the window being activated.
+		if !cl.panel.HasCursor() {
+			cl.panel = cl.panel.SetCursorKey(msg.Channel)
+		}
+
 		delete(cl.mentions, msg.Channel)
 		delete(cl.lifecycle, msg.Channel)
 
@@ -225,7 +243,7 @@ func (cl ChannelSidebar) setChannels(msg SetChannelsMsg) ChannelSidebar {
 	cl.panel = cl.panel.SetItems(items)
 
 	if msg.Active != "" {
-		cl.panel = cl.panel.SetActiveKey(msg.Active)
+		cl.panel = cl.panel.SetActiveKey(msg.Active).SetCursorKey(msg.Active)
 	}
 
 	return cl

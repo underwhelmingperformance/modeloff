@@ -130,6 +130,7 @@ type Sidebar[T set.Lesser[T], K comparable] struct {
 	active    K
 	cursorIdx int
 	activeIdx int
+	hasCursor bool
 	hasActive bool
 	viewport  viewport.Model
 	header    string
@@ -158,9 +159,11 @@ func NewSidebar[T set.Lesser[T], K comparable](
 	}
 }
 
-// SetItems replaces the backing sorted set. The cursor and active
-// keys are preserved if they still exist; otherwise the cursor
-// clamps to the nearest neighbour.
+// SetItems replaces the backing sorted set and recalculates the stored
+// positions. It keeps the cursor key and the active key when their items
+// are still in the set. If the cursor's item is gone, the cursor moves to
+// the item now at its previous position; if the active item is gone,
+// nothing is active.
 func (s Sidebar[T, K]) SetItems(items *set.Sorted[T]) Sidebar[T, K] {
 	s.items = items
 	s.revalidate()
@@ -196,19 +199,63 @@ func (s Sidebar[T, K]) SetKeyMap(km SidebarKeyMap) Sidebar[T, K] {
 	return s
 }
 
-// SetActiveKey sets the active item by key and moves the cursor
-// to it. Returns the sidebar unchanged if the key is not found.
+// SetActiveKey sets the active item by key, leaving the cursor
+// where it is. Returns the sidebar unchanged if the key is not
+// found.
 func (s Sidebar[T, K]) SetActiveKey(k K) Sidebar[T, K] {
-	idx := s.findIndex(k)
-	if idx < 0 {
+	idx, ok := s.indexOf(k)
+	if !ok {
 		return s
 	}
 
 	s.active = k
 	s.activeIdx = idx
 	s.hasActive = true
-	s.cursor = k
-	s.cursorIdx = idx
+
+	return s
+}
+
+// SetCursorKey moves the cursor to the item with the given key.
+// Returns the sidebar unchanged if the key is not found.
+func (s Sidebar[T, K]) SetCursorKey(k K) Sidebar[T, K] {
+	if idx, ok := s.indexOf(k); ok {
+		s.placeCursor(idx)
+	}
+
+	return s
+}
+
+// HasCursor reports whether the cursor is on an item. A new sidebar
+// has no cursor until something places one, and a sidebar whose
+// list empties loses it again.
+func (s Sidebar[T, K]) HasCursor() bool {
+	return s.hasCursor
+}
+
+// Insert adds an item to the sorted set and re-derives the cursor
+// and active positions, which the insertion may have shifted.
+func (s Sidebar[T, K]) Insert(item T) Sidebar[T, K] {
+	if s.items == nil {
+		return s
+	}
+
+	s.items.Insert(item)
+	s.revalidate()
+
+	return s
+}
+
+// Remove drops an item from the sorted set and re-derives the
+// cursor and active positions, which the removal may have shifted.
+// Removing the item under the cursor leaves the cursor at the same
+// position in the list, on whichever item now occupies it.
+func (s Sidebar[T, K]) Remove(item T) Sidebar[T, K] {
+	if s.items == nil {
+		return s
+	}
+
+	s.items.Remove(item)
+	s.revalidate()
 
 	return s
 }
@@ -328,18 +375,21 @@ func (s Sidebar[T, K]) renderRow(row sidebarRow, itemWidth int) (text string, is
 
 	k := s.cfg.Key(item)
 
-	return s.cfg.View(item, s.stateFor(k), itemWidth), k == s.cursor, true
+	return s.cfg.View(item, s.stateFor(k), itemWidth), s.hasCursor && k == s.cursor, true
 }
 
 // stateFor reports the ViewState an item's key renders with: active
 // and/or under the cursor.
 func (s Sidebar[T, K]) stateFor(k K) ViewState {
+	onCursor := s.hasCursor && k == s.cursor
+	isActive := s.hasActive && k == s.active
+
 	switch {
-	case k == s.active && k == s.cursor:
+	case isActive && onCursor:
 		return StateActiveSelected
-	case k == s.active:
+	case isActive:
 		return StateActive
-	case k == s.cursor:
+	case onCursor:
 		return StateSelected
 	default:
 		return StateNone
@@ -479,15 +529,24 @@ func (s *Sidebar[T, K]) moveCursor(delta int) {
 	newIdx := s.cursorIdx + delta
 	newIdx = max(0, min(newIdx, s.items.Len()-1))
 
-	if newIdx == s.cursorIdx {
+	if newIdx == s.cursorIdx && s.hasCursor {
 		return
 	}
 
-	s.cursorIdx = newIdx
+	s.placeCursor(newIdx)
+}
 
-	if item, ok := s.items.GetAt(newIdx); ok {
-		s.cursor = s.cfg.Key(item)
+// placeCursor moves the cursor onto the item at idx. If idx does not
+// refer to an item, the cursor stays where it is.
+func (s *Sidebar[T, K]) placeCursor(idx int) {
+	item, ok := s.items.GetAt(idx)
+	if !ok {
+		return
 	}
+
+	s.cursor = s.cfg.Key(item)
+	s.cursorIdx = idx
+	s.hasCursor = true
 }
 
 func (s *Sidebar[T, K]) activateIndex(idx int) tea.Cmd {
@@ -521,10 +580,7 @@ func (s *Sidebar[T, K]) activateAt(idx int) tea.Cmd {
 		return nil
 	}
 
-	s.cursorIdx = idx
-	if item, ok := s.items.GetAt(idx); ok {
-		s.cursor = s.cfg.Key(item)
-	}
+	s.placeCursor(idx)
 
 	return s.activateIndex(idx)
 }
@@ -569,22 +625,30 @@ func (s Sidebar[T, K]) activateNextActivity() (Sidebar[T, K], tea.Cmd) {
 	return s, nil
 }
 
+// revalidate recalculates the cursor and active positions after the item
+// list changes. An insertion or a removal can shift later items, so a
+// stored index may name a different item than it did, and each is found
+// again by its key.
 func (s *Sidebar[T, K]) revalidate() {
 	if s.items == nil || s.items.Len() == 0 {
 		s.cursorIdx = 0
+		s.hasCursor = false
 		s.activeIdx = -1
 		s.hasActive = false
 
 		return
 	}
 
-	// Revalidate cursor.
-	s.cursorIdx = s.findIndex(s.cursor)
+	if s.hasCursor {
+		if idx, ok := s.indexOf(s.cursor); ok {
+			s.cursorIdx = idx
+		} else {
+			s.placeCursor(min(s.cursorIdx, s.items.Len()-1))
+		}
+	}
 
-	// Revalidate active.
 	if s.hasActive {
-		idx := s.findIndex(s.active)
-		if idx >= 0 {
+		if idx, ok := s.indexOf(s.active); ok {
 			s.activeIdx = idx
 		} else {
 			s.activeIdx = -1
@@ -593,27 +657,24 @@ func (s *Sidebar[T, K]) revalidate() {
 	}
 }
 
-func (s Sidebar[T, K]) findIndex(k K) int {
+// indexOf returns the position of the item with the given key in
+// the sorted set's iteration order.
+func (s Sidebar[T, K]) indexOf(k K) (int, bool) {
 	if s.items == nil {
-		return -1
+		return 0, false
 	}
 
 	idx := 0
 
 	for item := range s.items.All() {
 		if s.cfg.Key(item) == k {
-			return idx
+			return idx, true
 		}
 
 		idx++
 	}
 
-	// Key not found — clamp to last valid position.
-	if s.items.Len() > 0 {
-		return min(idx-1, s.items.Len()-1)
-	}
-
-	return 0
+	return 0, false
 }
 
 func (s Sidebar[T, K]) handleMouse(msg tea.MouseMsg) (Sidebar[T, K], tea.Cmd) {

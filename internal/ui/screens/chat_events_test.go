@@ -107,7 +107,7 @@ func TestChatScreen_PartEvent_leaving_non_active_keeps_active(t *testing.T) {
 	// Active channel should remain #general since we parted #random.
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
-	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "▹#random"}, uitest.NonEmptyColumn(uitest.VisibleColumns(body)[0]))
 }
 
 func TestChatScreen_TopicChangeEvent_different_channel(t *testing.T) {
@@ -291,7 +291,7 @@ func TestChatScreen_NickChangeEvent_surfaces_in_open_DM(t *testing.T) {
 
 	tm.WaitFor("fakenick is now known as renamedbot")
 	want := [][]string{
-		{"Channels", "&modeloff", "#general", "Queries", "▸renamedbot"},
+		{"Channels", "&modeloff", "▹#general", "Queries", "▸renamedbot"},
 		{"*** fakenick is now known as renamedbot", "testuser >"},
 		{"Nicks", "renamedbot"},
 	}
@@ -544,7 +544,7 @@ func TestChatScreen_focus_status_channel_keeps_status_identity(t *testing.T) {
 	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
 
-	require.Equal(t, []string{"Channels", "▸&modeloff", "#general"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{"Channels", "▸&modeloff", "▹#general"}, uitest.NonEmptyColumn(columns[0]))
 	// `&modeloff` is a virtual server window, not a channel: no
 	// members, no modes, no join/part lifecycle. The only entries
 	// that land here are server-narrated wire events the chat-screen
@@ -607,7 +607,7 @@ func TestChatScreen_MessageEvent_inactive_channel(t *testing.T) {
 	view := tm.CurrentView()
 	body, _ := uitest.SplitBodyAndStatus(view)
 	columns := uitest.VisibleColumns(body)
-	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "#random (1)"}, uitest.NonEmptyColumn(columns[0]))
+	require.Equal(t, []string{"Channels", "&modeloff", "▸#general", "▹#random (1)"}, uitest.NonEmptyColumn(columns[0]))
 	require.Equal(t, []string{
 		"*** Created channel #general",
 		"<bob> sync marker",
