@@ -232,17 +232,26 @@ func (s ChatScreen) handleConnectionError(domain.ConnectionError) (ChatScreen, t
 // dispatch goroutines to link their turn spans to the originating
 // handler. After each delivery, this should be re-invoked so the
 // channel is continuously drained.
+//
+// The wait ends on the application context as well as on a delivery.
+// A program that quits with nothing in flight leaves this goroutine
+// parked on a channel whose only writer has already gone.
 func (s ChatScreen) listenForProtocolEvents() tea.Cmd {
 	ch := s.client.Events()
+	done := s.baseContext().Done()
 
 	return func() tea.Msg {
-		delivery, ok := <-ch
-		if !ok {
-			return nil
-		}
+		select {
+		case delivery, ok := <-ch:
+			if !ok {
+				return nil
+			}
 
-		return protocolEventMsg{
-			event: delivery.Event, targets: delivery.Targets, window: delivery.Window,
+			return protocolEventMsg{
+				event: delivery.Event, targets: delivery.Targets, window: delivery.Window,
+			}
+		case <-done:
+			return nil
 		}
 	}
 }
