@@ -138,7 +138,7 @@ func (c *OpenRouterClient) SummarizeContext(
 			var parsed contextSummaryResponse
 			if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
 				markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-				return &completionParseError{target: "context summary", err: err}
+				return &CompletionParseError{Target: "context summary", Err: err}
 			}
 			if parsed.Summary == "" {
 				err := fmt.Errorf("summarise context: schema-valid response carried an empty summary")

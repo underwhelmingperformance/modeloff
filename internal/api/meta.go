@@ -191,7 +191,7 @@ func (c *OpenRouterClient) generateNick(
 
 				if err := json.Unmarshal([]byte(choice.Message.Content), &parsed); err != nil {
 					markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-					return &completionParseError{target: "nickname", err: err}
+					return &CompletionParseError{Target: "nickname", Err: err}
 				}
 
 				if parsed.Nick == "" {
@@ -319,7 +319,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 			var wrapper personaListWrapper
 			if err := json.Unmarshal([]byte(choice.Message.Content), &wrapper); err != nil {
 				markSpanError(span, observability.ErrorKindResponseParse, 0, err)
-				return &completionParseError{target: "persona list", err: err}
+				return &CompletionParseError{Target: "persona list", Err: err}
 			}
 
 			// A generated persona becomes lower-authority instance

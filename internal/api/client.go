@@ -388,12 +388,33 @@ type ReflectionResult struct {
 
 // ReflectionGenerator is the optional provider capability used by the
 // manager-owned private reflection scheduler.
+//
+// A reflection is two phases. ReflectPersona and ContinueReflection
+// explore: the instance reads its own past through read-only tools, with
+// no response format set. ProposeReflection closes the run: the
+// accumulated conversation is asked for its proposal, with the schema and
+// no tools. Splitting them keeps any one request from needing tool
+// support and structured output together, which OpenRouter's
+// `supported_parameters` reports separately and cannot answer for.
 type ReflectionGenerator interface {
 	ReflectPersona(
 		ctx context.Context,
 		modelID domain.ModelID,
 		instanceID domain.InstanceID,
 		input ReflectionInput,
+		tools ...ToolDefinition,
+	) (ReflectionExploration, error)
+	ContinueReflection(
+		ctx context.Context,
+		conv *Conversation,
+		results []ToolResult,
+		tools ...ToolDefinition,
+	) (ReflectionExploration, error)
+	ProposeReflection(
+		ctx context.Context,
+		conv *Conversation,
+		results []ToolResult,
+		support StructuredOutputSupport,
 	) (ReflectionResult, error)
 }
 

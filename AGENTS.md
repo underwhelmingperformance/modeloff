@@ -93,9 +93,12 @@ IRC-like server; the only external service is the OpenRouter API.
 2. In a way the protocol should follow the IRC protocol. For example the model
    will be told when there's a message, when there's a join/part event etc.
 3. There should be a per-instance (keyed by the immutable instance ID, so
-   memories survive a `/nick` rename) memory system so that the model can
-   remember what's happened to it. This should be exposed as a tool so
-   that it can decide when to read and write memories.
+   memories survive a `/nick` rename) memory system for the facts a
+   model would otherwise forget between conversations. This should be
+   exposed as a tool so that it can decide when to read and write
+   memories. A memory is one of the four levels an instance carries
+   about itself. The "Persona and reflection" section says what belongs at
+   each.
 
 ## Server-client protocol
 
@@ -1208,6 +1211,87 @@ length and the estimated prompt size.
 
 ## Persona and reflection
 
+### The four levels
+
+What an instance carries about itself is split into four levels, and
+each level holds one kind of thing.
+
+**Facts** live in memories: the rota, which postgres version staging
+runs, what broke on migration 14. An instance writes them itself with
+`write_memory` and reads them back with `search_memory`.
+
+**Episodes** are experiences: one occasion, and what the instance made
+of it. The kind says which: an observation of what happened, an
+interpretation the instance drew, or an assertion somebody made. An
+experience cites the reflection events it was drawn from and carries a
+confidence and, for the kinds that are about somebody, a subject.
+
+**Tendencies** are behavioural regularities: what the instance does,
+with everybody or with one counterpart. A tendency is recorded as a
+`domain.PersonaAmendment`, cites the experiences behind it, and expires
+after a lifetime its confidence chooses: a week, a month or a quarter.
+
+**Dispositions** are the persona: what the instance cares about, is
+bothered by, seeks out and avoids. The persona is the description on
+the current revision, and it is what the system prompt puts at the top
+of every turn.
+
+The test that separates the last two is whether the clause would
+survive the instance having a different job. "Gives people a figure
+and its risk" would not: in a channel with no figures in it there is
+nothing to give. That is a tendency and it belongs in an amendment.
+"Cares more about being right than about being easy to be around"
+would survive it, and it is what produces the behaviour the tendency
+names, so it belongs in the description. A tendency names one
+behaviour; the disposition it abstracts to explains that behaviour and
+several others.
+
+Promotion asks more than the abstraction step. The reflection prompt
+also asks that the tendencies already recorded imply the disposition, and
+that the description in force does not already say it, so a run cannot
+promote from two recent episodes alone.
+
+Promoting a tendency to a disposition therefore has two halves, and
+they are different kinds of check.
+
+The structural half is exact and the validator enforces it. A proposed
+description must be within `domain.PersonaMaxLen`, must name nobody and
+no channel the run itself saw, and must cite evidence from more than one
+episode.
+
+The name check compares against the run's own alias table and the
+channels its events came from, and against nothing else: a nick belonging
+to somebody absent from this run passes, because the check answers from
+what the run saw and not from the server's whole nick space. A
+participant token and every nick a participant was seen under are matched
+as whole words, so a short nick is not found inside a longer word, and a
+channel name is matched wherever it appears, because a channel name may
+hold the punctuation a word split treats as a boundary.
+
+An episode is a run of the instance's own stream with no quiet interval
+of `reflectionEpisodeGap` inside it, and the cited events must fall in
+two of them. The boundary comes from the stream and not from the
+citations: three lines at 00:00, 00:30 and 01:00 span an hour and are one
+episode, and a proposal citing only the first and last of them cites one
+occasion. An instance that has only ever been in one channel satisfies
+the rule by having been active on two separate occasions.
+
+The judgement half is whether a clause is a disposition at all, and
+the reflection prompt carries it. Code cannot make that judgement, and
+a rule that guessed at it by hunting for action verbs would be
+pattern-matching presented as a guarantee, which is worse than no
+guarantee because a reader trusts it. The reflecting model is in a
+much better position to judge the clause than a validator is.
+
+The persona is the current revision. Revision zero is the immutable
+reset target, and every revision is diffable and reversible. The
+acting model holds no tool that reaches any of it: reflection is
+quarantined to the background worker, and nothing in a model's tool
+registry reads or writes a persona lineage. That separation is what
+the whole arrangement rests on. An instance's only path into its own
+character is a reflection that cites evidence, lands as a revision,
+and can be rolled back.
+
 ### The persona lineage
 
 Each model instance has one `persona_lineages` row and a tree of
@@ -1327,6 +1411,35 @@ a proposal can name resolves to the proposer. An instance id is
 addressable on the protocol and a persona row id is stable across
 runs, and a model needs neither in order to reason about what
 happened.
+
+The instance reflects as itself. The prompt addresses it as the
+character in its own description and asks whether what has happened
+changes it. Evolution therefore depends on who the instance already
+is: a stubborn character resists feedback because that is what a
+stubborn character does, and no resistance parameter appears anywhere
+in the code. Whether a remark lands depends on who said it and what
+the instance makes of them, so the run gets two read-only tools over
+its own past. `recall_history` reads more of a window and
+`recall_events` reads the events behind a belief the instance already
+holds. Both are bounded by `maxReflectionRecallEvents` and scoped to
+the instance's own stream.
+
+A run is two phases because no single request can be promised both
+capabilities: OpenRouter reports tool support and structured output
+separately, and nothing else in the codebase asks for them together.
+The instance explores with tools and no response format for at most
+`maxReflectionToolTurns` turns, then one final call carries the
+accumulated conversation with the schema and no tools. A tool batch
+the turn limit stops on still has its results sent, so the
+conversation never ends on an unanswered tool call.
+
+The final call requests a strict schema only when the catalogue says
+the model supports one. The proposal is parsed out of the completion
+text either way, and the validator is what makes the guarantee, so
+demanding a strict schema as a precondition would buy parsing
+convenience at the cost of every model without it. A response that
+will not parse and a proposal the validator refuses are both terminal
+outcomes that record a run, so the cooldown paces them.
 
 ## External libraries
 

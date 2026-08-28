@@ -31,6 +31,7 @@ const (
 	reflectionFailureNoCapability = "reflection_capability_unavailable"
 	reflectionFailureModel        = "reflection_model_unavailable"
 	reflectionFailureUpstream     = "upstream_failed"
+	reflectionFailureResponse     = "response_unreadable"
 	reflectionFailureStore        = "store_failed"
 )
 
@@ -66,19 +67,23 @@ func (m *Manager) runReflection(
 		m.recordFailedReflection(ctx, stored, baseRun, reflectionFailureNoCapability)
 		return
 	}
-	if err := m.EnsureStructuredOutputModel(ctx, modelID); err != nil {
+	if err := m.EnsureToolCapableModel(ctx, modelID); err != nil {
 		m.recordFailedReflection(ctx, stored, baseRun, reflectionFailureModel)
 		return
 	}
 
 	input, aliases := reflectionAPIInput(snapshot)
-	result, err := generator.ReflectPersona(
-		ctx, modelID, snapshot.Persona.Lineage.InstanceID, input,
-	)
+	tools := newReflectionTools(stored, snapshot, aliases)
+	result, err := m.reflect(ctx, generator, modelID, snapshot, input, tools)
 	finishedAt := m.now()
 	baseRun.FinishedAt = finishedAt
 	if err != nil {
-		m.recordFailedReflection(ctx, stored, baseRun, reflectionFailureUpstream)
+		reason := reflectionFailureUpstream
+		var parseErr *api.CompletionParseError
+		if errors.As(err, &parseErr) {
+			reason = reflectionFailureResponse
+		}
+		m.recordFailedReflection(ctx, stored, baseRun, reason)
 		return
 	}
 	baseRun.ProposedExperiences = len(result.Proposal.Experiences)
@@ -133,6 +138,70 @@ func (m *Manager) runReflection(
 	}
 }
 
+// reflect runs one reflection end to end: the instance explores its own
+// past through the recall tools, then proposes.
+//
+// Exploration and the proposal are separate requests. Exploration offers
+// tools and sets no response format; the proposal sets the schema and
+// offers no tools. A model advertising both capabilities need not honour
+// them in one request, and `supported_parameters` reports each on its own
+// and cannot say.
+//
+// The loop stops offering further turns at [maxReflectionToolTurns].
+// Results from the batch it stopped on go to the proposal call, so the
+// conversation never ends on a tool call nothing answered.
+func (m *Manager) reflect(
+	ctx context.Context,
+	generator api.ReflectionGenerator,
+	modelID domain.ModelID,
+	snapshot store.PendingReflectionSnapshot,
+	input api.ReflectionInput,
+	tools *reflectionTools,
+) (api.ReflectionResult, error) {
+	definitions := tools.definitions()
+	exploration, err := generator.ReflectPersona(
+		ctx, modelID, snapshot.Persona.Lineage.InstanceID, input, definitions...,
+	)
+	if err != nil {
+		return api.ReflectionResult{}, err
+	}
+
+	var results []api.ToolResult
+	for turn := 1; len(exploration.PendingToolCalls) > 0; turn++ {
+		results = tools.execute(ctx, exploration.PendingToolCalls)
+		if turn == maxReflectionToolTurns {
+			break
+		}
+		exploration, err = generator.ContinueReflection(
+			ctx, exploration.Conversation, results, definitions...,
+		)
+		if err != nil {
+			return api.ReflectionResult{}, err
+		}
+		results = nil
+	}
+
+	return generator.ProposeReflection(
+		ctx, exploration.Conversation, results, m.reflectionSchemaTransport(modelID),
+	)
+}
+
+// reflectionSchemaTransport decides how the proposal schema reaches the
+// model. The catalogue answers whether the model takes a strict
+// `response_format`; where it does not, the schema goes in the text of
+// the proposal instruction. The proposal is validated either way, so a
+// model without the capability is not held to a weaker contract.
+func (m *Manager) reflectionSchemaTransport(
+	modelID domain.ModelID,
+) api.StructuredOutputSupport {
+	info, known := m.catalogueLookup(modelID)
+	if known && info.SupportsStructuredOutputs() {
+		return api.WithStructuredOutput
+	}
+
+	return api.WithoutStructuredOutput
+}
+
 func reflectionRunFor(
 	snapshot store.PendingReflectionSnapshot,
 	runID domain.ReflectionRunID,
@@ -160,19 +229,7 @@ func reflectionAPIInput(
 
 	events := make([]api.ReflectionInputEvent, 0, len(snapshot.Events))
 	for _, event := range snapshot.Events {
-		message := event.Message
-		participant := ""
-		if id, identified := message.Source.InstanceID(); identified {
-			participant = aliases.participant(id, message.Source.Nick())
-		}
-		message.Source = message.Source.WithoutInstanceID()
-		events = append(events, api.ReflectionInputEvent{
-			Sequence:    event.Sequence,
-			WindowKind:  protocol.WindowTargetKind(event.Source.Window),
-			Window:      aliases.window(event.Source.Window),
-			Participant: participant,
-			Message:     message, Substantive: event.Substantive,
-		})
+		events = append(events, reflectionInputEvent(event, aliases))
 	}
 
 	experiences := make(
@@ -210,12 +267,36 @@ func reflectionAPIInput(
 	}
 
 	return api.ReflectionInput{
+		Description:  snapshot.Persona.Revision.Description,
 		Baseline:     snapshot.Persona.Lineage.Baseline,
 		Participants: aliases.participants,
 		Experiences:  experiences,
 		Amendments:   amendments,
 		Events:       events,
 	}, aliases
+}
+
+// reflectionInputEvent renders one candidate under the run's tokens. The
+// request and every recall tool result go through it, so an event the
+// instance reads back is spelled the way the request spelled it.
+func reflectionInputEvent(
+	event store.ReflectionEvent,
+	aliases *reflectionAliases,
+) api.ReflectionInputEvent {
+	message := event.Message
+	participant := ""
+	if id, identified := message.Source.InstanceID(); identified {
+		participant = aliases.participant(id, message.Source.Nick())
+	}
+	message.Source = message.Source.WithoutInstanceID()
+
+	return api.ReflectionInputEvent{
+		Sequence:    event.Sequence,
+		WindowKind:  protocol.WindowTargetKind(event.Source.Window),
+		Window:      aliases.window(event.Source.Window),
+		Participant: participant,
+		Message:     message, Substantive: event.Substantive,
+	}
 }
 
 func (m *Manager) recordFailedReflection(

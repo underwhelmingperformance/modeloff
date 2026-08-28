@@ -98,7 +98,7 @@ func TestManager_active_reflection_advances_an_empty_result(t *testing.T) {
 		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return []api.ModelInfo{{
 				ID:                  "test/reflection",
-				SupportedParameters: []string{"structured_outputs"},
+				SupportedParameters: []string{"tools", "structured_outputs"},
 			}}, nil
 		},
 		ReflectPersonaFn: func(
@@ -106,14 +106,11 @@ func TestManager_active_reflection_advances_an_empty_result(t *testing.T) {
 			_ domain.ModelID,
 			_ domain.InstanceID,
 			input api.ReflectionInput,
-		) (api.ReflectionResult, error) {
+			_ ...api.ToolDefinition,
+		) (api.ReflectionExploration, error) {
 			requests <- input
 
-			return api.ReflectionResult{Proposal: api.ReflectionProposal{
-				Experiences: []api.ReflectionExperienceProposal{},
-				Amendments:  []api.ReflectionAmendmentProposal{},
-				Retract:     []string{},
-			}}, nil
+			return api.ReflectionExploration{}, nil
 		},
 	}
 	manager := New(Config{
@@ -219,7 +216,7 @@ func TestManager_records_non_committing_reflection_outcomes(t *testing.T) {
 				ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 					return []api.ModelInfo{{
 						ID:                  "test/reflection",
-						SupportedParameters: []string{"structured_outputs"},
+						SupportedParameters: []string{"tools", "structured_outputs"},
 					}}, nil
 				},
 				ReflectPersonaFn: func(
@@ -227,8 +224,17 @@ func TestManager_records_non_committing_reflection_outcomes(t *testing.T) {
 					domain.ModelID,
 					domain.InstanceID,
 					api.ReflectionInput,
+					...api.ToolDefinition,
+				) (api.ReflectionExploration, error) {
+					return api.ReflectionExploration{}, testCase.UpstreamErr
+				},
+				ProposeReflectionFn: func(
+					context.Context,
+					*api.Conversation,
+					[]api.ToolResult,
+					api.StructuredOutputSupport,
 				) (api.ReflectionResult, error) {
-					return testCase.Result, testCase.UpstreamErr
+					return testCase.Result, nil
 				},
 			}
 			manager := New(Config{
@@ -277,14 +283,14 @@ func TestManager_records_a_reflection_whose_persona_lineage_changed_before_commi
 		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return []api.ModelInfo{{
 				ID:                  "test/reflection",
-				SupportedParameters: []string{"structured_outputs"},
+				SupportedParameters: []string{"tools", "structured_outputs"},
 			}}, nil
 		},
-		ReflectPersonaFn: func(
+		ProposeReflectionFn: func(
 			context.Context,
-			domain.ModelID,
-			domain.InstanceID,
-			api.ReflectionInput,
+			*api.Conversation,
+			[]api.ToolResult,
+			api.StructuredOutputSupport,
 		) (api.ReflectionResult, error) {
 			return api.ReflectionResult{Proposal: api.ReflectionProposal{
 				Experiences: []api.ReflectionExperienceProposal{},
@@ -361,7 +367,8 @@ func expectedReflectionInput(
 	}
 
 	return api.ReflectionInput{
-		Baseline: "careful and curious",
+		Description: "careful and curious",
+		Baseline:    "careful and curious",
 		Participants: []api.ReflectionParticipant{
 			{Token: "p1", Nick: "alice"},
 		},
@@ -387,7 +394,7 @@ func TestManager_records_a_failed_reflection_after_its_context_is_cancelled(t *t
 		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return []api.ModelInfo{{
 				ID:                  "test/reflection",
-				SupportedParameters: []string{"structured_outputs"},
+				SupportedParameters: []string{"tools", "structured_outputs"},
 			}}, nil
 		},
 		ReflectPersonaFn: func(
@@ -395,10 +402,11 @@ func TestManager_records_a_failed_reflection_after_its_context_is_cancelled(t *t
 			_ domain.ModelID,
 			_ domain.InstanceID,
 			_ api.ReflectionInput,
-		) (api.ReflectionResult, error) {
+			_ ...api.ToolDefinition,
+		) (api.ReflectionExploration, error) {
 			withdraw()
 
-			return api.ReflectionResult{}, ctx.Err()
+			return api.ReflectionExploration{}, ctx.Err()
 		},
 	}
 	manager := New(Config{
@@ -466,11 +474,15 @@ func TestManager_reflection_replaces_the_amendment_it_supersedes(t *testing.T) {
 		t.Context(), instance.ID(), reflectionInputEventLimit,
 	)
 	require.NoError(t, err)
+	// The proposal names the tokens this run allocated, so the
+	// exploration call records the request the proposal call answers
+	// from.
+	var request api.ReflectionInput
 	client := &apitest.Fake{
 		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
 			return []api.ModelInfo{{
 				ID:                  "test/reflection",
-				SupportedParameters: []string{"structured_outputs"},
+				SupportedParameters: []string{"tools", "structured_outputs"},
 			}}, nil
 		},
 		ReflectPersonaFn: func(
@@ -478,12 +490,23 @@ func TestManager_reflection_replaces_the_amendment_it_supersedes(t *testing.T) {
 			_ domain.ModelID,
 			_ domain.InstanceID,
 			input api.ReflectionInput,
+			_ ...api.ToolDefinition,
+		) (api.ReflectionExploration, error) {
+			request = input
+
+			return api.ReflectionExploration{}, nil
+		},
+		ProposeReflectionFn: func(
+			context.Context,
+			*api.Conversation,
+			[]api.ToolResult,
+			api.StructuredOutputSupport,
 		) (api.ReflectionResult, error) {
 			return api.ReflectionResult{Proposal: api.ReflectionProposal{
 				Experiences: []api.ReflectionExperienceProposal{{
 					Key: "alice-again", Kind: domain.ExperienceRelationship,
 					Summary:    "Alice supplied another reproduction.",
-					Subject:    participantToken(input, "alice"),
+					Subject:    participantToken(request, "alice"),
 					Confidence: domain.ConfidenceHigh,
 					Sources: []domain.ReflectionSequence{
 						reflectionSubstantiveThreshold + 1,
@@ -491,11 +514,11 @@ func TestManager_reflection_replaces_the_amendment_it_supersedes(t *testing.T) {
 				}},
 				Amendments: []api.ReflectionAmendmentProposal{{
 					Scope:        domain.AmendmentRelationship,
-					Counterpart:  participantToken(input, "alice"),
+					Counterpart:  participantToken(request, "alice"),
 					Tendency:     "Usually asks Alice for a reproduction.",
 					Confidence:   domain.ConfidenceHigh,
 					EvidenceKeys: []string{"alice-again"},
-					Supersedes:   input.Amendments[0].Token,
+					Supersedes:   request.Amendments[0].Token,
 				}},
 				Retract: []string{},
 			}}, nil

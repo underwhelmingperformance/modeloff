@@ -49,6 +49,19 @@ type Fake struct {
 		modelID domain.ModelID,
 		instanceID domain.InstanceID,
 		input api.ReflectionInput,
+		tools ...api.ToolDefinition,
+	) (api.ReflectionExploration, error)
+	ContinueReflectionFn func(
+		ctx context.Context,
+		conv *api.Conversation,
+		results []api.ToolResult,
+		tools ...api.ToolDefinition,
+	) (api.ReflectionExploration, error)
+	ProposeReflectionFn func(
+		ctx context.Context,
+		conv *api.Conversation,
+		results []api.ToolResult,
+		support api.StructuredOutputSupport,
 	) (api.ReflectionResult, error)
 	GenerateNickFn     func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
 	GeneratePersonasFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
@@ -128,16 +141,50 @@ func (f *Fake) SummarizeContext(
 	return api.ContextSummaryResult{Summary: "compacted context"}, nil
 }
 
-// ReflectPersona answers through [Fake.ReflectPersonaFn], or returns an empty
-// no-change proposal.
+// ReflectPersona answers through [Fake.ReflectPersonaFn], or opens a
+// reflection the instance explores nothing in. The exploration carries no
+// [api.Conversation]: only the real client can build one, and the manager
+// passes whatever it receives straight to the next call, so a fake that
+// answers both ends never needs one.
 func (f *Fake) ReflectPersona(
 	ctx context.Context,
 	modelID domain.ModelID,
 	instanceID domain.InstanceID,
 	input api.ReflectionInput,
-) (api.ReflectionResult, error) {
+	tools ...api.ToolDefinition,
+) (api.ReflectionExploration, error) {
 	if f.ReflectPersonaFn != nil {
-		return f.ReflectPersonaFn(ctx, modelID, instanceID, input)
+		return f.ReflectPersonaFn(ctx, modelID, instanceID, input, tools...)
+	}
+
+	return api.ReflectionExploration{}, nil
+}
+
+// ContinueReflection answers through [Fake.ContinueReflectionFn], or ends
+// the exploration by calling no further tools.
+func (f *Fake) ContinueReflection(
+	ctx context.Context,
+	conv *api.Conversation,
+	results []api.ToolResult,
+	tools ...api.ToolDefinition,
+) (api.ReflectionExploration, error) {
+	if f.ContinueReflectionFn != nil {
+		return f.ContinueReflectionFn(ctx, conv, results, tools...)
+	}
+
+	return api.ReflectionExploration{}, nil
+}
+
+// ProposeReflection answers through [Fake.ProposeReflectionFn], or
+// returns an empty no-change proposal.
+func (f *Fake) ProposeReflection(
+	ctx context.Context,
+	conv *api.Conversation,
+	results []api.ToolResult,
+	support api.StructuredOutputSupport,
+) (api.ReflectionResult, error) {
+	if f.ProposeReflectionFn != nil {
+		return f.ProposeReflectionFn(ctx, conv, results, support)
 	}
 
 	return api.ReflectionResult{Proposal: api.ReflectionProposal{

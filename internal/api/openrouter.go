@@ -158,17 +158,23 @@ type openRouterUsageExtras struct {
 	} `json:"cost_details"`
 }
 
-type completionParseError struct {
-	target string
-	err    error
+// CompletionParseError reports a provider response the client could not
+// read as the structure the call asked for. A caller distinguishes it
+// from a transport failure with `errors.As`, because a model that keeps
+// answering in the wrong shape is a different problem from a network
+// that keeps failing.
+type CompletionParseError struct {
+	// Target names the structure the call asked the response for.
+	Target string
+	Err    error
 }
 
-func (e *completionParseError) Error() string {
-	return fmt.Sprintf("parse %s: %v", e.target, e.err)
+func (e *CompletionParseError) Error() string {
+	return fmt.Sprintf("parse %s: %v", e.Target, e.Err)
 }
 
-func (e *completionParseError) Unwrap() error {
-	return e.err
+func (e *CompletionParseError) Unwrap() error {
+	return e.Err
 }
 
 // generateSchema reflects a Go type into a JSON Schema map suitable
@@ -1209,7 +1215,7 @@ func markSpanError(span interface {
 
 func completionParseErrorKind(err error) string {
 	var refused *ErrModelRefused
-	var parseErr *completionParseError
+	var parseErr *CompletionParseError
 	switch {
 	case errors.As(err, &refused):
 		return observability.ErrorKindInvalidResponse

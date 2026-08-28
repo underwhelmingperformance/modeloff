@@ -497,7 +497,7 @@ func TestCompletionParseErrorKind(t *testing.T) {
 	require.Equal(
 		t,
 		observability.ErrorKindResponseParse,
-		completionParseErrorKind(&completionParseError{target: "structured response", err: errors.New("bad json")}),
+		completionParseErrorKind(&CompletionParseError{Target: "structured response", Err: errors.New("bad json")}),
 	)
 }
 
@@ -1207,7 +1207,7 @@ func TestOpenRouterClient_GenerateNick(t *testing.T) {
 		_, err := client.GenerateNick(t.Context(), "anthropic/claude-haiku-4.5", persona, nil)
 		require.Error(t, err)
 
-		var parseErr *completionParseError
+		var parseErr *CompletionParseError
 		require.ErrorAs(t, err, &parseErr)
 	})
 
@@ -2042,7 +2042,7 @@ func TestOpenRouterClient_GeneratePersonas_invalidJSON(t *testing.T) {
 	_, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
 	require.Error(t, err)
 
-	var parseErr *completionParseError
+	var parseErr *CompletionParseError
 	require.ErrorAs(t, err, &parseErr)
 }
 

@@ -76,7 +76,9 @@ func (m *Manager) ListModels(ctx context.Context) ([]api.ModelInfo, error) {
 // OpenRouterClient.SendEvents drives every turn through tool calls
 // (`msg`, `me`, `pass`, the channel-management and memory tools), so
 // a model missing tool support validates but then fails every
-// dispatch upstream. Returns [modelclient.ErrModelListUnavailable]
+// dispatch upstream. The configured reflection model needs it for
+// the same reason: a reflection explores the instance's own past
+// through the recall tools before it proposes anything. Returns [modelclient.ErrModelListUnavailable]
 // when the cached state recorded an upstream failure;
 // [modelclient.ErrNoAPIKey] when no key is configured (silently: no
 // API key means no LLM concerns, so callers ignore the check); or

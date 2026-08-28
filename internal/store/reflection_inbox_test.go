@@ -375,3 +375,109 @@ func TestSQLiteStore_instance_deletion_removes_the_reflection_inbox(t *testing.T
 		Events: events, StateIsMissing: errors.Is(statusErr, storemod.ErrNoPersonaLineage),
 	})
 }
+
+type reflectionRecallEffect struct {
+	InWindow      []storemod.ReflectionEvent
+	AcrossWindows []storemod.ReflectionEvent
+	BySequence    []storemod.ReflectionEvent
+	OtherActor    []storemod.ReflectionEvent
+}
+
+func TestSQLiteStore_reads_back_an_instances_own_retained_candidates(t *testing.T) {
+	stored := storetest.NewMemoryStore(t)
+	botty := domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "careful and curious", nil,
+	)
+	other := domain.NewModelInstance(
+		"inst-other", "other", "test/model", "brisk", nil,
+	)
+	require.NoError(t, stored.SaveInstance(t.Context(), botty))
+	require.NoError(t, stored.SaveInstance(t.Context(), other))
+
+	at := time.Date(2026, 8, 26, 14, 0, 0, 0, time.UTC)
+	candidates := []storemod.ReflectionEventCandidate{
+		recallCandidate(1, protocol.ChannelWindowTarget("#dev"), "the migration is ready", at),
+		recallCandidate(2, protocol.DirectWindowTarget("inst-alice"), "a word in private", at.Add(time.Minute)),
+		recallCandidate(3, protocol.ChannelWindowTarget("#dev"), "and the rollback works", at.Add(2*time.Minute)),
+	}
+	require.NoError(t, stored.AppendReflectionEvents(
+		t.Context(), botty.ID(), candidates, at,
+	))
+	require.NoError(t, stored.AppendReflectionEvents(
+		t.Context(), other.ID(),
+		[]storemod.ReflectionEventCandidate{
+			recallCandidate(4, protocol.ChannelWindowTarget("#dev"), "not yours", at),
+		},
+		at,
+	))
+
+	inWindow, err := stored.ReflectionEventsBefore(
+		t.Context(), botty.ID(), protocol.ChannelWindowTarget("#dev"), 4, 10,
+	)
+	require.NoError(t, err)
+	acrossWindows, err := stored.ReflectionEventsBefore(
+		t.Context(), botty.ID(), nil, 3, 10,
+	)
+	require.NoError(t, err)
+	bySequence, err := stored.ReflectionEventsBySequence(
+		t.Context(), botty.ID(), []domain.ReflectionSequence{1, 3},
+	)
+	require.NoError(t, err)
+	otherActor, err := stored.ReflectionEventsBySequence(
+		t.Context(), other.ID(), []domain.ReflectionSequence{1, 2, 3},
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, reflectionRecallEffect{
+		InWindow: []storemod.ReflectionEvent{
+			recallEvent(1, botty.ID(), candidates[0], at),
+			recallEvent(3, botty.ID(), candidates[2], at),
+		},
+		AcrossWindows: []storemod.ReflectionEvent{
+			recallEvent(1, botty.ID(), candidates[0], at),
+			recallEvent(2, botty.ID(), candidates[1], at),
+		},
+		BySequence: []storemod.ReflectionEvent{
+			recallEvent(1, botty.ID(), candidates[0], at),
+			recallEvent(3, botty.ID(), candidates[2], at),
+		},
+		OtherActor: []storemod.ReflectionEvent{},
+	}, reflectionRecallEffect{
+		InWindow:      inWindow,
+		AcrossWindows: acrossWindows,
+		BySequence:    bySequence,
+		OtherActor:    otherActor,
+	})
+}
+
+func recallCandidate(
+	sourceID int64,
+	window protocol.WindowTarget,
+	body string,
+	at time.Time,
+) storemod.ReflectionEventCandidate {
+	return storemod.ReflectionEventCandidate{
+		Source: protocol.HistoryRef{
+			Kind: protocol.HistorySourceEvent, ID: sourceID, Window: window,
+		},
+		Message: protocol.IRCMessage{
+			Kind:   protocol.KindPrivMsg,
+			Source: domain.ClientSource("inst-alice", "alice"),
+			Target: string(protocol.WindowKey(window)), Body: body, At: at,
+		},
+		Substantive: true,
+	}
+}
+
+func recallEvent(
+	sequence domain.ReflectionSequence,
+	instanceID domain.InstanceID,
+	candidate storemod.ReflectionEventCandidate,
+	createdAt time.Time,
+) storemod.ReflectionEvent {
+	return storemod.ReflectionEvent{
+		Sequence: sequence, InstanceID: instanceID,
+		Source: candidate.Source, Message: candidate.Message,
+		Substantive: candidate.Substantive, CreatedAt: createdAt,
+	}
+}

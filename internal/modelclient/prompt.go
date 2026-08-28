@@ -221,10 +221,13 @@ func PersonaLine(persona string) string {
 // they do not promote operator-supplied or generated persona text to
 // system authority.
 //
-// Only an operator can supply one today, and only the user-client
-// holds `+o`. Credentialed promotion through `OPER` would widen that
-// to whoever the authenticator admits, which is a question for the
-// commit that implements it.
+// Two authors reach that description. An operator does, and only the
+// user-client holds `+o`; credentialed promotion through `OPER` would
+// widen that to whoever the authenticator admits, which is a question
+// for the commit that implements it. The instance itself does, through
+// reflection, which proposes a replacement description against evidence
+// the validator checks, lands it as a revision the operator can see and
+// roll back, and runs outside any turn.
 func buildSystemPrompt(
 	window protocol.WindowContext,
 	nick domain.Nick,

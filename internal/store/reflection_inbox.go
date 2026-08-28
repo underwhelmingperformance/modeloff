@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -207,6 +208,100 @@ func (s *SQLiteStore) ReflectionEvents(
 		ORDER BY sequence
 		LIMIT ?
 	`, instanceID, after, through, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read reflection events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	events := []ReflectionEvent{}
+	for rows.Next() {
+		event, err := scanReflectionEvent(rows, instanceID)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read reflection events: %w", err)
+	}
+
+	return events, nil
+}
+
+// ReflectionEventsBefore reads an instance's own retained candidates older
+// than one sequence, returning at most limit of them in sequence order.
+//
+// A nil window reads every window. Every stored candidate carries the
+// window it was projected in, so nil cannot name one.
+func (s *SQLiteStore) ReflectionEventsBefore(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	window protocol.WindowTarget,
+	before domain.ReflectionSequence,
+	limit int,
+) ([]ReflectionEvent, error) {
+	query := `SELECT sequence, source_kind, source_id, window_kind, window_key,
+	                 message, substantive, created_at
+	          FROM (
+	              SELECT * FROM reflection_events
+	              WHERE instance_id = ? AND sequence < ?
+	              ORDER BY sequence DESC LIMIT ?
+	          ) ORDER BY sequence ASC`
+	args := []any{instanceID, before, limit}
+	if window != nil {
+		windowKind, windowKey := windowColumns(window)
+		query = `SELECT sequence, source_kind, source_id, window_kind, window_key,
+		                message, substantive, created_at
+		         FROM (
+		             SELECT * FROM reflection_events
+		             WHERE instance_id = ? AND sequence < ?
+		               AND window_kind = ? AND window_key = ?
+		             ORDER BY sequence DESC LIMIT ?
+		         ) ORDER BY sequence ASC`
+		args = []any{instanceID, before, windowKind, windowKey, limit}
+	}
+
+	return s.queryReflectionEvents(ctx, instanceID, query, args)
+}
+
+// ReflectionEventsBySequence reads the instance's own retained candidates
+// named by sequence, in sequence order. A sequence the instance does not
+// own, and one retention has already removed, is absent from the result.
+func (s *SQLiteStore) ReflectionEventsBySequence(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	sequences []domain.ReflectionSequence,
+) ([]ReflectionEvent, error) {
+	if len(sequences) == 0 {
+		return []ReflectionEvent{}, nil
+	}
+
+	args := make([]any, 0, len(sequences)+1)
+	args = append(args, instanceID)
+	for _, sequence := range sequences {
+		args = append(args, sequence)
+	}
+
+	return s.queryReflectionEvents(ctx, instanceID, fmt.Sprintf(`
+		SELECT sequence, source_kind, source_id, window_kind, window_key,
+		       message, substantive, created_at
+		FROM reflection_events
+		WHERE instance_id = ? AND sequence IN (%s)
+		ORDER BY sequence
+	`, sequencePlaceholders(len(sequences))), args)
+}
+
+func sequencePlaceholders(count int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
+}
+
+func (s *SQLiteStore) queryReflectionEvents(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	query string,
+	args []any,
+) ([]ReflectionEvent, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read reflection events: %w", err)
 	}

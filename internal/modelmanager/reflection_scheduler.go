@@ -23,6 +23,7 @@ type reflectionSnapshotStore interface {
 
 type reflectionStateStore interface {
 	reflectionSnapshotStore
+	reflectionRecallStore
 	CommitPersonaReflection(
 		ctx context.Context,
 		acceptance store.PersonaReflectionAcceptance,
