@@ -64,7 +64,7 @@ type Fake struct {
 		support api.StructuredOutputSupport,
 	) (api.ReflectionResult, error)
 	GenerateNickFn     func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
-	GeneratePersonasFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
+	GeneratePersonasFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
 }
 
 var _ api.Client = (*Fake)(nil)
@@ -253,7 +253,7 @@ func (f *Fake) GenerateNick(ctx context.Context, smallModel domain.ModelID, pers
 
 // GeneratePersonas answers through [Fake.GeneratePersonasFn], or no
 // personas.
-func (f *Fake) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+func (f *Fake) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
 	if f.GeneratePersonasFn != nil {
 		return f.GeneratePersonasFn(ctx, smallModel)
 	}

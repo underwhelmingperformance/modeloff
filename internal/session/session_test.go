@@ -4579,7 +4579,7 @@ func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		fake := &apitest.Fake{
-			GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+			GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
 				t.Fatal("GeneratePersonas should not be called when persona is explicit")
 				return nil, nil
 			},

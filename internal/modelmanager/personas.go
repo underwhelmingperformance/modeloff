@@ -12,11 +12,11 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-// EnsurePersonas populates the persona pool if it is empty. It
+// EnsurePersonaTemplates populates the persona pool if it is empty. It
 // calls the API to generate personas and saves each to the store.
-func (m *Manager) EnsurePersonas(ctx context.Context) error {
+func (m *Manager) EnsurePersonaTemplates(ctx context.Context) error {
 	return m.inSpan(ctx, "modelmanager.ensure_personas", nil, func(ctx context.Context, _ trace.Span) error {
-		existing, err := m.store.ListPersonas(ctx)
+		existing, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
 			return fmt.Errorf("list personas: %w", err)
 		}
@@ -36,7 +36,7 @@ func (m *Manager) EnsurePersonas(ctx context.Context) error {
 		}
 
 		for _, p := range personas {
-			if err := m.store.SavePersona(ctx, p); err != nil {
+			if err := m.store.SavePersonaTemplate(ctx, p); err != nil {
 				return fmt.Errorf("save persona %q: %w", p.ID, err)
 			}
 		}
@@ -45,16 +45,16 @@ func (m *Manager) EnsurePersonas(ctx context.Context) error {
 	})
 }
 
-// RandomPersona picks a random persona from the store pool, excluding
-// any persona description already held by a connected model instance
-// so a run of invites does not hand out the same persona twice while
-// an unused one is available. Once every persona in the pool is held,
+// RandomPersonaTemplate picks a random template from the store pool,
+// excluding any description a connected model instance already holds, so
+// a run of invites does not hand out the same character twice while an
+// unused template is available. Once every template in the pool is held,
 // the draw falls back to the full pool and hands out a duplicate.
-func (m *Manager) RandomPersona(ctx context.Context) (domain.Persona, error) {
-	var chosen domain.Persona
+func (m *Manager) RandomPersonaTemplate(ctx context.Context) (domain.PersonaTemplate, error) {
+	var chosen domain.PersonaTemplate
 
 	err := m.inSpan(ctx, "modelmanager.random_persona", nil, func(ctx context.Context, _ trace.Span) error {
-		personas, err := m.store.ListPersonas(ctx)
+		personas, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
 			return fmt.Errorf("list personas: %w", err)
 		}
@@ -109,8 +109,8 @@ func (m *Manager) heldPersonaDescriptions(ctx context.Context) (map[string]bool,
 }
 
 // excludeHeld returns the personas whose description is not in held.
-func excludeHeld(personas []domain.Persona, held map[string]bool) []domain.Persona {
-	unheld := make([]domain.Persona, 0, len(personas))
+func excludeHeld(personas []domain.PersonaTemplate, held map[string]bool) []domain.PersonaTemplate {
+	unheld := make([]domain.PersonaTemplate, 0, len(personas))
 	for _, p := range personas {
 		if !held[p.Description] {
 			unheld = append(unheld, p)
@@ -124,8 +124,8 @@ func excludeHeld(personas []domain.Persona, held map[string]bool) []domain.Perso
 // API, then replaces all generated personas in the store. The API
 // call happens first so that the existing pool is preserved if
 // generation fails. User-defined personas are never touched.
-func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.Persona, error) {
-	var personas []domain.Persona
+func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.PersonaTemplate, error) {
+	var personas []domain.PersonaTemplate
 
 	err := m.inSpan(ctx, "modelmanager.regenerate_personas", nil, func(ctx context.Context, _ trace.Span) error {
 		client, _ := m.snapshotAPI()
@@ -138,7 +138,7 @@ func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.Persona, err
 			return fmt.Errorf("generate personas: %w", err)
 		}
 
-		if err := m.store.ReplaceGeneratedPersonas(ctx, generated); err != nil {
+		if err := m.store.ReplaceGeneratedPersonaTemplates(ctx, generated); err != nil {
 			return fmt.Errorf("replace generated personas: %w", err)
 		}
 
@@ -149,8 +149,8 @@ func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.Persona, err
 	return personas, err
 }
 
-// SetPersona saves a user-defined persona to the store.
-func (m *Manager) SetPersona(ctx context.Context, id string, description string) error {
+// SetPersonaTemplate saves a user-defined persona template to the store.
+func (m *Manager) SetPersonaTemplate(ctx context.Context, id string, description string) error {
 	if reason := domain.ValidatePersona(description); reason != domain.PersonaAccepted {
 		return domain.ErroneousPersonaError{Reason: reason, At: m.now()}
 	}
@@ -158,22 +158,22 @@ func (m *Manager) SetPersona(ctx context.Context, id string, description string)
 	return m.inSpan(ctx, "modelmanager.set_persona", []attribute.KeyValue{
 		attribute.String("persona.id", id),
 	}, func(ctx context.Context, _ trace.Span) error {
-		p := domain.Persona{
+		p := domain.PersonaTemplate{
 			ID:          id,
 			Description: description,
 			Origin:      domain.PersonaUser,
 		}
 
-		return m.store.SavePersona(ctx, p)
+		return m.store.SavePersonaTemplate(ctx, p)
 	})
 }
 
-// ListPersonas returns all personas from the store.
-func (m *Manager) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
-	var personas []domain.Persona
+// ListPersonaTemplates returns every template in the store's pool.
+func (m *Manager) ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error) {
+	var personas []domain.PersonaTemplate
 
 	err := m.inSpan(ctx, "modelmanager.list_personas", nil, func(ctx context.Context, _ trace.Span) error {
-		listed, err := m.store.ListPersonas(ctx)
+		listed, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
 			return err
 		}
@@ -191,7 +191,7 @@ func (m *Manager) ResetPersonas(ctx context.Context) (int, error) {
 	var count int
 
 	err := m.inSpan(ctx, "modelmanager.reset_personas", nil, func(ctx context.Context, _ trace.Span) error {
-		personas, err := m.store.ListPersonas(ctx)
+		personas, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
 			return fmt.Errorf("list personas: %w", err)
 		}
@@ -202,7 +202,7 @@ func (m *Manager) ResetPersonas(ctx context.Context) (int, error) {
 			}
 		}
 
-		if err := m.store.DeletePersonasByOrigin(ctx, domain.PersonaUser); err != nil {
+		if err := m.store.DeletePersonaTemplatesByOrigin(ctx, domain.PersonaUser); err != nil {
 			return err
 		}
 

@@ -842,7 +842,7 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := rc.Manager.SetPersona(ctx, c.ID, desc); err != nil {
+		if err := rc.Manager.SetPersonaTemplate(ctx, c.ID, desc); err != nil {
 			return rc.errorEvent("config persona", err)
 		}
 

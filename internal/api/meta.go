@@ -280,13 +280,13 @@ func personaResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 
 // GeneratePersonas asks a model to generate a set of IRC user personas
 // using structured output, returning them with PersonaGenerated origin.
-func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
 	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
 	defer cancel()
 
 	logger := slog.Default().With("component", "api.openrouter", "model_id", smallModel)
 
-	var personas []domain.Persona
+	var personas []domain.PersonaTemplate
 	err := c.inSpan(ctx, "api.openrouter.generate_personas",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(smallModel))},
 		func(ctx context.Context, span trace.Span) error {
@@ -327,7 +327,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 			// state record expects rather than taking model output as
 			// written. One unusable persona does not spoil the batch:
 			// the pool is drawn from whatever passed.
-			personas = make([]domain.Persona, 0, len(wrapper.Personas))
+			personas = make([]domain.PersonaTemplate, 0, len(wrapper.Personas))
 			for _, p := range wrapper.Personas {
 				if reason := domain.ValidatePersona(p.Description); reason != domain.PersonaAccepted {
 					logger.WarnContext(ctx, "discarding generated persona",
@@ -338,7 +338,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 					continue
 				}
 
-				personas = append(personas, domain.Persona{
+				personas = append(personas, domain.PersonaTemplate{
 					ID:          p.ID,
 					Description: p.Description,
 					Origin:      domain.PersonaGenerated,

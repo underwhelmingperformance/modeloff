@@ -1403,7 +1403,7 @@ type PersonasCommand struct{}
 // Run implements Command.
 func (PersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Manager.ListPersonas(ctx)
+		personas, err := rc.Manager.ListPersonaTemplates(ctx)
 		if err != nil {
 			return rc.errorResult("personas", err)
 		}

@@ -56,10 +56,10 @@ type Store interface {
 	DeleteMemoriesByInstance(ctx context.Context, id domain.InstanceID) error
 	DeletePendingMemoryDeletion(ctx context.Context, id domain.InstanceID) error
 
-	ListPersonas(ctx context.Context) ([]domain.Persona, error)
-	SavePersona(ctx context.Context, p domain.Persona) error
-	DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
-	ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error
+	ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error)
+	SavePersonaTemplate(ctx context.Context, p domain.PersonaTemplate) error
+	DeletePersonaTemplatesByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
+	ReplaceGeneratedPersonaTemplates(ctx context.Context, personas []domain.PersonaTemplate) error
 	AppendReflectionEvents(
 		ctx context.Context,
 		instanceID domain.InstanceID,
@@ -813,11 +813,11 @@ func (m *Manager) PrepareInstance(
 	if !assigned {
 		// A pool that could not be topped up is only a problem if it
 		// is also empty, which the draw below is what discovers.
-		if err := m.EnsurePersonas(ctx); err != nil {
+		if err := m.EnsurePersonaTemplates(ctx); err != nil {
 			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
 		}
 
-		p, err := m.RandomPersona(ctx)
+		p, err := m.RandomPersonaTemplate(ctx)
 		if err != nil {
 			logger.WarnContext(ctx, "persona assignment failed, instance will have no persona", "error", err)
 
@@ -853,7 +853,7 @@ func (m *Manager) resolvePersona(
 		return "", nil, false, nil
 	}
 
-	personas, err := m.store.ListPersonas(ctx)
+	personas, err := m.store.ListPersonaTemplates(ctx)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("resolve persona %q: %w", requested, err)
 	}
@@ -867,7 +867,7 @@ func (m *Manager) resolvePersona(
 	return requested, nil, true, nil
 }
 
-func personaTemplateProvenance(persona domain.Persona) *domain.PersonaTemplateProvenance {
+func personaTemplateProvenance(persona domain.PersonaTemplate) *domain.PersonaTemplateProvenance {
 	hash := sha256.Sum256([]byte(persona.Description))
 
 	return &domain.PersonaTemplateProvenance{

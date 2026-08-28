@@ -15,12 +15,12 @@ import (
 func TestChatScreen_ensurePersonas_generates_when_pool_empty(t *testing.T) {
 	var calls atomic.Int32
 
-	seeded := []domain.Persona{
+	seeded := []domain.PersonaTemplate{
 		{ID: "p1", Description: "first", Origin: domain.PersonaGenerated},
 	}
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.Persona, error) {
+		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return seeded, nil
 		},
@@ -39,7 +39,7 @@ func TestChatScreen_ensurePersonas_generates_when_pool_empty(t *testing.T) {
 
 	require.Equal(t, int32(1), calls.Load())
 
-	got, err := mgr.ListPersonas(t.Context())
+	got, err := mgr.ListPersonaTemplates(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, seeded, got)
 }
@@ -48,7 +48,7 @@ func TestChatScreen_ensurePersonas_noop_without_api_key(t *testing.T) {
 	var calls atomic.Int32
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.Persona, error) {
+		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return nil, nil
 		},
@@ -69,14 +69,14 @@ func TestChatScreen_ensurePersonas_skips_generation_when_pool_present(t *testing
 	var calls atomic.Int32
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.Persona, error) {
+		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return nil, nil
 		},
 	}
 
 	store := storetest.NewMemoryStore(t)
-	require.NoError(t, store.SavePersona(t.Context(), domain.Persona{
+	require.NoError(t, store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
 		ID: "existing", Description: "already here", Origin: domain.PersonaUser,
 	}))
 

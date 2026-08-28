@@ -570,8 +570,8 @@ func (s ChatScreen) completionSet() command.CompletionSet[chatcmd.CompletionCont
 			LiveModelsState: func() command.SuggestionState {
 				return s.liveModelsState
 			},
-			Personas: func() iter.Seq[domain.Persona] {
-				personas, _ := s.mgr.ListPersonas(s.baseContext())
+			Personas: func() iter.Seq[domain.PersonaTemplate] {
+				personas, _ := s.mgr.ListPersonaTemplates(s.baseContext())
 				return slices.Values(personas)
 			},
 			Kind: func() domain.ChannelKind { return s.activeKind() },

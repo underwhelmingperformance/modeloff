@@ -32,7 +32,7 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 		{ID: "anthropic/haiku", Name: "Haiku"},
 		{ID: "anthropic/sonnet", Name: "Sonnet"},
 	}
-	personas := []domain.Persona{
+	personas := []domain.PersonaTemplate{
 		{ID: "bard", Description: "A travelling storyteller"},
 		{ID: "sage", Description: "A wise advisor"},
 	}
@@ -45,7 +45,7 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 		UserNick:        func() domain.Nick { return "testuser" },
 		LiveModels:      func() iter.Seq[ModelOption] { return slices.Values(models) },
 		LiveModelsState: func() command.SuggestionState { return command.SuggestionStateReady },
-		Personas:        func() iter.Seq[domain.Persona] { return slices.Values(personas) },
+		Personas:        func() iter.Seq[domain.PersonaTemplate] { return slices.Values(personas) },
 		Kind:            func() domain.ChannelKind { return kind },
 	}
 }

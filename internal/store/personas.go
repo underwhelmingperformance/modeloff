@@ -10,13 +10,13 @@ import (
 	"github.com/laney/modeloff/internal/domain"
 )
 
-// ListPersonas implements Store.
-func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error) {
-	var personas []domain.Persona
+// ListPersonaTemplates implements Store.
+func (s *SQLiteStore) ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error) {
+	var personas []domain.PersonaTemplate
 	err := s.inSpan(ctx, "store.sqlite.list_personas", nil, func(ctx context.Context, _ trace.Span) error {
 		got, err := queryRows(ctx, s.db,
 			`SELECT id, description, origin FROM personas ORDER BY id`, nil,
-			personaRow)
+			personaTemplateRow)
 		if err != nil {
 			return err
 		}
@@ -28,15 +28,15 @@ func (s *SQLiteStore) ListPersonas(ctx context.Context) ([]domain.Persona, error
 	return personas, err
 }
 
-// GetPersona implements Store.
-func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona, error) {
-	var p domain.Persona
+// GetPersonaTemplate implements Store.
+func (s *SQLiteStore) GetPersonaTemplate(ctx context.Context, id string) (domain.PersonaTemplate, error) {
+	var p domain.PersonaTemplate
 	err := s.inSpan(ctx, "store.sqlite.get_persona",
 		[]attribute.KeyValue{attribute.String("persona.id", id)},
 		func(ctx context.Context, _ trace.Span) error {
 			got, err := queryRow(ctx, s.db,
 				`SELECT id, description, origin FROM personas WHERE id = ?`,
-				[]any{id}, nil, personaRow)
+				[]any{id}, nil, personaTemplateRow)
 			if err != nil {
 				return fmt.Errorf("persona %q: %w", id, err)
 			}
@@ -48,8 +48,8 @@ func (s *SQLiteStore) GetPersona(ctx context.Context, id string) (domain.Persona
 	return p, err
 }
 
-// SavePersona implements Store.
-func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
+// SavePersonaTemplate implements Store.
+func (s *SQLiteStore) SavePersonaTemplate(ctx context.Context, p domain.PersonaTemplate) error {
 	return s.inSpan(ctx, "store.sqlite.save_persona",
 		[]attribute.KeyValue{attribute.String("persona.id", p.ID)},
 		func(ctx context.Context, _ trace.Span) error {
@@ -60,8 +60,8 @@ func (s *SQLiteStore) SavePersona(ctx context.Context, p domain.Persona) error {
 		})
 }
 
-// DeletePersonasByOrigin implements Store.
-func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.PersonaOrigin) error {
+// DeletePersonaTemplatesByOrigin implements Store.
+func (s *SQLiteStore) DeletePersonaTemplatesByOrigin(ctx context.Context, origin domain.PersonaOrigin) error {
 	return s.inSpan(ctx, "store.sqlite.delete_personas_by_origin",
 		[]attribute.KeyValue{attribute.String("persona.origin", string(origin))},
 		func(ctx context.Context, _ trace.Span) error {
@@ -69,17 +69,17 @@ func (s *SQLiteStore) DeletePersonasByOrigin(ctx context.Context, origin domain.
 		})
 }
 
-// personaRow decodes the (id, description, origin) shape used by
+// personaTemplateRow decodes the (id, description, origin) shape used by
 // every personas-table query.
-func personaRow(r rowScanner) (domain.Persona, error) {
-	var p domain.Persona
+func personaTemplateRow(r rowScanner) (domain.PersonaTemplate, error) {
+	var p domain.PersonaTemplate
 	return p, r.Scan(&p.ID, &p.Description, &p.Origin)
 }
 
-// ReplaceGeneratedPersonas implements Store. It atomically deletes all
+// ReplaceGeneratedPersonaTemplates implements Store. It atomically deletes all
 // generated personas and inserts the given replacements in a single
 // transaction.
-func (s *SQLiteStore) ReplaceGeneratedPersonas(ctx context.Context, personas []domain.Persona) error {
+func (s *SQLiteStore) ReplaceGeneratedPersonaTemplates(ctx context.Context, personas []domain.PersonaTemplate) error {
 	return s.inSpan(ctx, "store.sqlite.replace_generated_personas", nil, func(ctx context.Context, _ trace.Span) error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {

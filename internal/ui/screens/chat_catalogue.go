@@ -136,7 +136,7 @@ func (s ChatScreen) ensurePersonas() tea.Cmd {
 	return func() tea.Msg {
 		ctx := s.baseContext()
 
-		if err := s.mgr.EnsurePersonas(ctx); err != nil {
+		if err := s.mgr.EnsurePersonaTemplates(ctx); err != nil {
 			slog.Default().WarnContext(ctx, "ensure personas",
 				"component", "ui",
 				"screen", "chat",

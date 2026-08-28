@@ -41,12 +41,12 @@ func drainCmd(cmd tea.Cmd) []tea.Msg {
 func TestConnectionScreen_Init_ensures_personas_when_api_key_present(t *testing.T) {
 	var calls atomic.Int32
 
-	seeded := []domain.Persona{
+	seeded := []domain.PersonaTemplate{
 		{ID: "p1", Description: "first", Origin: domain.PersonaGenerated},
 	}
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.Persona, error) {
+		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return seeded, nil
 		},
@@ -67,7 +67,7 @@ func TestConnectionScreen_Init_ensures_personas_when_api_key_present(t *testing.
 
 	require.Equal(t, int32(1), calls.Load())
 
-	got, err := mgr.ListPersonas(t.Context())
+	got, err := mgr.ListPersonaTemplates(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, seeded, got)
 }
@@ -76,7 +76,7 @@ func TestConnectionScreen_Init_skips_persona_generation_without_api_key(t *testi
 	var calls atomic.Int32
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.Persona, error) {
+		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return nil, nil
 		},

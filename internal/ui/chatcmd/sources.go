@@ -22,7 +22,7 @@ type CompletionContext struct {
 	UserNick        func() domain.Nick
 	LiveModels      func() iter.Seq[ModelOption]
 	LiveModelsState func() command.SuggestionState
-	Personas        func() iter.Seq[domain.Persona]
+	Personas        func() iter.Seq[domain.PersonaTemplate]
 	Kind            func() domain.ChannelKind
 
 	// Directory iterates every channel the session knows of, joined

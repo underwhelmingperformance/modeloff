@@ -1971,7 +1971,7 @@ func TestOpenRouterClient_GeneratePersonas(t *testing.T) {
 
 	got, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
+	require.Equal(t, []domain.PersonaTemplate{
 		{
 			ID:          "grumpy-sysadmin",
 			Description: "Runs FreeBSD on everything and complains about systemd.",
@@ -2007,7 +2007,7 @@ func TestOpenRouterClient_GeneratePersonas_discards_unusable_personas(t *testing
 
 	got, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
+	require.Equal(t, []domain.PersonaTemplate{
 		{
 			ID:          "lurker-larry",
 			Description: "Only speaks up to correct someone about an RFC.",
@@ -2027,7 +2027,7 @@ func TestOpenRouterClient_GeneratePersonas_empty(t *testing.T) {
 
 	got, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
 	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{}, got)
+	require.Equal(t, []domain.PersonaTemplate{}, got)
 }
 
 func TestOpenRouterClient_GeneratePersonas_invalidJSON(t *testing.T) {

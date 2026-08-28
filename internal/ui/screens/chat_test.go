@@ -1069,8 +1069,8 @@ func TestChatScreen_personas_command(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
 
-	require.NoError(t, h.mgr.SetPersona(t.Context(), "pirate", "A salty sea dog"))
-	require.NoError(t, h.mgr.SetPersona(t.Context(), "wizard", "A wise old mage"))
+	require.NoError(t, h.mgr.SetPersonaTemplate(t.Context(), "pirate", "A salty sea dog"))
+	require.NoError(t, h.mgr.SetPersonaTemplate(t.Context(), "wizard", "A wise old mage"))
 
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)
@@ -1122,8 +1122,8 @@ func TestChatScreen_config_persona_reset(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
 
-	require.NoError(t, h.mgr.SetPersona(t.Context(), "pirate", "A salty sea dog"))
-	require.NoError(t, h.mgr.SetPersona(t.Context(), "wizard", "A wise old mage"))
+	require.NoError(t, h.mgr.SetPersonaTemplate(t.Context(), "pirate", "A salty sea dog"))
+	require.NoError(t, h.mgr.SetPersonaTemplate(t.Context(), "wizard", "A wise old mage"))
 
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)

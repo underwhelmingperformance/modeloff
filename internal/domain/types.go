@@ -50,8 +50,12 @@ const (
 	PersonaUser PersonaOrigin = "user"
 )
 
-// Persona describes a character that can be assigned to a model instance.
-type Persona struct {
+// PersonaTemplate is one row of the pool a new model instance draws its
+// starting description from. What the instance then speaks under is its
+// own revision zero, which the description is copied into: editing the
+// row afterwards changes what the next instance draws, and nothing about
+// an instance that already drew from it.
+type PersonaTemplate struct {
 	ID          string        `json:"id"`
 	Description string        `json:"description"`
 	Origin      PersonaOrigin `json:"origin"`

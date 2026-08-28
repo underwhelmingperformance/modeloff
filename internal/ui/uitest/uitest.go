@@ -313,7 +313,7 @@ type FakeAPI struct {
 	ListModelsFn       func(context.Context) ([]api.ModelInfo, error)
 	SendEventsFn       func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	GenerateNickFn     func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
-	GeneratePersonasFn func(context.Context, domain.ModelID) ([]domain.Persona, error)
+	GeneratePersonasFn func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error)
 }
 
 // ListModels delegates to ListModelsFn or returns nil.
@@ -404,7 +404,7 @@ func (f *FakeAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, p
 }
 
 // GeneratePersonas delegates to GeneratePersonasFn or returns nil.
-func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error) {
+func (f *FakeAPI) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

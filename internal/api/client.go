@@ -480,7 +480,7 @@ type Client interface {
 	// GeneratePersonas asks a model to generate a set of IRC user
 	// personas. Each returned persona has Origin set to
 	// domain.PersonaGenerated.
-	GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.Persona, error)
+	GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
 }
 
 // SetSpanAttributes records usage and request metadata on a span.

@@ -232,8 +232,8 @@ func normaliseLogTime(t *testing.T, record map[string]any, startedAt, finishedAt
 	delete(record, "time")
 }
 
-func testPersonas() []domain.Persona {
-	return []domain.Persona{
+func testPersonas() []domain.PersonaTemplate {
+	return []domain.PersonaTemplate{
 		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
 		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
 		{ID: "retro-gamer", Description: "Speedruns Doom on a toaster.", Origin: domain.PersonaGenerated},
@@ -348,7 +348,7 @@ func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(
 	_, eventStore, mgr, user := newTestSessionWithManager(t, fake, "")
 	ctx := t.Context()
 	personaID := strings.Repeat("template-", 51)
-	require.NoError(t, mgr.SetPersona(ctx, personaID, "checks the source before reaching a conclusion"))
+	require.NoError(t, mgr.SetPersonaTemplate(ctx, personaID, "checks the source before reaching a conclusion"))
 
 	seedChannel(t, user, "#dev")
 	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", personaID))
@@ -1002,7 +1002,7 @@ func writeMemoryToolCall(t *testing.T, key, content string) api.CompletionResult
 func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+			GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
 				return testPersonas(), nil
 			},
 		}

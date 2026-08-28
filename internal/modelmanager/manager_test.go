@@ -50,8 +50,8 @@ func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo,
 	return c.infos, nil
 }
 
-func testPersonas() []domain.Persona {
-	return []domain.Persona{
+func testPersonas() []domain.PersonaTemplate {
+	return []domain.PersonaTemplate{
 		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
 		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
 		{ID: "retro-gamer", Description: "Speedruns Doom on a toaster.", Origin: domain.PersonaGenerated},
@@ -226,7 +226,7 @@ func TestManager_runtimeConfigOperations_recordSpans(t *testing.T) {
 func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
 	calls := 0
 	fake := &apitest.Fake{
-		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
+		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls++
 			return testPersonas(), nil
 		},
@@ -239,15 +239,15 @@ func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
 
 	ctx := t.Context()
 
-	require.NoError(t, fx.mgr.EnsurePersonas(ctx))
+	require.NoError(t, fx.mgr.EnsurePersonaTemplates(ctx))
 	require.Equal(t, 1, calls)
 
-	got, err := fx.store.ListPersonas(ctx)
+	got, err := fx.store.ListPersonaTemplates(ctx)
 	require.NoError(t, err)
 	require.Equal(t, testPersonas(), got)
 
 	// Second call must not regenerate — the pool is already populated.
-	require.NoError(t, fx.mgr.EnsurePersonas(ctx))
+	require.NoError(t, fx.mgr.EnsurePersonaTemplates(ctx))
 	require.Equal(t, 1, calls)
 }
 
@@ -258,10 +258,10 @@ func TestManager_RandomPersona(t *testing.T) {
 
 	ctx := t.Context()
 	for _, p := range testPersonas() {
-		require.NoError(t, fx.store.SavePersona(ctx, p))
+		require.NoError(t, fx.store.SavePersonaTemplate(ctx, p))
 	}
 
-	got, err := fx.mgr.RandomPersona(ctx)
+	got, err := fx.mgr.RandomPersonaTemplate(ctx)
 	require.NoError(t, err)
 
 	ids := make(map[string]bool)
@@ -284,7 +284,7 @@ func TestManager_RandomPersona_excludes_personas_held_by_live_instances(t *testi
 	ctx := t.Context()
 	personas := testPersonas()
 	for _, p := range personas {
-		require.NoError(t, fx.store.SavePersona(ctx, p))
+		require.NoError(t, fx.store.SavePersonaTemplate(ctx, p))
 	}
 
 	for i, nick := range []domain.Nick{"grumpybot", "lurkerbot"} {
@@ -295,7 +295,7 @@ func TestManager_RandomPersona_excludes_personas_held_by_live_instances(t *testi
 	// Only personas[2] is unheld; repeating the draw rules out a lucky
 	// hit from a plain uniform draw over all three personas.
 	for range 30 {
-		got, err := fx.mgr.RandomPersona(ctx)
+		got, err := fx.mgr.RandomPersonaTemplate(ctx)
 		require.NoError(t, err)
 		require.Equal(t, personas[2], got)
 	}
@@ -312,7 +312,7 @@ func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.
 	ctx := t.Context()
 	personas := testPersonas()
 	for _, p := range personas {
-		require.NoError(t, fx.store.SavePersona(ctx, p))
+		require.NoError(t, fx.store.SavePersonaTemplate(ctx, p))
 	}
 
 	for i, p := range personas {
@@ -320,7 +320,7 @@ func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.
 		require.NoError(t, fx.store.SaveInstance(ctx, inst))
 	}
 
-	got, err := fx.mgr.RandomPersona(ctx)
+	got, err := fx.mgr.RandomPersonaTemplate(ctx)
 	require.NoError(t, err)
 
 	ids := make(map[string]bool)
@@ -335,14 +335,14 @@ func TestManager_RandomPersona_empty_pool(t *testing.T) {
 		APIClient: &apitest.Fake{},
 	})
 
-	_, err := fx.mgr.RandomPersona(t.Context())
+	_, err := fx.mgr.RandomPersonaTemplate(t.Context())
 	require.EqualError(t, err, "no personas available")
 }
 
 func TestManager_RegeneratePersonas_preserves_user_defined(t *testing.T) {
 	fake := &apitest.Fake{
-		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.Persona, error) {
-			return []domain.Persona{
+		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
+			return []domain.PersonaTemplate{
 				{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
 			}, nil
 		},
@@ -355,57 +355,57 @@ func TestManager_RegeneratePersonas_preserves_user_defined(t *testing.T) {
 
 	ctx := t.Context()
 
-	require.NoError(t, fx.store.SavePersona(ctx, domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(ctx, domain.PersonaTemplate{
 		ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser,
 	}))
-	require.NoError(t, fx.store.SavePersona(ctx, domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(ctx, domain.PersonaTemplate{
 		ID: "old-gen", Description: "Old generated.", Origin: domain.PersonaGenerated,
 	}))
 
 	got, err := fx.mgr.RegeneratePersonas(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
+	require.Equal(t, []domain.PersonaTemplate{
 		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
 	}, got)
 
-	all, err := fx.store.ListPersonas(ctx)
+	all, err := fx.store.ListPersonaTemplates(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
+	require.Equal(t, []domain.PersonaTemplate{
 		{ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser},
 		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
 	}, all)
 }
 
-func TestManager_SetPersona(t *testing.T) {
+func TestManager_SetPersonaTemplate(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
 
-	require.NoError(t, fx.mgr.SetPersona(ctx, "custom-bot", "A friendly helper."))
+	require.NoError(t, fx.mgr.SetPersonaTemplate(ctx, "custom-bot", "A friendly helper."))
 
-	got, err := fx.store.GetPersona(ctx, "custom-bot")
+	got, err := fx.store.GetPersonaTemplate(ctx, "custom-bot")
 	require.NoError(t, err)
-	require.Equal(t, domain.Persona{
+	require.Equal(t, domain.PersonaTemplate{
 		ID:          "custom-bot",
 		Description: "A friendly helper.",
 		Origin:      domain.PersonaUser,
 	}, got)
 }
 
-func TestManager_SetPersona_rejects_an_invalid_description(t *testing.T) {
+func TestManager_SetPersonaTemplate_rejects_an_invalid_description(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: &apitest.Fake{},
 	})
 
-	err := fx.mgr.SetPersona(t.Context(), "custom-bot", "first line\nsecond line")
+	err := fx.mgr.SetPersonaTemplate(t.Context(), "custom-bot", "first line\nsecond line")
 
 	var personaErr domain.ErroneousPersonaError
 	require.ErrorAs(t, err, &personaErr)
 	require.Equal(t, domain.PersonaControlCharacter, personaErr.Reason)
 
-	_, err = fx.store.GetPersona(t.Context(), "custom-bot")
+	_, err = fx.store.GetPersonaTemplate(t.Context(), "custom-bot")
 	require.Error(t, err)
 }
 
@@ -416,10 +416,10 @@ func TestManager_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
 
 	ctx := t.Context()
 
-	require.NoError(t, fx.store.SavePersona(ctx, domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(ctx, domain.PersonaTemplate{
 		ID: "my-persona", Description: "User defined.", Origin: domain.PersonaUser,
 	}))
-	require.NoError(t, fx.store.SavePersona(ctx, domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(ctx, domain.PersonaTemplate{
 		ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated,
 	}))
 
@@ -427,9 +427,9 @@ func TestManager_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, removed)
 
-	got, err := fx.store.ListPersonas(ctx)
+	got, err := fx.store.ListPersonaTemplates(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []domain.Persona{
+	require.Equal(t, []domain.PersonaTemplate{
 		{ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated},
 	}, got)
 }

@@ -71,7 +71,7 @@ func withoutAt(ev domain.PersistableEvent) domain.PersistableEvent {
 func TestChatScreen_PersonasList_persists_to_user_reply_log(t *testing.T) {
 	f := newReplyLogFixture(t)
 
-	personas := []domain.Persona{
+	personas := []domain.PersonaTemplate{
 		{ID: "p1", Description: "first", Origin: domain.PersonaGenerated},
 	}
 

@@ -314,7 +314,7 @@ func (s ConnectionScreen) runEnsurePersonas() tea.Cmd {
 			return nil
 		}
 
-		if err := mgr.EnsurePersonas(s.ctx()); err != nil {
+		if err := mgr.EnsurePersonaTemplates(s.ctx()); err != nil {
 			slog.Default().WarnContext(s.ctx(), "ensure personas",
 				"component", "ui",
 				"screen", "connection",

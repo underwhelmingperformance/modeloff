@@ -35,9 +35,9 @@ type ManagerAPI interface {
 	SetSmallModel(ctx context.Context, modelID domain.ModelID)
 	SetReflectionMode(ctx context.Context, mode config.ReflectionMode) error
 	SetReflectionModel(modelID domain.ModelID)
-	SetPersona(ctx context.Context, id string, description string) error
-	ListPersonas(ctx context.Context) ([]domain.Persona, error)
-	RegeneratePersonas(ctx context.Context) ([]domain.Persona, error)
+	SetPersonaTemplate(ctx context.Context, id string, description string) error
+	ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error)
+	RegeneratePersonas(ctx context.Context) ([]domain.PersonaTemplate, error)
 	ResetPersonas(ctx context.Context) (int, error)
 	InspectPersona(
 		ctx context.Context,

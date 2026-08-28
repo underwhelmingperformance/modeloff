@@ -177,9 +177,9 @@ type TimestampFormatSetResult struct {
 
 // PersonasListResult is the chat-screen-side dispatch marker
 // for a `/personas` reply. The named-slice shape keeps the
-// result distinguishable from a bare `[]domain.Persona` in a
+// result distinguishable from a bare `[]domain.PersonaTemplate` in a
 // type switch.
-type PersonasListResult []domain.Persona
+type PersonasListResult []domain.PersonaTemplate
 
 // PersonasRegeneratedResult signals that personas were regenerated.
 type PersonasRegeneratedResult struct {

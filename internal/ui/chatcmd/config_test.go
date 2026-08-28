@@ -49,11 +49,13 @@ func (f *fakeManagerAPI) SetSmallModel(_ context.Context, modelID domain.ModelID
 	f.lastSmallModel = modelID
 }
 
-func (f *fakeManagerAPI) SetPersona(context.Context, string, string) error { return nil }
+func (f *fakeManagerAPI) SetPersonaTemplate(context.Context, string, string) error { return nil }
 
-func (f *fakeManagerAPI) ListPersonas(context.Context) ([]domain.Persona, error) { return nil, nil }
+func (f *fakeManagerAPI) ListPersonaTemplates(context.Context) ([]domain.PersonaTemplate, error) {
+	return nil, nil
+}
 
-func (f *fakeManagerAPI) RegeneratePersonas(context.Context) ([]domain.Persona, error) {
+func (f *fakeManagerAPI) RegeneratePersonas(context.Context) ([]domain.PersonaTemplate, error) {
 	return nil, nil
 }
 

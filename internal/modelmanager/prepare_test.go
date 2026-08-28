@@ -48,7 +48,7 @@ func TestPrepareInstance_assigns_a_pool_persona_without_warning(t *testing.T) {
 
 	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
 
-	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
 		ID:          "p1",
 		Description: "a terse reviewer",
 		Origin:      domain.PersonaGenerated,
@@ -91,7 +91,7 @@ func TestPrepareInstance_copies_a_requested_persona_template(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
 	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
-	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
 		ID:          "careful-reader",
 		Description: "checks the source before reaching a conclusion",
 		Origin:      domain.PersonaUser,
@@ -115,7 +115,7 @@ func TestPrepareInstance_does_not_trim_a_persona_template_id(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
 	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
-	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
 		ID:          "careful-reader",
 		Description: "checks the source before reaching a conclusion",
 		Origin:      domain.PersonaUser,
@@ -135,7 +135,7 @@ func TestPrepareInstance_copies_an_empty_persona_template(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
 	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
-	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
 		ID:     "blank-slate",
 		Origin: domain.PersonaUser,
 	}))
@@ -193,7 +193,7 @@ func TestPrepareInstance_rejects_an_invalid_persona_template(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
 	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
-	require.NoError(t, fx.store.SavePersona(t.Context(), domain.Persona{
+	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
 		ID:          "too-much",
 		Description: strings.Repeat("x", domain.PersonaMaxLen+1),
 		Origin:      domain.PersonaUser,

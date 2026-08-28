@@ -445,8 +445,8 @@ func (SystemNotice) issuerReply()                      {}
 
 // PersonasList records /personas output.
 type PersonasList struct {
-	Personas []Persona `json:"personas"`
-	At       time.Time `json:"at"`
+	Personas []PersonaTemplate `json:"personas"`
+	At       time.Time         `json:"at"`
 }
 
 func (PersonasList) persistableEvent()                 {}
