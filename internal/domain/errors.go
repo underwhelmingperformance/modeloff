@@ -148,6 +148,21 @@ func (e MalformedChannelModeError) Error() string {
 	return fmt.Sprintf("malformed channel mode string %q: must start with %q", e.Input, "+")
 }
 
+// ErroneousMemoryError refuses a memory that fails [ValidateMemory].
+// It carries no timestamp because no window renders it: the only
+// writer of a memory is the instance itself, through `write_memory`,
+// and the refusal comes back as that tool call's result. `Reason`
+// says which bound the memory failed, so the model can write a shorter
+// or better-formed one without the turn ending.
+type ErroneousMemoryError struct {
+	Key    string
+	Reason MemoryRejection
+}
+
+func (e ErroneousMemoryError) Error() string {
+	return fmt.Sprintf("memory %q is not allowed: %s", e.Key, e.Reason)
+}
+
 // PokeIntervalOutOfRangeError indicates a `/config poke-interval`
 // value was non-positive (which would silently disable the
 // scheduled poke feature entirely) or below the configured floor (a

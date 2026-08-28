@@ -76,6 +76,10 @@ func (m *instanceMemory) PrepareWriteMemory(
 	content string,
 	pinned bool,
 ) (memory.PreparedMutation, error) {
+	if reason := domain.ValidateMemory(key, content); reason != domain.MemoryAccepted {
+		return nil, domain.ErroneousMemoryError{Key: key, Reason: reason}
+	}
+
 	entry := memory.Entry{Key: key, Content: content, Pinned: pinned, At: m.now()}
 	if preparer, ok := m.store.(memory.MutationPreparer); ok {
 		return preparer.PrepareWrite(ctx, m.instanceID, entry)
@@ -155,12 +159,18 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					"type": "object",
 					"properties": map[string]any{
 						"key": map[string]any{
-							"type":        "string",
-							"description": "A short, stable identifier for the memory, such as user_name, favourite_topic, or preferred_editor.",
+							"type": "string",
+							"description": fmt.Sprintf(
+								"A short, stable identifier for the memory, such as user_name, favourite_topic, or preferred_editor. Letters, digits, underscores, hyphens and full stops only, up to %d characters.",
+								domain.MemoryKeyMaxLen,
+							),
 						},
 						"content": map[string]any{
-							"type":        "string",
-							"description": "The durable fact, preference, or decision to remember.",
+							"type": "string",
+							"description": fmt.Sprintf(
+								"The durable fact, preference, or decision to remember. One line of up to %d characters.",
+								domain.MemoryContentMaxLen,
+							),
 						},
 						"pinned": map[string]any{
 							"type":        "boolean",
@@ -194,6 +204,14 @@ func memoryToolRegistry(mem MemoryExecutor, searchEnabled bool) *ToolRegistry {
 					effect.Finish(ctx)
 				}
 				recordMemoryTool(ctx, "write_memory", err)
+				// A memory the bounds refuse is something the model can
+				// correct, so it comes back as a tool result naming what
+				// was wrong. Ending the turn instead would take the whole
+				// reply away over one badly-formed memory.
+				var refused domain.ErroneousMemoryError
+				if errors.As(err, &refused) {
+					return ToolResultPayload{OK: false, Error: refused.Error()}, nil
+				}
 				if err != nil {
 					return ToolResultPayload{}, &ToolExecutionError{Tool: "write_memory", Err: err}
 				}

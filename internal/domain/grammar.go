@@ -1,6 +1,10 @@
 package domain
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // NickMaxLen is this server's NICKLEN (RFC 2812 ISUPPORT). RFC 2812
 // §1.2.1 sets nine as the floor every client may assume; ircds have
@@ -80,13 +84,13 @@ func ValidateNick(n Nick) NickRejection {
 		return NickReserved
 	}
 
-	if !isNickLetter(s[0]) && !strings.ContainsRune(nickSpecials, rune(s[0])) {
+	if !isASCIILetter(s[0]) && !strings.ContainsRune(nickSpecials, rune(s[0])) {
 		return NickBadFirstCharacter
 	}
 
 	for i := 1; i < len(s); i++ {
 		c := s[i]
-		if isNickLetter(c) || (c >= '0' && c <= '9') || c == '-' || strings.ContainsRune(nickSpecials, rune(c)) {
+		if isASCIILetter(c) || (c >= '0' && c <= '9') || c == '-' || strings.ContainsRune(nickSpecials, rune(c)) {
 			continue
 		}
 
@@ -96,10 +100,11 @@ func ValidateNick(n Nick) NickRejection {
 	return NickAccepted
 }
 
-// isNickLetter reports whether c is an ASCII letter. The grammar is
-// byte-oriented: a multi-byte UTF-8 sequence fails here on its first
-// byte, which is the answer RFC 2812 gives for a non-ASCII nick.
-func isNickLetter(c byte) bool {
+// isASCIILetter reports whether c is an ASCII letter. The nick and
+// memory-key grammars are both byte-oriented: a multi-byte UTF-8
+// sequence fails here on its first byte, which is the answer RFC 2812
+// gives for a non-ASCII nick.
+func isASCIILetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
@@ -247,6 +252,126 @@ func ValidateTopic(topic string) TopicRejection {
 	}
 
 	return TopicAccepted
+}
+
+// MemoryKeyMaxLen bounds a memory's key. The key addresses the
+// memory: it is what `write_memory` overwrites under and what
+// `delete_memory` names, and it is rendered beside the content in the
+// memory line of every prompt. Sixty-four bytes holds a multi-word
+// snake_case identifier such as `preferred_editor` several times
+// over, while keeping the key far too small to carry the fact itself
+// past [MemoryContentMaxLen].
+const MemoryKeyMaxLen = 64
+
+// MemoryContentMaxLen bounds a memory's content in characters, so the
+// bound is the same whatever script it is written in. A memory holds one
+// fact, which is the same amount of text [PersonaMaxLen] allows a
+// persona description, an experience summary or a tendency. The two
+// bounds are equal by coincidence of what one sentence needs, not
+// because either derives from the other.
+const MemoryContentMaxLen = 400
+
+// memoryKeySpecials are the non-alphanumeric characters a memory key
+// may contain. They are the separators an identifier is written with;
+// everything else, including whitespace and the brackets the memory
+// line delimits an entry with, is refused.
+const memoryKeySpecials = "_-."
+
+// MemoryRejection names why [ValidateMemory] refused a memory. The
+// zero value, [MemoryAccepted], means it did not.
+type MemoryRejection int
+
+const (
+	// MemoryAccepted means the key and content both satisfy the
+	// grammar.
+	MemoryAccepted MemoryRejection = iota
+	// MemoryKeyEmpty means the key has no characters, so it
+	// addresses no memory.
+	MemoryKeyEmpty
+	// MemoryKeyTooLong means the key is longer than
+	// [MemoryKeyMaxLen].
+	MemoryKeyTooLong
+	// MemoryKeyBadCharacter means the key contains a character
+	// outside the identifier grammar.
+	MemoryKeyBadCharacter
+	// MemoryContentEmpty means the content has no characters, so the
+	// memory records no fact.
+	MemoryContentEmpty
+	// MemoryContentTooLong means the content is longer than
+	// [MemoryContentMaxLen].
+	MemoryContentTooLong
+	// MemoryContentControlCharacter means the content contains a
+	// control character.
+	MemoryContentControlCharacter
+)
+
+func (r MemoryRejection) String() string {
+	switch r {
+	case MemoryAccepted:
+		return "accepted"
+	case MemoryKeyEmpty:
+		return "a memory key cannot be empty"
+	case MemoryKeyTooLong:
+		return "the key is too long"
+	case MemoryKeyBadCharacter:
+		return "the key may contain only letters, digits and " + memoryKeySpecials
+	case MemoryContentEmpty:
+		return "a memory cannot be empty"
+	case MemoryContentTooLong:
+		return "the content is too long"
+	case MemoryContentControlCharacter:
+		return "the content may not contain control characters"
+	}
+
+	return "rejected"
+}
+
+// ValidateMemory bounds one memory an instance writes about itself.
+// The key must be a non-empty identifier within [MemoryKeyMaxLen],
+// and the content a non-empty single line within
+// [MemoryContentMaxLen].
+//
+// A memory reaches the model as lower-authority instance state, in
+// the same position a persona description does, so it carries the
+// same structural bounds for the same reasons: the length keeps one
+// memory to the one fact it is meant to hold, and refusing control
+// characters prevents it from laying out a document that imitates the
+// surrounding record. This is structural validation; it does not make
+// a stored memory semantically trusted.
+func ValidateMemory(key string, content string) MemoryRejection {
+	switch {
+	case key == "":
+		return MemoryKeyEmpty
+	case len(key) > MemoryKeyMaxLen:
+		return MemoryKeyTooLong
+	}
+
+	for i := range len(key) {
+		c := key[i]
+		if isASCIILetter(c) || (c >= '0' && c <= '9') || strings.ContainsRune(memoryKeySpecials, rune(c)) {
+			continue
+		}
+
+		return MemoryKeyBadCharacter
+	}
+
+	switch {
+	case content == "":
+		return MemoryContentEmpty
+	case utf8.RuneCountInString(content) > MemoryContentMaxLen:
+		return MemoryContentTooLong
+	}
+
+	// Every Unicode control, not only the ASCII ones. U+0085, U+2028 and
+	// U+2029 all end a line for a renderer, so admitting them would let a
+	// memory lay out a document that imitates the record around it.
+	for _, r := range content {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return MemoryContentControlCharacter
+		}
+	}
+
+	return MemoryAccepted
 }
 
 // ValidateChannelName checks a channel name against RFC 2812 §1.3.

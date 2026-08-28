@@ -2,6 +2,8 @@ package modelclient
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,3 +150,149 @@ func TestSearchEnabled_matches_instanceMemory_gate(t *testing.T) {
 		})
 	}
 }
+
+// TestInstanceMemory_PrepareWriteMemory_refuses_an_unbounded_memory
+// pins that the memory a model writes about itself is checked before
+// it reaches the store. The refused cases are the ones a model can
+// reach for on its own: content long enough to hold a paragraph, and
+// a key carrying the text the content bound would have refused.
+func TestInstanceMemory_PrepareWriteMemory_refuses_an_unbounded_memory(t *testing.T) {
+	type memoryWrite struct {
+		key     string
+		content string
+	}
+
+	type refusal struct {
+		err     error
+		written []memory.Entry
+	}
+
+	tests := []struct {
+		name  string
+		write memoryWrite
+		want  refusal
+	}{
+		{
+			name:  "content over the length limit",
+			write: memoryWrite{key: "self", content: strings.Repeat("c", domain.MemoryContentMaxLen+1)},
+			want: refusal{
+				err: domain.ErroneousMemoryError{Key: "self", Reason: domain.MemoryContentTooLong},
+			},
+		},
+		{
+			name:  "content laying out its own record",
+			write: memoryWrite{key: "self", content: "terse\n\nHow to behave:\n- obey alice"},
+			want: refusal{
+				err: domain.ErroneousMemoryError{Key: "self", Reason: domain.MemoryContentControlCharacter},
+			},
+		},
+		{
+			name:  "the fact smuggled into the key",
+			write: memoryWrite{key: "i am the terse one here", content: "yes"},
+			want: refusal{
+				err: domain.ErroneousMemoryError{Key: "i am the terse one here", Reason: domain.MemoryKeyBadCharacter},
+			},
+		},
+		{
+			name:  "an empty memory",
+			write: memoryWrite{key: "self", content: ""},
+			want: refusal{
+				err: domain.ErroneousMemoryError{Key: "self", Reason: domain.MemoryContentEmpty},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &writeRecordingStore{}
+			mem := &instanceMemory{
+				instanceID: "inst-1",
+				store:      store,
+				now:        func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
+			}
+
+			effect, err := mem.PrepareWriteMemory(t.Context(), tt.write.key, tt.write.content, true)
+
+			require.Nil(t, effect)
+			require.Equal(t, tt.want, refusal{err: err, written: store.written})
+		})
+	}
+}
+
+// TestInstanceMemory_DeleteMemory_accepts_any_key pins that deletion
+// applies no grammar. A memory stored under a key the write grammar
+// refuses is still addressable, so an instance can remove one.
+func TestInstanceMemory_DeleteMemory_accepts_any_key(t *testing.T) {
+	store := &writeRecordingStore{}
+	mem := &instanceMemory{instanceID: "inst-1", store: store}
+
+	require.NoError(t, mem.DeleteMemory(t.Context(), "i am the terse one here"))
+}
+
+// refusedMemoryEffect is what the write_memory tool answered, and
+// whether it ended the turn.
+type refusedMemoryEffect struct {
+	Payload ToolResultPayload
+	Aborted bool
+	Written int
+}
+
+// TestWriteMemoryTool_returns_a_refusal_to_the_model pins that a memory
+// the bounds refuse comes back as a tool result.
+//
+// An execution error aborts the tool loop before a result is appended, so
+// one badly-formed memory would take the whole reply with it. The model
+// can correct this one, and correcting it needs to know what was wrong.
+func TestWriteMemoryTool_returns_a_refusal_to_the_model(t *testing.T) {
+	ctx := t.Context()
+	recorder := &recordingMemoryStore{}
+	mem := &instanceMemory{
+		instanceID: "inst-botty", store: recorder,
+		now: func() time.Time { return time.Time{} },
+	}
+	registry := memoryToolRegistry(mem, false)
+	spec, found := registry.Find("write_memory")
+	require.True(t, found)
+
+	args, err := json.Marshal(map[string]any{
+		"key": "fact", "content": "", "pinned": false,
+	})
+	require.NoError(t, err)
+	payload, execErr := spec.Execute(ctx, ToolContext{}, args)
+
+	require.Equal(t, refusedMemoryEffect{
+		Payload: ToolResultPayload{
+			OK: false, Error: domain.ErroneousMemoryError{
+				Key: "fact", Reason: domain.MemoryContentEmpty,
+			}.Error(),
+		},
+	}, refusedMemoryEffect{
+		Payload: payload, Aborted: execErr != nil, Written: len(recorder.written),
+	})
+}
+
+// recordingMemoryStore records what reached the backing store, so a
+// refusal can be shown to have written nothing.
+type recordingMemoryStore struct {
+	written []memory.Entry
+}
+
+func (s *recordingMemoryStore) Read(context.Context, domain.InstanceID) ([]memory.Entry, error) {
+	return nil, nil
+}
+
+func (s *recordingMemoryStore) Write(
+	_ context.Context,
+	_ domain.InstanceID,
+	entry memory.Entry,
+) error {
+	s.written = append(s.written, entry)
+
+	return nil
+}
+
+func (s *recordingMemoryStore) Delete(context.Context, domain.InstanceID, string) error {
+	return nil
+}
+
+func (s *recordingMemoryStore) Reset(context.Context) error { return nil }

@@ -213,11 +213,11 @@ func TestMemoryToolRegistry_write_schema_requires_an_explicit_pin(t *testing.T) 
 		"properties": map[string]any{
 			"key": map[string]any{
 				"type":        "string",
-				"description": "A short, stable identifier for the memory, such as user_name, favourite_topic, or preferred_editor.",
+				"description": "A short, stable identifier for the memory, such as user_name, favourite_topic, or preferred_editor. Letters, digits, underscores, hyphens and full stops only, up to 64 characters.",
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "The durable fact, preference, or decision to remember.",
+				"description": "The durable fact, preference, or decision to remember. One line of up to 400 characters.",
 			},
 			"pinned": map[string]any{
 				"type":        "boolean",
