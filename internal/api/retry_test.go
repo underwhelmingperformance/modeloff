@@ -271,3 +271,59 @@ func TestRetryable_cancellation_wins_over_a_deadline(t *testing.T) {
 
 	require.False(t, Retryable(err))
 }
+
+// failureStatusCase is one error a caller may hand [FailureStatus].
+type failureStatusCase struct {
+	name string
+	err  func(t *testing.T) error
+}
+
+// failureStatusEffect is what [FailureStatus] answers for a case.
+type failureStatusEffect struct {
+	Status       int
+	FromProvider bool
+}
+
+func TestFailureStatus(t *testing.T) {
+	t.Parallel()
+
+	cases := []failureStatusCase{
+		{
+			name: "a refused key",
+			err:  func(t *testing.T) error { return apiError(t, http.StatusUnauthorized) },
+		},
+		{
+			name: "a wrapped provider response",
+			err: func(t *testing.T) error {
+				return fmt.Errorf("dispatch: %w", apiError(t, http.StatusBadGateway))
+			},
+		},
+		{
+			name: "a connection failure before any response",
+			err: func(*testing.T) error {
+				return &url.Error{Op: "Post", Err: errors.New("connection refused")}
+			},
+		},
+		{
+			name: "an error raised on this side of the request",
+			err:  func(*testing.T) error { return errors.New("context is closed") },
+		},
+	}
+
+	want := []failureStatusEffect{
+		{Status: http.StatusUnauthorized, FromProvider: true},
+		{Status: http.StatusBadGateway, FromProvider: true},
+		{},
+		{},
+	}
+
+	got := make([]failureStatusEffect, 0, len(cases))
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, fromProvider := FailureStatus(testCase.err(t))
+			got = append(got, failureStatusEffect{Status: status, FromProvider: fromProvider})
+		})
+	}
+
+	require.Equal(t, want, got)
+}

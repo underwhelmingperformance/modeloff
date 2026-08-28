@@ -101,6 +101,24 @@ func Retryable(err error) bool {
 	return errors.As(err, &connectionErr)
 }
 
+// FailureStatus returns the HTTP status a provider answered a failed
+// request with. The second result is false for an error raised before
+// any response arrived, and for one raised by the code around the
+// request rather than by the provider.
+//
+// A caller uses this to tell a decision the provider made about the
+// request from a fault on this side of it. [Retryable] answers the
+// narrower question of whether sending the same request again could
+// succeed.
+func FailureStatus(err error) (int, bool) {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
+
+	return apiErr.StatusCode, true
+}
+
 // retryableStatus reports whether an HTTP status from the provider
 // describes a condition that may have passed by the next attempt.
 func retryableStatus(status int) bool {

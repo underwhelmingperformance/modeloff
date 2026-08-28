@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -749,7 +750,9 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 		apiClient := mc.apiFn()
 		if apiClient == nil {
 			mc.sess.EmitModelFailure(ctx, window.Target(), domain.ModelUnavailableError{
-				Source: domain.ClientSource(inst.ID(), nick), At: mc.sess.Now(),
+				Source: domain.ClientSource(inst.ID(), nick),
+				Reason: domain.ModelFailureNoAPIKey,
+				At:     mc.sess.Now(),
 			})
 			return nil
 		}
@@ -851,10 +854,51 @@ func (mc *ModelClient) reportTurnFailure(ctx context.Context, ch domain.ChannelN
 	}
 
 	mc.sess.EmitModelFailure(ctx, protocol.WindowTargetForKey(ch), domain.ModelUnavailableError{
-		Source: domain.ClientSource(mc.instance.ID(), nick), At: mc.sess.Now(),
+		Source: domain.ClientSource(mc.instance.ID(), nick),
+		Reason: modelFailureReason(err),
+		At:     mc.sess.Now(),
 	})
 
 	return err
+}
+
+// modelFailureReason classifies what stopped a turn, so the line the
+// operator reads names something to do about it. A fault the dispatch
+// path raised for itself has no provider status behind it and keeps the
+// unclassified reason.
+//
+// 401 and 403 are different answers. A provider returns 401 when it will
+// not accept the key at all, and 403 when it accepts the key and refuses
+// the request anyway, which is what an account without access to a model
+// receives. Telling somebody to check a key the provider just accepted
+// sends them to the wrong place.
+func modelFailureReason(err error) domain.ModelFailureReason {
+	var contextWindowExceeded *ContextWindowExceededError
+	if errors.As(err, &contextWindowExceeded) {
+		return domain.ModelFailureContextWindow
+	}
+
+	status, fromProvider := api.FailureStatus(err)
+	if !fromProvider {
+		return domain.ModelFailureUnavailable
+	}
+
+	switch status {
+	case http.StatusUnauthorized:
+		return domain.ModelFailureAuth
+	case http.StatusForbidden:
+		return domain.ModelFailureForbidden
+	case http.StatusPaymentRequired:
+		return domain.ModelFailureNoCredit
+	case http.StatusNotFound:
+		return domain.ModelFailureUnknownModel
+	case http.StatusTooManyRequests:
+		return domain.ModelFailureRateLimited
+	case http.StatusBadRequest:
+		return domain.ModelFailureBadRequest
+	}
+
+	return domain.ModelFailureUpstream
 }
 
 // dispatchWindowFor asks the actor-bound guard for the current window

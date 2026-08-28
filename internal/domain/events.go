@@ -131,6 +131,74 @@ type KillNotice struct {
 	At      time.Time
 }
 
+// ModelFailureReason says what stopped a dispatch turn. There is one
+// reason per thing the operator reading the line would do about it, so
+// two failures share a reason only when they call for the same action.
+// The zero value covers a turn that faulted with no more specific cause.
+type ModelFailureReason string
+
+const (
+	// ModelFailureUnavailable is a dispatch turn that faulted for a
+	// reason the dispatch path could not classify.
+	ModelFailureUnavailable ModelFailureReason = ""
+	// ModelFailureNoAPIKey is a turn that never reached a provider
+	// because no API key is configured.
+	ModelFailureNoAPIKey ModelFailureReason = "no_api_key"
+	// ModelFailureAuth is a provider rejecting the configured key.
+	ModelFailureAuth ModelFailureReason = "auth_refused"
+	// ModelFailureForbidden is a provider accepting the key and
+	// refusing the request anyway, which is what an account without
+	// access to a model receives.
+	ModelFailureForbidden ModelFailureReason = "forbidden"
+	// ModelFailureNoCredit is a provider refusing the request for
+	// payment.
+	ModelFailureNoCredit ModelFailureReason = "no_credit"
+	// ModelFailureUnknownModel is a provider that does not serve the
+	// model this instance was created with.
+	ModelFailureUnknownModel ModelFailureReason = "unknown_model"
+	// ModelFailureRateLimited is a provider asking for fewer requests.
+	ModelFailureRateLimited ModelFailureReason = "rate_limited"
+	// ModelFailureBadRequest is a provider refusing the request as
+	// malformed, which is this application's fault and not the
+	// operator's.
+	ModelFailureBadRequest ModelFailureReason = "bad_request"
+	// ModelFailureContextWindow is a prompt the model's context window
+	// cannot hold, which compaction could not bring inside it.
+	ModelFailureContextWindow ModelFailureReason = "context_window"
+	// ModelFailureUpstream is a provider failing on its own side.
+	ModelFailureUpstream ModelFailureReason = "upstream"
+)
+
+// String completes the sentence [ModelUnavailableError.Error] opens
+// with the model's nick. Each answer names what to do, because the line
+// exists to be acted on.
+func (r ModelFailureReason) String() string {
+	switch r {
+	case ModelFailureNoAPIKey:
+		return "cannot dispatch until an API key is configured"
+	case ModelFailureAuth:
+		return "was refused by its provider: check the configured API key"
+	case ModelFailureForbidden:
+		return "was refused by its provider: the key is accepted but this " +
+			"account cannot use this model"
+	case ModelFailureNoCredit:
+		return "was refused by its provider for payment: add credit to the account"
+	case ModelFailureUnknownModel:
+		return "names a model its provider does not serve: pick another with /add-model"
+	case ModelFailureRateLimited:
+		return "is being rate limited by its provider: it will answer again shortly"
+	case ModelFailureBadRequest:
+		return "sent a request its provider would not accept, which is a fault " +
+			"in this application and not in the configuration"
+	case ModelFailureContextWindow:
+		return "has more context than its window holds, and a retry will not clear it"
+	case ModelFailureUpstream:
+		return "could not complete its provider request: the provider failed on its own side"
+	}
+
+	return "unavailable for dispatch"
+}
+
 // ModelUnavailableError announces that a dispatch turn
 // could not produce a reply from a model because the context store
 // was unreachable, the model returned an error, or the dispatch path
@@ -138,16 +206,23 @@ type KillNotice struct {
 // dispatcher protocol does not model server-side LLM failures.
 // The delivery envelope supplies each recipient's corresponding
 // window.
+//
+// Reason is what separates the failures an operator can act on. A
+// refused key and an overflowing context window both stop every turn
+// the instance takes, and the two need different things done about
+// them.
 type ModelUnavailableError struct {
 	Source Source
+	Reason ModelFailureReason
 	At     time.Time
 }
 
 // Error makes [ModelUnavailableError] satisfy `error` for the
-// emission boundary's `errors.As` extraction. The string is also
-// what surfaces to operators reading logs.
+// emission boundary's `errors.As` extraction. The string is also what
+// the chat-screen renders for the failure and what surfaces to
+// operators reading logs.
 func (e ModelUnavailableError) Error() string {
-	return fmt.Sprintf("model %q unavailable for dispatch", e.Source.Nick())
+	return fmt.Sprintf("model %q %s", e.Source.Nick(), e.Reason)
 }
 
 // Pure-live (non-persistable) event types implement Event so they

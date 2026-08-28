@@ -47,8 +47,10 @@ func TestDispatch_without_an_api_client_makes_no_upstream_call(t *testing.T) {
 		require.Equal(t, 0, upstream.callCount())
 
 		require.Equal(t, []domain.ProtocolEvent{
-			domain.ModelUnavailableError{Source: domain.ClientSource("inst-botty", "botty"),
-				At: sess.Now(),
+			domain.ModelUnavailableError{
+				Source: domain.ClientSource("inst-botty", "botty"),
+				Reason: domain.ModelFailureNoAPIKey,
+				At:     sess.Now(),
 			},
 		}, sess.emittedEvents())
 	})
