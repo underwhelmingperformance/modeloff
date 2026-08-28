@@ -2,10 +2,8 @@ package ui_test
 
 import (
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -29,7 +27,7 @@ func TestRoot_quits_on_ctrl_c_with_teatest(t *testing.T) {
 	tm.WaitFor("Press Ctrl+C again to quit")
 	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+	tm.WaitForExit()
 }
 
 func TestChatScreen_join_flow_with_teatest(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/api"
@@ -430,11 +429,10 @@ func TestChatScreen_persists_last_window_on_focus(t *testing.T) {
 	tm.Send(chatcmd.ChannelFocusMsg{Channel: "#general", At: time.Now()})
 	tm.WaitFor("Created channel #general")
 
-	require.Eventually(t, func() bool {
+	tm.Eventually(func() bool {
 		last, err := s.GetLastWindow(t.Context())
 		return err == nil && last != nil && last.Name() == "#general"
-	}, time.Second, 10*time.Millisecond,
-		"chat screen should have persisted #general as the last window after focus")
+	}, "chat screen should have persisted #general as the last window after focus")
 }
 
 func TestChatScreen_part_command(t *testing.T) {
@@ -1002,7 +1000,7 @@ func TestChatScreen_quit_command_with_message(t *testing.T) {
 	waitForChannelSeedDrain(tm)
 
 	tm.Submit("/quit goodbye world")
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+	tm.WaitForExit()
 
 	active, err := h.store.GetSessionActive(t.Context())
 	require.NoError(t, err)

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/config"
@@ -256,7 +255,7 @@ func TestApp_quit_command_with_teatest(t *testing.T) {
 
 	tm.Submit("/quit")
 
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+	tm.WaitForExit()
 }
 
 func TestApp_unknown_target_commands_with_teatest(t *testing.T) {

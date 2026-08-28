@@ -131,8 +131,93 @@ func (a *App) WaitForCondition(condition func([]byte) bool) {
 	a.t.Helper()
 
 	teatest.WaitFor(a.t, a.output(), condition,
-		teatest.WithDuration(2*time.Second),
-		teatest.WithCheckInterval(10*time.Millisecond))
+		teatest.WithDuration(a.waitBudget()),
+		teatest.WithCheckInterval(waitCheckInterval))
+}
+
+// Eventually blocks until condition holds, under the same budget every
+// other wait here follows. It is for a condition the rendered view does
+// not show, such as a store write the screen made.
+func (a *App) Eventually(condition func() bool, message string) {
+	a.t.Helper()
+
+	require.Eventually(a.t, condition, a.waitBudget(), waitCheckInterval, message)
+}
+
+// WaitForExit blocks until the program has finished, under the same
+// budget every other wait here follows.
+func (a *App) WaitForExit() {
+	a.t.Helper()
+
+	a.waitFinished()
+}
+
+// waitFinished blocks until the program has stopped, under the deadline
+// budget.
+//
+// A budget of zero means the deadline has passed. `teatest` reads a
+// non-positive final timeout as no timeout at all and blocks on the
+// program, which is the one thing that cannot be allowed here: the
+// binary would be killed with nothing reported. Fail on the spot
+// instead, and say what was still running.
+func (a *App) waitFinished() {
+	a.t.Helper()
+
+	budget := a.waitBudget()
+	if budget <= 0 {
+		a.t.Fatalf("test deadline reached while waiting for the program to finish; view:\n%s",
+			a.RenderedView())
+
+		return
+	}
+
+	a.WaitFinished(a.t, teatest.WithFinalTimeout(budget))
+}
+
+// waitCheckInterval is how often a wait re-reads the rendered output. It
+// bounds how long a satisfied condition goes unnoticed, and nothing about
+// the UI depends on the value.
+const waitCheckInterval = 10 * time.Millisecond
+
+// waitReportingReserve is the part of the test binary's deadline a wait
+// leaves unspent. A wait that reaches its own deadline reports the view
+// that never appeared; one that reaches the binary's is killed with a
+// stack dump and no view, so a wait always stops first.
+const waitReportingReserve = time.Second
+
+// waitWithoutDeadline is the budget for a run started with `-timeout 0`.
+// The caller asked for no bound, so a wait imposes none.
+const waitWithoutDeadline = time.Duration(1<<63 - 1)
+
+// waitBudget is how long a wait may block. It follows the test binary's
+// deadline, so `go test -timeout` is the only control over how long a
+// loaded machine is given and no helper here carries a bound of its own.
+// A fixed one has to be generous enough for the slowest machine that runs
+// the suite, which makes it useless as a bound on the fastest.
+func (a *App) waitBudget() time.Duration {
+	// Deadline is on *testing.T and not on testing.TB, which is what an
+	// App holds so a benchmark can drive one.
+	timed, ok := a.t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return waitWithoutDeadline
+	}
+	deadline, ok := timed.Deadline()
+	if !ok {
+		return waitWithoutDeadline
+	}
+
+	remaining := time.Until(deadline)
+	budget := remaining - waitReportingReserve
+	if budget > 0 {
+		return budget
+	}
+
+	// Past the point where the reserve fits, the wait takes whatever is
+	// left. Waiting the reserve itself would run past the deadline and
+	// the binary would be killed before the helper could report the view
+	// it was waiting for, which is the one thing the reserve exists to
+	// leave time for.
+	return max(remaining, 0)
 }
 
 // RenderedView returns the currently visible screen state by replaying
@@ -213,12 +298,8 @@ func renderTerminal(output []byte, width, height int) (string, error) {
 func (a *App) WaitForView(predicate func(view string) bool) string {
 	a.t.Helper()
 
-	const (
-		duration = 2 * time.Second
-		interval = 10 * time.Millisecond
-	)
-
-	deadline := time.Now().Add(duration)
+	budget := a.waitBudget()
+	deadline := time.Now().Add(budget)
 
 	for {
 		view := a.RenderedView()
@@ -228,11 +309,11 @@ func (a *App) WaitForView(predicate func(view string) bool) string {
 		}
 
 		if time.Now().After(deadline) {
-			a.t.Fatal(fmt.Errorf("WaitForView: predicate not met after %s. Current view:\n%s", duration, view))
+			a.t.Fatal(fmt.Errorf("WaitForView: predicate not met after %s. Current view:\n%s", budget, view))
 			return view
 		}
 
-		time.Sleep(interval)
+		time.Sleep(waitCheckInterval)
 	}
 }
 
@@ -269,7 +350,7 @@ func (a *App) FinalView() string {
 	require.NoError(a.t, err)
 
 	require.NoError(a.t, a.Quit())
-	a.WaitFinished(a.t, teatest.WithFinalTimeout(2*time.Second))
+	a.waitFinished()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -285,7 +366,7 @@ func (a *App) CurrentView() string {
 	a.t.Helper()
 
 	require.NoError(a.t, a.Quit())
-	a.WaitFinished(a.t, teatest.WithFinalTimeout(2*time.Second))
+	a.waitFinished()
 
 	fm := a.FinalModel(a.t)
 

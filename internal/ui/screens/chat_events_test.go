@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/laney/modeloff/internal/domain"
@@ -634,7 +633,7 @@ func TestChatScreen_own_kill_ends_the_screen(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+	tm.WaitForExit()
 
 	active, err := h.store.GetSessionActive(t.Context())
 	require.NoError(t, err)
@@ -669,7 +668,7 @@ func TestChatScreen_own_kill_on_an_anonymous_channel_ends_the_screen(t *testing.
 	require.NoError(t, err)
 	require.NoError(t, killResp.Err)
 
-	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+	tm.WaitForExit()
 
 	active, err := h.store.GetSessionActive(ctx)
 	require.NoError(t, err)
