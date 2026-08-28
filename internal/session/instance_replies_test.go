@@ -47,17 +47,19 @@ func TestSession_whois_persists_to_issuer_reply_log(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Err)
 	require.Equal(t, []domain.ProtocolEvent{domain.Whois{
-		Nick:    "target",
-		ModelID: "test/model",
-		At:      fixedTime,
+		Nick:           "target",
+		ModelID:        "test/model",
+		PersonaLineage: domain.PersonaCounts{Revision: 1},
+		At:             fixedTime,
 	}}, resp.Events)
 
 	replies, err := store.InstanceRepliesBefore(ctx, inst.ID(), nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{domain.Whois{
-		Nick:    "target",
-		ModelID: "test/model",
-		At:      fixedTime,
+		Nick:           "target",
+		ModelID:        "test/model",
+		PersonaLineage: domain.PersonaCounts{Revision: 1},
+		At:             fixedTime,
 	}}, storedReplyEvents(replies))
 
 	userResp, err := sess.Handle(ctx, userClient(t, sess), protocol.Whois{Nick: "target", Window: protocol.ChannelWindowTarget("#ops")})
@@ -67,9 +69,10 @@ func TestSession_whois_persists_to_issuer_reply_log(t *testing.T) {
 	userReplies, err := store.InstanceRepliesBefore(ctx, "", nil, 10)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersistableEvent{domain.Whois{
-		Nick:    "target",
-		ModelID: "test/model",
-		At:      fixedTime,
+		Nick:           "target",
+		ModelID:        "test/model",
+		PersonaLineage: domain.PersonaCounts{Revision: 1},
+		At:             fixedTime,
 	}}, storedReplyEvents(userReplies))
 }
 
@@ -376,7 +379,10 @@ func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
 		fake := &apitest.Fake{
 			SendEventsFn: func(_ context.Context, _ domain.ModelID, _ domain.InstanceID, _ api.SystemPrompt, history []protocol.IRCMessage, events []protocol.IRCMessage) (api.CompletionResult, error) {
 				for _, h := range history {
-					if h.Kind == protocol.KindServerReply && h.Body == "whois target: test/model" {
+					// The lineage has to survive the projection a stored
+					// reply is rendered through, or a model rereads its own
+					// whois without the revision it just learned.
+					if h.Kind == protocol.KindServerReply && h.Body == "whois target: test/model, persona revision 4; experiences: 6; tendencies: 2" {
 						sawWhois = true
 					}
 				}
@@ -392,7 +398,10 @@ func TestSession_dispatch_replays_instance_replies_into_prompt(t *testing.T) {
 		_, err := s.AppendInstanceReply(ctx, testMemberID("botty"), protocol.ChannelWindowTarget("#general"), domain.Whois{
 			Nick:    "target",
 			ModelID: "test/model",
-			At:      fixedTime,
+			PersonaLineage: domain.PersonaCounts{
+				Revision: 4, Experiences: 6, Tendencies: 2,
+			},
+			At: fixedTime,
 		})
 		require.NoError(t, err)
 

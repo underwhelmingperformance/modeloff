@@ -349,17 +349,19 @@ type Help struct {
 	At     time.Time   `json:"at"`
 }
 
-// Whois records /whois output. Identity-revealing fields
-// (`Nick`, `ModelID`, `Persona`, `Channels`) are captured at the
-// moment `/whois` is issued and then immutable, so a later rename
-// or persona edit does not retro-edit the historical line — IRC
-// fidelity demands history is fixed once printed.
+// Whois records /whois output. The identity-revealing fields
+// (`Nick`, `ModelID`, `Persona`, `PersonaLineage`, `Channels`) are
+// captured at the moment `/whois` is issued and are immutable from
+// then on, so a later rename, persona edit or accepted reflection
+// does not retro-edit the historical line. IRC fidelity demands that
+// history is fixed once printed.
 type Whois struct {
-	Nick     Nick          `json:"nick,omitzero"`
-	ModelID  ModelID       `json:"model_id,omitzero"`
-	Persona  string        `json:"persona,omitzero"`
-	Channels []ChannelName `json:"channels,omitzero"`
-	At       time.Time     `json:"at"`
+	Nick           Nick          `json:"nick,omitzero"`
+	ModelID        ModelID       `json:"model_id,omitzero"`
+	Persona        string        `json:"persona,omitzero"`
+	PersonaLineage PersonaCounts `json:"persona_lineage,omitzero"`
+	Channels       []ChannelName `json:"channels,omitzero"`
+	At             time.Time     `json:"at"`
 }
 
 func (Whois) persistableEvent()                 {}

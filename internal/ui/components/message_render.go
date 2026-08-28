@@ -282,6 +282,14 @@ func renderWhoisEvent(w domain.Whois) string {
 		lines = append(lines, fmt.Sprintf("  persona: %s", w.Persona))
 	}
 
+	if w.PersonaLineage.Revision != 0 {
+		lines = append(lines, fmt.Sprintf(
+			"  persona: revision %d; experiences: %d; tendencies: %d",
+			w.PersonaLineage.Revision, w.PersonaLineage.Experiences,
+			w.PersonaLineage.Tendencies,
+		))
+	}
+
 	if len(w.Channels) > 0 {
 		strs := make([]string, len(w.Channels))
 		for i, ch := range w.Channels {

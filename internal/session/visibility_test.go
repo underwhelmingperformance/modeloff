@@ -157,10 +157,11 @@ func TestWhois_hides_channels_the_issuer_may_not_see(t *testing.T) {
 		require.NoError(t, resp.Err)
 
 		require.Equal(t, []protocol.Event{domain.Whois{
-			Nick:     "botty",
-			ModelID:  "test/model",
-			Channels: []domain.ChannelName{"#public"},
-			At:       fixedTime,
+			Nick:           "botty",
+			ModelID:        "test/model",
+			PersonaLineage: domain.PersonaCounts{Revision: 1},
+			Channels:       []domain.ChannelName{"#public"},
+			At:             fixedTime,
 		}}, resp.Events)
 	})
 }
@@ -185,10 +186,11 @@ func TestWhois_shows_a_member_the_channels_they_share(t *testing.T) {
 		require.NoError(t, resp.Err)
 
 		require.Equal(t, []protocol.Event{domain.Whois{
-			Nick:     "botty",
-			ModelID:  "test/model",
-			Channels: []domain.ChannelName{"#public", "#private", "#secret"},
-			At:       fixedTime,
+			Nick:           "botty",
+			ModelID:        "test/model",
+			PersonaLineage: domain.PersonaCounts{Revision: 1},
+			Channels:       []domain.ChannelName{"#public", "#private", "#secret"},
+			At:             fixedTime,
 		}}, resp.Events)
 	})
 }
@@ -215,9 +217,10 @@ func TestWhois_hides_anonymous_channel_membership_from_other_actors(t *testing.T
 			require.NoError(t, err)
 			require.NoError(t, resp.Err)
 			require.Equal(t, []protocol.Event{domain.Whois{
-				Nick:    "botty",
-				ModelID: "test/model",
-				At:      fixedTime,
+				Nick:           "botty",
+				ModelID:        "test/model",
+				PersonaLineage: domain.PersonaCounts{Revision: 1},
+				At:             fixedTime,
 			}}, resp.Events)
 		}
 
@@ -228,10 +231,11 @@ func TestWhois_hides_anonymous_channel_membership_from_other_actors(t *testing.T
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 		require.Equal(t, []protocol.Event{domain.Whois{
-			Nick:     "botty",
-			ModelID:  "test/model",
-			Channels: []domain.ChannelName{"#anon"},
-			At:       fixedTime,
+			Nick:           "botty",
+			ModelID:        "test/model",
+			PersonaLineage: domain.PersonaCounts{Revision: 1},
+			Channels:       []domain.ChannelName{"#anon"},
+			At:             fixedTime,
 		}}, resp.Events)
 	})
 }

@@ -96,6 +96,38 @@ func (s *SQLiteStore) PersonaLineage(
 	return personaLineageTx(ctx, tx, instanceID)
 }
 
+// PersonaCounts returns the active persona revision of one model
+// instance and how many experiences and tendencies it rests on.
+//
+// An instance with no persona lineage, which includes the user's
+// connection record, returns the zero value and no error: `/whois`
+// answers for every connected client, and having no persona lineage is
+// a normal answer rather than a failure.
+func (s *SQLiteStore) PersonaCounts(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+) (domain.PersonaCounts, error) {
+	var counts domain.PersonaCounts
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			s.current_revision_id,
+			(SELECT COUNT(*) FROM persona_revision_experiences
+			 WHERE revision_id = s.current_revision_id),
+			(SELECT COUNT(*) FROM persona_revision_amendments
+			 WHERE revision_id = s.current_revision_id)
+		FROM persona_lineages s
+		WHERE s.instance_id = ?
+	`, instanceID).Scan(&counts.Revision, &counts.Experiences, &counts.Tendencies)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.PersonaCounts{}, nil
+	}
+	if err != nil {
+		return domain.PersonaCounts{}, fmt.Errorf("read persona counts: %w", err)
+	}
+
+	return counts, nil
+}
+
 // PersonaRevision returns one immutable persona revision.
 func (s *SQLiteStore) PersonaRevision(
 	ctx context.Context,

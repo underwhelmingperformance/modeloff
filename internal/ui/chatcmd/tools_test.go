@@ -1295,9 +1295,10 @@ func TestRunTool_whois_returns_the_actor_snapshot(t *testing.T) {
 		OK:      true,
 		Summary: "returned details for testbot",
 		Data: domain.Whois{
-			Nick:     "testbot",
-			ModelID:  "anthropic/haiku",
-			Channels: []domain.ChannelName{"#lobby"},
+			Nick:           "testbot",
+			ModelID:        "anthropic/haiku",
+			PersonaLineage: domain.PersonaCounts{Revision: 1},
+			Channels:       []domain.ChannelName{"#lobby"},
 		},
 	}, result)
 }

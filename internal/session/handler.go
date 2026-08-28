@@ -601,11 +601,12 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, guard prot
 		}
 
 		whois := domain.Whois{
-			Nick:     inst.Nick(),
-			ModelID:  inst.ModelID,
-			Persona:  inst.Persona(),
-			Channels: s.whoisChannels(ctx, issuer, inst),
-			At:       s.now(),
+			Nick:           inst.Nick(),
+			ModelID:        inst.ModelID,
+			Persona:        inst.Persona(),
+			PersonaLineage: s.whoisPersonaCounts(ctx, inst),
+			Channels:       s.whoisChannels(ctx, issuer, inst),
+			At:             s.now(),
 		}
 
 		events := []domain.ProtocolEvent{whois}
@@ -613,6 +614,25 @@ func (s *Session) handleWhois(ctx context.Context, c protocol.Client, guard prot
 
 		return protocol.Response{Events: events}, nil
 	})
+}
+
+// whoisPersonaCounts returns how much accepted reflection state the
+// target's active persona revision rests on. A read that fails leaves
+// the reply without the counts, since a WHOIS answers about a
+// client's identity and the persona lineage is one line of that.
+func (s *Session) whoisPersonaCounts(ctx context.Context, target *domain.Instance) domain.PersonaCounts {
+	counts, err := s.store.PersonaCounts(ctx, target.ID())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "read whois persona counts",
+			"component", "session",
+			"instance_id", target.ID(),
+			"error", err,
+		)
+
+		return domain.PersonaCounts{}
+	}
+
+	return counts
 }
 
 // whoisChannels returns the channels of `target` that `issuer` may

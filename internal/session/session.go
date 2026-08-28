@@ -108,6 +108,11 @@ type Store interface {
 	ContextSummaries(ctx context.Context, id domain.InstanceID, window protocol.WindowTarget) ([]store.ContextSummary, error)
 	CommitContextSummary(ctx context.Context, update store.ContextSummaryUpdate) (store.ContextSummary, error)
 
+	// PersonaCounts is what `WHOIS` reports about an instance's
+	// accepted reflection state. An instance without persona lineage
+	// answers with the zero value.
+	PersonaCounts(ctx context.Context, id domain.InstanceID) (domain.PersonaCounts, error)
+
 	// Model instances. These methods remain on the session's private
 	// persistence boundary; no actor handle crosses the client
 	// protocol.

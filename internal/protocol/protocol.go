@@ -504,6 +504,17 @@ func whoisReplyLine(w domain.Whois) string {
 		line += fmt.Sprintf(", persona %q", w.Persona)
 	}
 
+	// The lineage belongs on the line, not only in the immediate reply.
+	// A model rereads its own WHOIS through this rendering, so leaving it
+	// out means the revision and its counts survive one turn and vanish.
+	if w.PersonaLineage.Revision != 0 {
+		line += fmt.Sprintf(
+			", persona revision %d; experiences: %d; tendencies: %d",
+			w.PersonaLineage.Revision, w.PersonaLineage.Experiences,
+			w.PersonaLineage.Tendencies,
+		)
+	}
+
 	if len(w.Channels) > 0 {
 		names := make([]string, len(w.Channels))
 		for i, ch := range w.Channels {

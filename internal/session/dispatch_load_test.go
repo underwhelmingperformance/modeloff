@@ -196,7 +196,7 @@ func TestModelClient_private_replies_converge_on_local_ring(t *testing.T) {
 				{
 					Kind:   protocol.KindServerReply,
 					Source: domain.ServerSource(domain.StatusServerName),
-					Body:   "whois target: test/model",
+					Body:   "whois target: test/model, persona revision 1; experiences: 0; tendencies: 0",
 					At:     fixedTime,
 				},
 				currentChannelStateMessage("#general", "+", "@testuser", "botty"),

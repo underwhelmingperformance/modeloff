@@ -1010,3 +1010,74 @@ func TestSQLiteStore_an_operator_description_refuses_a_revision_a_reflection_mov
 
 	require.ErrorIs(t, err, storemod.ErrPersonaLineageChanged)
 }
+
+// personaCountsCase is one instance a `/whois` reply may name.
+type personaCountsCase struct {
+	Name     string
+	Instance *domain.Instance
+}
+
+// personaCountsEffect is what `/whois` reports for a case.
+type personaCountsEffect struct {
+	Counts domain.PersonaCounts
+}
+
+// A model instance's counts follow its active revision, and the
+// user's connection record, which `/whois` also answers for, has no
+// persona lineage and reports the zero value.
+func TestSQLiteStore_persona_counts_follow_the_active_revision(t *testing.T) {
+	store := storetest.NewMemoryStore(t)
+	model := domain.NewModelInstance("inst-botty", "botty", "test/model", "quiet", nil)
+	require.NoError(t, store.SaveInstance(t.Context(), model))
+	user := domain.NewUserInstance("laney")
+	require.NoError(t, store.SaveInstance(t.Context(), user))
+
+	base, err := store.PersonaLineage(t.Context(), model.ID())
+	require.NoError(t, err)
+	at := time.Date(2026, 8, 26, 14, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, model.ID(), 2, at)
+	_, err = store.CommitPersonaReflection(t.Context(), storemod.PersonaReflectionAcceptance{
+		RunID: "reflection-counts", InstanceID: model.ID(),
+		BaseRevisionID:  base.CurrentRevisionID,
+		PriorCheckpoint: 0, HighWaterMark: 2,
+		ModelID: "test/reflection", StartedAt: at, FinishedAt: at,
+		Experiences: []storemod.PersonaExperienceDraft{{
+			Key: "first", Kind: domain.ExperienceObservation,
+			Summary:    "A calm discussion ended with a useful answer.",
+			Confidence: domain.ConfidenceHigh, OccurredAt: at,
+			Sources: []domain.ReflectionEventRef{{Sequence: 1}},
+		}, {
+			Key: "second", Kind: domain.ExperienceInterpretation,
+			Summary:    "Asking one more question made the explanation clearer.",
+			Confidence: domain.ConfidenceMedium, OccurredAt: at,
+			Sources: []domain.ReflectionEventRef{{Sequence: 2}},
+		}},
+		Amendments: []storemod.PersonaAmendmentDraft{{
+			Scope:        domain.AmendmentGlobal,
+			Tendency:     "gives people a figure and its risk",
+			Confidence:   domain.ConfidenceHigh,
+			EvidenceKeys: []string{"first", "second"},
+		}},
+	})
+	require.NoError(t, err)
+
+	cases := []personaCountsCase{
+		{Name: "a model instance reports its active revision", Instance: model},
+		{Name: "the user's connection record has no persona lineage", Instance: user},
+	}
+	want := []personaCountsEffect{
+		{Counts: domain.PersonaCounts{Revision: 2, Experiences: 2, Tendencies: 1}},
+		{Counts: domain.PersonaCounts{}},
+	}
+
+	got := make([]personaCountsEffect, 0, len(cases))
+	for _, testCase := range cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			counts, err := store.PersonaCounts(t.Context(), testCase.Instance.ID())
+			require.NoError(t, err)
+			got = append(got, personaCountsEffect{Counts: counts})
+		})
+	}
+
+	require.Equal(t, want, got)
+}

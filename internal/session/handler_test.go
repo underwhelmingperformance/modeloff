@@ -386,9 +386,10 @@ func TestSession_Handle_delegates(t *testing.T) {
 			cmd:    protocol.Whois{Nick: "botty"},
 			want: protocol.Response{Events: []domain.ProtocolEvent{
 				domain.Whois{
-					Nick:    "botty",
-					ModelID: "test/model",
-					At:      fixedTime,
+					Nick:           "botty",
+					ModelID:        "test/model",
+					PersonaLineage: domain.PersonaCounts{Revision: 1},
+					At:             fixedTime,
 				},
 			}},
 		},

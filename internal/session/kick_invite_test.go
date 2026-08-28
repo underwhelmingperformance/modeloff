@@ -404,9 +404,10 @@ func TestSession_whois_resolves_a_connected_client_from_the_registry(t *testing.
 		require.NoError(t, err)
 		require.NoError(t, resp.Err)
 		require.Equal(t, []domain.ProtocolEvent{domain.Whois{
-			Nick:    "ghost",
-			ModelID: "test/model",
-			At:      fixedTime,
+			Nick:           "ghost",
+			ModelID:        "test/model",
+			PersonaLineage: domain.PersonaCounts{Revision: 1},
+			At:             fixedTime,
 		}}, resp.Events)
 	})
 }

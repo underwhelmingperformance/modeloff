@@ -123,6 +123,19 @@ type PersonaLineage struct {
 	ReflectedAt       *time.Time
 }
 
+// PersonaCounts summarises how much accepted reflection state an
+// instance's active persona revision rests on. It is what `/whois`
+// reports, so an operator can see whether reflection has moved an
+// instance without reading the whole revision through `/persona`.
+//
+// An instance with no persona lineage has the zero value, and so does
+// the user's connection record.
+type PersonaCounts struct {
+	Revision    PersonaRevisionID `json:"revision,omitzero"`
+	Experiences int               `json:"experiences,omitzero"`
+	Tendencies  int               `json:"tendencies,omitzero"`
+}
+
 // PersonaRevision is one immutable point in an instance's persona
 // history. Description is the persona in force while this revision is
 // active. Revision zero has no parent, experiences or amendments, and its

@@ -81,9 +81,12 @@ func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
 	at := time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC)
 
 	whois := domain.Whois{
-		Nick:     "alice",
-		ModelID:  "anthropic/claude-3-haiku",
-		Persona:  "a cheerful pirate",
+		Nick:    "alice",
+		ModelID: "anthropic/claude-3-haiku",
+		Persona: "a cheerful pirate",
+		PersonaLineage: domain.PersonaCounts{
+			Revision: 4, Experiences: 6, Tendencies: 2,
+		},
 		Channels: []domain.ChannelName{"#dev", "#help"},
 		At:       at,
 	}
@@ -91,6 +94,7 @@ func TestRenderWhoisEvent_uses_stored_snapshot(t *testing.T) {
 	want := strings.Join([]string{
 		"*** alice is anthropic/claude-3-haiku",
 		"***   persona: a cheerful pirate",
+		"***   persona: revision 4; experiences: 6; tendencies: 2",
 		"***   channels: #dev, #help",
 	}, "\n")
 	require.Equal(t, want, stripWhois(renderWhoisEvent(whois)))
