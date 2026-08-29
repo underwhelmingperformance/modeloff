@@ -32,21 +32,21 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 		{ID: "anthropic/haiku", Name: "Haiku"},
 		{ID: "anthropic/sonnet", Name: "Sonnet"},
 	}
-	personas := []domain.PersonaTemplate{
+	templates := []domain.PersonaTemplate{
 		{ID: "bard", Description: "A travelling storyteller"},
 		{ID: "sage", Description: "A wise advisor"},
 	}
 
 	return CompletionContext{
-		Channels:        func() iter.Seq[domain.Window] { return slices.Values(channels) },
-		Instances:       func() iter.Seq[domain.InstanceDirectoryEntry] { return slices.Values(instances) },
-		ActiveMembers:   func() iter.Seq[domain.Nick] { return slices.Values(members) },
-		ActiveChannel:   func() domain.ChannelName { return "#general" },
-		UserNick:        func() domain.Nick { return "testuser" },
-		LiveModels:      func() iter.Seq[ModelOption] { return slices.Values(models) },
-		LiveModelsState: func() command.SuggestionState { return command.SuggestionStateReady },
-		Personas:        func() iter.Seq[domain.PersonaTemplate] { return slices.Values(personas) },
-		Kind:            func() domain.ChannelKind { return kind },
+		Channels:         func() iter.Seq[domain.Window] { return slices.Values(channels) },
+		Instances:        func() iter.Seq[domain.InstanceDirectoryEntry] { return slices.Values(instances) },
+		ActiveMembers:    func() iter.Seq[domain.Nick] { return slices.Values(members) },
+		ActiveChannel:    func() domain.ChannelName { return "#general" },
+		UserNick:         func() domain.Nick { return "testuser" },
+		LiveModels:       func() iter.Seq[ModelOption] { return slices.Values(models) },
+		LiveModelsState:  func() command.SuggestionState { return command.SuggestionStateReady },
+		PersonaTemplates: func() iter.Seq[domain.PersonaTemplate] { return slices.Values(templates) },
+		Kind:             func() domain.ChannelKind { return kind },
 	}
 }
 

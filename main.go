@@ -32,7 +32,7 @@ import (
 )
 
 func main() {
-	wipe := flag.Bool("wipe", false, "Remove the on-disk database (channels, instances, memories, personas, autojoin) before starting. The config file is left untouched.")
+	wipe := flag.Bool("wipe", false, "Remove the on-disk database (channels, instances, memories, persona templates, autojoin) before starting. The config file is left untouched.")
 
 	flag.Parse()
 

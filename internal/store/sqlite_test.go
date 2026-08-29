@@ -2826,9 +2826,9 @@ func TestSQLiteStore_Reset_empty_store(t *testing.T) {
 	require.NoError(t, s.Reset(t.Context()))
 }
 
-// --- Personas ---
+// --- Persona templates ---
 
-func TestSQLiteStore_ListPersonasEmpty(t *testing.T) {
+func TestSQLiteStore_ListPersonaTemplatesEmpty(t *testing.T) {
 	s := newTestStore(t)
 
 	got, err := s.ListPersonaTemplates(t.Context())
@@ -2885,36 +2885,36 @@ func TestSQLiteStore_SavePersona_upsert(t *testing.T) {
 	require.Equal(t, updated, got)
 }
 
-func TestSQLiteStore_ListPersonas_ordered(t *testing.T) {
+func TestSQLiteStore_ListPersonaTemplates_ordered(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	personas := []domain.PersonaTemplate{
+	templates := []domain.PersonaTemplate{
 		{ID: "alpha", Description: "First", Origin: domain.PersonaUser},
 		{ID: "beta", Description: "Second", Origin: domain.PersonaGenerated},
 		{ID: "gamma", Description: "Third", Origin: domain.PersonaGenerated},
 	}
 
-	for _, p := range personas {
+	for _, p := range templates {
 		require.NoError(t, s.SavePersonaTemplate(ctx, p))
 	}
 
 	got, err := s.ListPersonaTemplates(ctx)
 	require.NoError(t, err)
-	require.Equal(t, personas, got)
+	require.Equal(t, templates, got)
 }
 
-func TestSQLiteStore_DeletePersonasByOrigin(t *testing.T) {
+func TestSQLiteStore_DeletePersonaTemplatesByOrigin(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	personas := []domain.PersonaTemplate{
+	templates := []domain.PersonaTemplate{
 		{ID: "gen-one", Description: "Generated one", Origin: domain.PersonaGenerated},
 		{ID: "gen-two", Description: "Generated two", Origin: domain.PersonaGenerated},
 		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
 	}
 
-	for _, p := range personas {
+	for _, p := range templates {
 		require.NoError(t, s.SavePersonaTemplate(ctx, p))
 	}
 
@@ -2927,7 +2927,7 @@ func TestSQLiteStore_DeletePersonasByOrigin(t *testing.T) {
 	}, got)
 }
 
-func TestSQLiteStore_ReplaceGeneratedPersonas(t *testing.T) {
+func TestSQLiteStore_ReplaceGeneratedPersonaTemplates(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
@@ -2959,13 +2959,13 @@ func TestSQLiteStore_ReplaceGeneratedPersonas(t *testing.T) {
 	}, got)
 }
 
-func TestSQLiteStore_DeletePersonasByOrigin_noop_when_none(t *testing.T) {
+func TestSQLiteStore_DeletePersonaTemplatesByOrigin_noop_when_none(t *testing.T) {
 	s := newTestStore(t)
 
 	require.NoError(t, s.DeletePersonaTemplatesByOrigin(t.Context(), domain.PersonaGenerated))
 }
 
-func TestSQLiteStore_Reset_includes_personas(t *testing.T) {
+func TestSQLiteStore_Reset_includes_persona_templates(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 

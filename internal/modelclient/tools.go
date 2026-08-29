@@ -38,7 +38,7 @@ type ManagerAPI interface {
 	SetPersonaTemplate(ctx context.Context, id string, description string) error
 	ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error)
 	RegeneratePersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error)
-	ResetPersonas(ctx context.Context) (int, error)
+	ResetPersonaTemplates(ctx context.Context) (int, error)
 	InspectPersona(
 		ctx context.Context,
 		nick domain.Nick,

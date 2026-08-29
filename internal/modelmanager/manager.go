@@ -7,7 +7,7 @@
 // [session.ModelClientFactory].
 //
 // The manager owns both the data (api key, factory, catalogue,
-// personas) and the lifecycle (per-instance client construction and
+// persona templates) and the lifecycle (per-instance client construction and
 // detach). A [Manager] consumer reads the api client through a
 // getter so each model-dispatch turn picks up the latest handle
 // after a `SetAPIKey` rebuild; the registry's [modelclient.New]
@@ -59,7 +59,7 @@ type Store interface {
 	ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error)
 	SavePersonaTemplate(ctx context.Context, p domain.PersonaTemplate) error
 	DeletePersonaTemplatesByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
-	ReplaceGeneratedPersonaTemplates(ctx context.Context, personas []domain.PersonaTemplate) error
+	ReplaceGeneratedPersonaTemplates(ctx context.Context, templates []domain.PersonaTemplate) error
 	AppendReflectionEvents(
 		ctx context.Context,
 		instanceID domain.InstanceID,
@@ -862,14 +862,14 @@ func (m *Manager) resolvePersona(
 		return "", nil, false, nil
 	}
 
-	personas, err := m.store.ListPersonaTemplates(ctx)
+	templates, err := m.store.ListPersonaTemplates(ctx)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("resolve persona %q: %w", requested, err)
 	}
 
-	for _, persona := range personas {
-		if persona.ID == requested {
-			return persona.Description, personaTemplateProvenance(persona), true, nil
+	for _, template := range templates {
+		if template.ID == requested {
+			return template.Description, personaTemplateProvenance(template), true, nil
 		}
 	}
 

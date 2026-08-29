@@ -68,18 +68,18 @@ func withoutAt(ev domain.PersistableEvent) domain.PersistableEvent {
 	}
 }
 
-func TestChatScreen_PersonasList_persists_to_user_reply_log(t *testing.T) {
+func TestChatScreen_PersonaTemplatesList_persists_to_user_reply_log(t *testing.T) {
 	f := newReplyLogFixture(t)
 
-	personas := []domain.PersonaTemplate{
+	templates := []domain.PersonaTemplate{
 		{ID: "p1", Description: "first", Origin: domain.PersonaGenerated},
 	}
 
-	_, cmd := f.screen.Update(chatcmd.PersonaTemplatesResult(personas))
+	_, cmd := f.screen.Update(chatcmd.PersonaTemplatesResult(templates))
 	collectMsgs(cmd)
 
 	require.Equal(t, []domain.PersistableEvent{
-		domain.PersonaTemplatesList{Personas: personas},
+		domain.PersonaTemplatesList{Templates: templates},
 	}, userReplies(t, f.store))
 }
 

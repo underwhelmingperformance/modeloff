@@ -50,7 +50,7 @@ func (c *listModelsCountingClient) ListModels(context.Context) ([]api.ModelInfo,
 	return c.infos, nil
 }
 
-func testPersonas() []domain.PersonaTemplate {
+func testPersonaTemplates() []domain.PersonaTemplate {
 	return []domain.PersonaTemplate{
 		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
 		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
@@ -223,12 +223,12 @@ func TestManager_runtimeConfigOperations_recordSpans(t *testing.T) {
 	require.Equal(t, observability.ResultOK, oteltest.AttrValue(baseURLSpan.Attributes(), observability.AttrResult))
 }
 
-func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
+func TestManager_EnsurePersonaTemplates_lazy_generation(t *testing.T) {
 	calls := 0
 	fake := &apitest.Fake{
-		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls++
-			return testPersonas(), nil
+			return testPersonaTemplates(), nil
 		},
 	}
 
@@ -244,7 +244,7 @@ func TestManager_EnsurePersonas_lazy_generation(t *testing.T) {
 
 	got, err := fx.store.ListPersonaTemplates(ctx)
 	require.NoError(t, err)
-	require.Equal(t, testPersonas(), got)
+	require.Equal(t, testPersonaTemplates(), got)
 
 	// Second call must not regenerate — the pool is already populated.
 	require.NoError(t, fx.mgr.EnsurePersonaTemplates(ctx))
@@ -257,7 +257,7 @@ func TestManager_RandomPersona(t *testing.T) {
 	})
 
 	ctx := t.Context()
-	for _, p := range testPersonas() {
+	for _, p := range testPersonaTemplates() {
 		require.NoError(t, fx.store.SavePersonaTemplate(ctx, p))
 	}
 
@@ -265,39 +265,39 @@ func TestManager_RandomPersona(t *testing.T) {
 	require.NoError(t, err)
 
 	ids := make(map[string]bool)
-	for _, p := range testPersonas() {
+	for _, p := range testPersonaTemplates() {
 		ids[p.ID] = true
 	}
 
 	require.True(t, ids[got.ID], "random persona %q not in pool", got.ID)
 }
 
-// TestManager_RandomPersona_excludes_personas_held_by_live_instances
+// TestManager_RandomPersonaTemplate_excludes_descriptions_held_by_live_instances
 // pins that the draw skips a persona description already assigned to
 // a connected model instance, so a fresh invite does not hand out a
 // duplicate while an unused persona is still available.
-func TestManager_RandomPersona_excludes_personas_held_by_live_instances(t *testing.T) {
+func TestManager_RandomPersonaTemplate_excludes_descriptions_held_by_live_instances(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: &apitest.Fake{},
 	})
 
 	ctx := t.Context()
-	personas := testPersonas()
-	for _, p := range personas {
+	templates := testPersonaTemplates()
+	for _, p := range templates {
 		require.NoError(t, fx.store.SavePersonaTemplate(ctx, p))
 	}
 
 	for i, nick := range []domain.Nick{"grumpybot", "lurkerbot"} {
-		inst := domain.NewModelInstance(domain.GenerateInstanceID(), nick, "openai/gpt-5.4-mini", personas[i].Description, nil)
+		inst := domain.NewModelInstance(domain.GenerateInstanceID(), nick, "openai/gpt-5.4-mini", templates[i].Description, nil)
 		require.NoError(t, fx.store.SaveInstance(ctx, inst))
 	}
 
-	// Only personas[2] is unheld; repeating the draw rules out a lucky
-	// hit from a plain uniform draw over all three personas.
+	// Only templates[2] is unheld; repeating the draw rules out a lucky
+	// hit from a plain uniform draw over all three templates.
 	for range 30 {
 		got, err := fx.mgr.RandomPersonaTemplate(ctx)
 		require.NoError(t, err)
-		require.Equal(t, personas[2], got)
+		require.Equal(t, templates[2], got)
 	}
 }
 
@@ -310,12 +310,12 @@ func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.
 	})
 
 	ctx := t.Context()
-	personas := testPersonas()
-	for _, p := range personas {
+	templates := testPersonaTemplates()
+	for _, p := range templates {
 		require.NoError(t, fx.store.SavePersonaTemplate(ctx, p))
 	}
 
-	for i, p := range personas {
+	for i, p := range templates {
 		inst := domain.NewModelInstance(domain.GenerateInstanceID(), domain.Nick(fmt.Sprintf("bot%d", i)), "openai/gpt-5.4-mini", p.Description, nil)
 		require.NoError(t, fx.store.SaveInstance(ctx, inst))
 	}
@@ -324,24 +324,24 @@ func TestManager_RandomPersona_allows_duplicates_when_pool_exhausted(t *testing.
 	require.NoError(t, err)
 
 	ids := make(map[string]bool)
-	for _, p := range personas {
+	for _, p := range templates {
 		ids[p.ID] = true
 	}
 	require.True(t, ids[got.ID], "random persona %q not in pool", got.ID)
 }
 
-func TestManager_RandomPersona_empty_pool(t *testing.T) {
+func TestManager_RandomPersonaTemplate_empty_pool(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: &apitest.Fake{},
 	})
 
 	_, err := fx.mgr.RandomPersonaTemplate(t.Context())
-	require.EqualError(t, err, "no personas available")
+	require.EqualError(t, err, "no persona templates available")
 }
 
-func TestManager_RegeneratePersonas_preserves_user_defined(t *testing.T) {
+func TestManager_RegeneratePersonaTemplates_preserves_user_defined(t *testing.T) {
 	fake := &apitest.Fake{
-		GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
 			return []domain.PersonaTemplate{
 				{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},
 			}, nil
@@ -409,7 +409,7 @@ func TestManager_SetPersonaTemplate_rejects_an_invalid_description(t *testing.T)
 	require.Error(t, err)
 }
 
-func TestManager_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
+func TestManager_ResetPersonaTemplates_removes_user_keeps_generated(t *testing.T) {
 	fx := newTestManager(t, modelmanager.Config{
 		APIClient: &apitest.Fake{},
 	})
@@ -423,7 +423,7 @@ func TestManager_ResetPersonas_removes_user_keeps_generated(t *testing.T) {
 		ID: "gen-persona", Description: "Generated.", Origin: domain.PersonaGenerated,
 	}))
 
-	removed, err := fx.mgr.ResetPersonas(ctx)
+	removed, err := fx.mgr.ResetPersonaTemplates(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, removed)
 

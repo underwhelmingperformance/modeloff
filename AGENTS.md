@@ -783,7 +783,7 @@ a particular window.
 
 Chat-screen-local control signals — `domain.ErrorEvent` wrapping a
 backend error from a UI-issued command, and the `Help`, `UsageHint`,
-`PersonasList` and `CommandError` events the chat-screen builds and
+`PersonaTemplatesList` and `CommandError` events the chat-screen builds and
 renders itself — flow as bare `tea.Msg` returns from the chat-screen's
 own `tea.Cmd`s and reach the Update loop directly. The session never
 puts them on the bus (`serverClient.canReceive` returns false for

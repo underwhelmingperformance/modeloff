@@ -59,7 +59,7 @@ func (f *fakeManagerAPI) RegeneratePersonaTemplates(context.Context) ([]domain.P
 	return nil, nil
 }
 
-func (f *fakeManagerAPI) ResetPersonas(context.Context) (int, error) { return 0, nil }
+func (f *fakeManagerAPI) ResetPersonaTemplates(context.Context) (int, error) { return 0, nil }
 
 func (f *fakeManagerAPI) InspectPersona(
 	context.Context,

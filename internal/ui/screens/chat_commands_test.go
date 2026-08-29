@@ -77,7 +77,7 @@ func (stubAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Ni
 	return api.NicknameResult{Nick: "testbot"}, nil
 }
 
-func (stubAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+func (stubAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 	return nil, nil
 }
 

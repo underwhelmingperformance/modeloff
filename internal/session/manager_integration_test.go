@@ -232,7 +232,7 @@ func normaliseLogTime(t *testing.T, record map[string]any, startedAt, finishedAt
 	delete(record, "time")
 }
 
-func testPersonas() []domain.PersonaTemplate {
+func testPersonaTemplates() []domain.PersonaTemplate {
 	return []domain.PersonaTemplate{
 		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
 		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
@@ -1002,8 +1002,8 @@ func writeMemoryToolCall(t *testing.T, key, content string) api.CompletionResult
 func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			GeneratePersonasFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
-				return testPersonas(), nil
+			GeneratePersonaTemplatesFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
+				return testPersonaTemplates(), nil
 			},
 		}
 
@@ -1031,7 +1031,7 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 		}, collectUserEvents(user))
 
 		descriptions := make(map[string]bool)
-		for _, p := range testPersonas() {
+		for _, p := range testPersonaTemplates() {
 			descriptions[p.Description] = true
 		}
 

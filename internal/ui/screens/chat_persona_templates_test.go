@@ -12,7 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
-func TestChatScreen_ensurePersonas_generates_when_pool_empty(t *testing.T) {
+func TestChatScreen_ensurePersonaTemplates_generates_when_pool_empty(t *testing.T) {
 	var calls atomic.Int32
 
 	seeded := []domain.PersonaTemplate{
@@ -20,7 +20,7 @@ func TestChatScreen_ensurePersonas_generates_when_pool_empty(t *testing.T) {
 	}
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return seeded, nil
 		},
@@ -32,10 +32,10 @@ func TestChatScreen_ensurePersonas_generates_when_pool_empty(t *testing.T) {
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	cmd := screen.ensurePersonas()
-	require.NotNil(t, cmd, "with an api key configured ensurePersonas must dispatch work")
+	cmd := screen.ensurePersonaTemplates()
+	require.NotNil(t, cmd, "with an api key configured ensurePersonaTemplates must dispatch work")
 
-	require.Nil(t, cmd(), "ensurePersonas is fire-and-forget — its Cmd returns nil")
+	require.Nil(t, cmd(), "ensurePersonaTemplates is fire-and-forget — its Cmd returns nil")
 
 	require.Equal(t, int32(1), calls.Load())
 
@@ -44,11 +44,11 @@ func TestChatScreen_ensurePersonas_generates_when_pool_empty(t *testing.T) {
 	require.Equal(t, seeded, got)
 }
 
-func TestChatScreen_ensurePersonas_noop_without_api_key(t *testing.T) {
+func TestChatScreen_ensurePersonaTemplates_noop_without_api_key(t *testing.T) {
 	var calls atomic.Int32
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return nil, nil
 		},
@@ -60,16 +60,16 @@ func TestChatScreen_ensurePersonas_noop_without_api_key(t *testing.T) {
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	require.Nil(t, screen.ensurePersonas(),
-		"ensurePersonas returns a nil Cmd when no api key is configured")
+	require.Nil(t, screen.ensurePersonaTemplates(),
+		"ensurePersonaTemplates returns a nil Cmd when no api key is configured")
 	require.Equal(t, int32(0), calls.Load())
 }
 
-func TestChatScreen_ensurePersonas_skips_generation_when_pool_present(t *testing.T) {
+func TestChatScreen_ensurePersonaTemplates_skips_generation_when_pool_present(t *testing.T) {
 	var calls atomic.Int32
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return nil, nil
 		},
@@ -85,7 +85,7 @@ func TestChatScreen_ensurePersonas_skips_generation_when_pool_present(t *testing
 	screen, err := NewChatScreen(t.Context, sess, mgr, user, nil, nil, domain.KindStatus)
 	require.NoError(t, err)
 
-	require.Nil(t, screen.ensurePersonas()())
+	require.Nil(t, screen.ensurePersonaTemplates()())
 	require.Equal(t, int32(0), calls.Load(),
 		"a non-empty persona pool must not be regenerated")
 }

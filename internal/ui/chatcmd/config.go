@@ -823,12 +823,12 @@ type PersonaConfig struct {
 func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.configResetRequested() {
 		return func() tea.Msg {
-			count, err := rc.Manager.ResetPersonas(ctx)
+			count, err := rc.Manager.ResetPersonaTemplates(ctx)
 			if err != nil {
 				return rc.errorEvent("config persona", err)
 			}
 
-			return PersonaResetResult{Count: count}
+			return PersonaTemplatesResetResult{Count: count}
 		}
 	}
 
@@ -846,7 +846,7 @@ func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 			return rc.errorEvent("config persona", err)
 		}
 
-		return PersonaSetResult{ID: c.ID}
+		return PersonaTemplateSavedResult{ID: c.ID}
 	}
 }
 

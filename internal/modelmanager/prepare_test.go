@@ -35,7 +35,7 @@ func TestPrepareInstance_reports_an_unassigned_persona(t *testing.T) {
 	require.Equal(t, session.PreparedInstance{
 		Nick:     "gpt-5-4",
 		Persona:  "",
-		Warnings: []string{"no persona was assigned to openai/gpt-5.4-mini (no personas available); it joins without one"},
+		Warnings: []string{"no persona was assigned to openai/gpt-5.4-mini (no persona templates available); it joins without one"},
 	}, prepared)
 }
 

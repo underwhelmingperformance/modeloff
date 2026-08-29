@@ -253,14 +253,14 @@ type personaItem struct {
 	Description string `json:"description" jsonschema_description:"A one-line description of the persona."`
 }
 
-// personaListWrapper is the top-level structured output envelope.
-type personaListWrapper struct {
+// personaTemplateListWrapper is the top-level structured output envelope.
+type personaTemplateListWrapper struct {
 	Personas []personaItem `json:"personas"`
 }
 
-var personaSchemaMap = generateSchema[personaListWrapper]()
+var personaTemplateSchemaMap = generateSchema[personaTemplateListWrapper]()
 
-const personaGenerationPrompt = `Generate 10 distinct personas for regular participants in an IRC network.
+const personaTemplateGenerationPrompt = `Generate 10 distinct personas for regular participants in an IRC network.
 
 Each persona must have a short kebab-case ID and a one-line description. Describe a plausible person with room for context-dependent behaviour, not a role, mascot, catchphrase, or single exaggerated trait.
 
@@ -271,40 +271,40 @@ func personaResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 			JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
 				Name:   "persona_list",
-				Schema: personaSchemaMap,
+				Schema: personaTemplateSchemaMap,
 				Strict: openai.Bool(true),
 			},
 		},
 	}
 }
 
-// GeneratePersonas asks a model to generate a set of IRC user personas
+// GeneratePersonaTemplates asks a model to generate a set of IRC user personas
 // using structured output, returning them with PersonaGenerated origin.
-func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
+func (c *OpenRouterClient) GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
 	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
 	defer cancel()
 
 	logger := slog.Default().With("component", "api.openrouter", "model_id", smallModel)
 
-	var personas []domain.PersonaTemplate
-	err := c.inSpan(ctx, "api.openrouter.generate_personas",
+	var templates []domain.PersonaTemplate
+	err := c.inSpan(ctx, "api.openrouter.generate_persona_templates",
 		[]attribute.KeyValue{attribute.String(observability.AttrModelID, string(smallModel))},
 		func(ctx context.Context, span trace.Span) error {
 			resp, rawResp, err := c.chatCompletion(ctx, openai.ChatCompletionNewParams{ //nolint:bodyclose // SDK reads and closes the body.
 				Model: shared.ChatModel(string(smallModel)),
 				Messages: []openai.ChatCompletionMessageParamUnion{
-					openai.UserMessage(personaGenerationPrompt),
+					openai.UserMessage(personaTemplateGenerationPrompt),
 				},
 				ResponseFormat: personaResponseFormat(),
 			})
 			if err != nil {
 				markSpanError(span, observability.ErrorKindTransport, 0, err)
-				logger.ErrorContext(ctx, "openrouter generate personas failed", "error", err)
+				logger.ErrorContext(ctx, "openrouter generate persona templates failed", "error", err)
 				return err
 			}
 
 			if len(resp.Choices) == 0 {
-				err := fmt.Errorf("generate personas: no choices in response")
+				err := fmt.Errorf("generate persona templates: no choices in response")
 				markSpanError(span, observability.ErrorKindInvalidResponse, 0, err)
 				return err
 			}
@@ -316,7 +316,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 				return err
 			}
 
-			var wrapper personaListWrapper
+			var wrapper personaTemplateListWrapper
 			if err := json.Unmarshal([]byte(choice.Message.Content), &wrapper); err != nil {
 				markSpanError(span, observability.ErrorKindResponseParse, 0, err)
 				return &CompletionParseError{Target: "persona list", Err: err}
@@ -327,7 +327,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 			// state record expects rather than taking model output as
 			// written. One unusable persona does not spoil the batch:
 			// the pool is drawn from whatever passed.
-			personas = make([]domain.PersonaTemplate, 0, len(wrapper.Personas))
+			templates = make([]domain.PersonaTemplate, 0, len(wrapper.Personas))
 			for _, p := range wrapper.Personas {
 				if reason := domain.ValidatePersona(p.Description); reason != domain.PersonaAccepted {
 					logger.WarnContext(ctx, "discarding generated persona",
@@ -338,7 +338,7 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 					continue
 				}
 
-				personas = append(personas, domain.PersonaTemplate{
+				templates = append(templates, domain.PersonaTemplate{
 					ID:          p.ID,
 					Description: p.Description,
 					Origin:      domain.PersonaGenerated,
@@ -350,9 +350,9 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 			usage.SetSpanAttributes(span, requestID)
 			span.SetAttributes(attribute.String(observability.AttrResult, observability.ResultOK))
 
-			logger.InfoContext(ctx, "openrouter generate personas completed",
+			logger.InfoContext(ctx, "openrouter generate persona templates completed",
 				"request_id", requestID,
-				"count", len(personas),
+				"count", len(templates),
 			)
 
 			return nil
@@ -361,5 +361,5 @@ func (c *OpenRouterClient) GeneratePersonas(ctx context.Context, smallModel doma
 		return nil, err
 	}
 
-	return personas, nil
+	return templates, nil
 }

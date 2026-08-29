@@ -365,7 +365,7 @@ func (toolTestAPI) GenerateNick(context.Context, domain.ModelID, string, []domai
 	return api.NicknameResult{Nick: "testbot"}, nil
 }
 
-func (toolTestAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+func (toolTestAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 	return nil, nil
 }
 

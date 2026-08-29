@@ -492,7 +492,7 @@ func (f *integrationAPI) GenerateNick(ctx context.Context, smallModel domain.Mod
 	return api.NicknameResult{Nick: "botty"}, nil
 }
 
-func (f *integrationAPI) GeneratePersonas(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+func (f *integrationAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 	return nil, nil
 }
 

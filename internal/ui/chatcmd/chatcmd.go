@@ -187,13 +187,15 @@ type PersonaTemplatesRegeneratedResult struct {
 	Count int
 }
 
-// PersonaSetResult signals that a persona was saved.
-type PersonaSetResult struct {
+// PersonaTemplateSavedResult signals that a persona template was
+// written to the pool.
+type PersonaTemplateSavedResult struct {
 	ID string
 }
 
-// PersonaResetResult signals that user-defined personas were removed.
-type PersonaResetResult struct {
+// PersonaTemplatesResetResult reports how many operator-written persona
+// templates were removed.
+type PersonaTemplatesResetResult struct {
 	Count int
 }
 

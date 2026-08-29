@@ -110,7 +110,7 @@ func (m ModelInfo) SupportsTools() bool {
 // OpenRouter tracks this separately from `"tools"`: the two are
 // independent capabilities, not usually-correlated ones, so a model
 // can have either, both, or neither. GenerateNick and
-// GeneratePersonas set a strict `json_schema` `ResponseFormat` and
+// GeneratePersonaTemplates set a strict `json_schema` `ResponseFormat` and
 // never set `Tools`, so this is the parameter their calls depend on.
 func (m ModelInfo) SupportsStructuredOutputs() bool {
 	return slices.Contains(m.SupportedParameters, "structured_outputs")
@@ -506,10 +506,10 @@ type Client interface {
 	// is intentionally never revealed to the model.
 	GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, excludePreviousSuggestions []domain.Nick) (NicknameResult, error)
 
-	// GeneratePersonas asks a model to generate a set of IRC user
-	// personas. Each returned persona has Origin set to
+	// GeneratePersonaTemplates asks a model to write a set of persona
+	// templates for the pool. Each carries Origin
 	// domain.PersonaGenerated.
-	GeneratePersonas(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
+	GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
 }
 
 // SetSpanAttributes records usage and request metadata on a span.

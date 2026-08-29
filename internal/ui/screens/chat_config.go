@@ -60,24 +60,24 @@ func (s ChatScreen) routeConfigResults(
 		return s, s.handleTimestampFormatSet(issuingWindow, msg), true
 
 	case chatcmd.PersonaTemplatesResult:
-		personasList := domain.PersonaTemplatesList{
-			Personas: msg,
-			At:       time.Now(),
+		templatesList := domain.PersonaTemplatesList{
+			Templates: msg,
+			At:        time.Now(),
 		}
 
 		return s, tea.Batch(
-			s.logReplyEvent(issuingWindow, personasList),
-			s.recordReply(nil, personasList),
+			s.logReplyEvent(issuingWindow, templatesList),
+			s.recordReply(nil, templatesList),
 		), true
 
 	case chatcmd.PersonaTemplatesRegeneratedResult:
 		return s, s.notice(issuingWindow,
 			fmt.Sprintf("Replaced %d generated persona templates.", msg.Count)), true
 
-	case chatcmd.PersonaSetResult:
+	case chatcmd.PersonaTemplateSavedResult:
 		return s, s.notice(issuingWindow, fmt.Sprintf("Persona %s saved.", msg.ID)), true
 
-	case chatcmd.PersonaResetResult:
+	case chatcmd.PersonaTemplatesResetResult:
 		return s, s.notice(issuingWindow, fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count)), true
 
 	case chatcmd.PersonaResult:
@@ -345,7 +345,7 @@ func (s ChatScreen) handleAPIKeySet(
 		return s, tea.Batch(
 			rebind,
 			s.loadLiveModels(),
-			s.ensurePersonas(),
+			s.ensurePersonaTemplates(),
 			msgCmd(components.SetPlaceholderMsg{
 				Text: s.checklist.text(),
 			}),
@@ -356,7 +356,7 @@ func (s ChatScreen) handleAPIKeySet(
 		rebind,
 		s.notice(issuingWindow, text),
 		s.loadLiveModels(),
-		s.ensurePersonas(),
+		s.ensurePersonaTemplates(),
 	)
 }
 

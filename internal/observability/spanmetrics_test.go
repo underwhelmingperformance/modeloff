@@ -184,14 +184,14 @@ func TestRuntime_snapshotMetrics_includes_memory_tool_and_search_metrics(t *test
 	}, snapshot.MemorySearch)
 }
 
-func TestRuntime_snapshotMetrics_counts_generate_personas_as_LLM_usage(t *testing.T) {
+func TestRuntime_snapshotMetrics_counts_generate_persona_templates_as_LLM_usage(t *testing.T) {
 	runtime, err := NewRuntime()
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, runtime.Shutdown(context.WithoutCancel(t.Context())))
 	})
 
-	recordLLMUsageSpan(t, "api.openrouter.generate_personas", "anthropic/claude-3-haiku", ResultTool, 30, 15, 0.5)
+	recordLLMUsageSpan(t, "api.openrouter.generate_persona_templates", "anthropic/claude-3-haiku", ResultTool, 30, 15, 0.5)
 
 	snapshot, err := runtime.SnapshotMetrics(t.Context())
 	require.NoError(t, err)

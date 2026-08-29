@@ -488,14 +488,14 @@ func listEntries(events []protocol.Event) []domain.ChannelDirectoryEntry {
 // AddModelCommand represents `/add-model [model] [--persona value]`.
 type AddModelCommand struct {
 	Model   string   `arg:"" optional:"" help:"Model to invite"`
-	Persona []string `optional:"" help:"Persona ID or literal text"`
+	Persona []string `optional:"" help:"Persona template id, or the persona text itself"`
 }
 
 // Sources implements command.Completer.
 func (AddModelCommand) Sources() map[string]command.SuggestionSource[CompletionContext] {
 	return map[string]command.SuggestionSource[CompletionContext]{
 		"model":   liveModelsSource,
-		"persona": personasSource,
+		"persona": templatesSource,
 	}
 }
 
@@ -1403,12 +1403,12 @@ type PersonaTemplatesCommand struct{}
 // Run implements Command.
 func (PersonaTemplatesCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Manager.ListPersonaTemplates(ctx)
+		templates, err := rc.Manager.ListPersonaTemplates(ctx)
 		if err != nil {
 			return rc.errorResult("templates", err)
 		}
 
-		return PersonaTemplatesResult(personas)
+		return PersonaTemplatesResult(templates)
 	}
 }
 
@@ -1418,12 +1418,12 @@ type RegeneratePersonaTemplatesCommand struct{}
 // Run implements Command.
 func (RegeneratePersonaTemplatesCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Manager.RegeneratePersonaTemplates(ctx)
+		templates, err := rc.Manager.RegeneratePersonaTemplates(ctx)
 		if err != nil {
 			return rc.errorResult("regenerate-templates", err)
 		}
 
-		return PersonaTemplatesRegeneratedResult{Count: len(personas)}
+		return PersonaTemplatesRegeneratedResult{Count: len(templates)}
 	}
 }
 

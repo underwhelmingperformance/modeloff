@@ -1948,7 +1948,7 @@ func TestOpenRouterClient_ContinueWithToolResults_has_no_hidden_HTTP_retry(t *te
 	})
 }
 
-func TestOpenRouterClient_GeneratePersonas(t *testing.T) {
+func TestOpenRouterClient_GeneratePersonaTemplates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/chat/completions", r.URL.Path)
@@ -1969,7 +1969,7 @@ func TestOpenRouterClient_GeneratePersonas(t *testing.T) {
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	got, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
+	got, err := client.GeneratePersonaTemplates(t.Context(), "anthropic/claude-haiku-4.5")
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersonaTemplate{
 		{
@@ -1985,13 +1985,13 @@ func TestOpenRouterClient_GeneratePersonas(t *testing.T) {
 	}, got)
 }
 
-// TestOpenRouterClient_GeneratePersonas_discards_unusable_personas
+// TestOpenRouterClient_GeneratePersonaTemplates_discards_unusable_templates
 // covers the bound on what the small model returns. A persona
 // becomes the app's own instruction in an instance's system prompt,
 // so one carrying newlines, which could lay out sections that read
 // as further instructions, is left out of the pool and the rest of
 // the batch is kept.
-func TestOpenRouterClient_GeneratePersonas_discards_unusable_personas(t *testing.T) {
+func TestOpenRouterClient_GeneratePersonaTemplates_discards_unusable_templates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(structuredChatResponse(
@@ -2005,7 +2005,7 @@ func TestOpenRouterClient_GeneratePersonas_discards_unusable_personas(t *testing
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	got, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
+	got, err := client.GeneratePersonaTemplates(t.Context(), "anthropic/claude-haiku-4.5")
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersonaTemplate{
 		{
@@ -2016,7 +2016,7 @@ func TestOpenRouterClient_GeneratePersonas_discards_unusable_personas(t *testing
 	}, got)
 }
 
-func TestOpenRouterClient_GeneratePersonas_empty(t *testing.T) {
+func TestOpenRouterClient_GeneratePersonaTemplates_empty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(structuredChatResponse(`{"personas":[]}`))
@@ -2025,12 +2025,12 @@ func TestOpenRouterClient_GeneratePersonas_empty(t *testing.T) {
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	got, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
+	got, err := client.GeneratePersonaTemplates(t.Context(), "anthropic/claude-haiku-4.5")
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersonaTemplate{}, got)
 }
 
-func TestOpenRouterClient_GeneratePersonas_invalidJSON(t *testing.T) {
+func TestOpenRouterClient_GeneratePersonaTemplates_invalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(structuredChatResponse(`not json`))
@@ -2039,7 +2039,7 @@ func TestOpenRouterClient_GeneratePersonas_invalidJSON(t *testing.T) {
 
 	client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
 
-	_, err := client.GeneratePersonas(t.Context(), "anthropic/claude-haiku-4.5")
+	_, err := client.GeneratePersonaTemplates(t.Context(), "anthropic/claude-haiku-4.5")
 	require.Error(t, err)
 
 	var parseErr *CompletionParseError
@@ -2417,9 +2417,9 @@ func TestOpenRouterClient_perCallTimeouts(t *testing.T) {
 			},
 		},
 		{
-			name: "GeneratePersonas",
+			name: "GeneratePersonaTemplates",
 			call: func(ctx context.Context, c *OpenRouterClient) error {
-				_, err := c.GeneratePersonas(ctx, "anthropic/claude-haiku-4.5")
+				_, err := c.GeneratePersonaTemplates(ctx, "anthropic/claude-haiku-4.5")
 				return err
 			},
 		},

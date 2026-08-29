@@ -13,12 +13,12 @@ import (
 )
 
 // EnsurePersonaTemplates populates the persona pool if it is empty. It
-// calls the API to generate personas and saves each to the store.
+// calls the API to generate templates and saves each to the store.
 func (m *Manager) EnsurePersonaTemplates(ctx context.Context) error {
-	return m.inSpan(ctx, "modelmanager.ensure_personas", nil, func(ctx context.Context, _ trace.Span) error {
+	return m.inSpan(ctx, "modelmanager.ensure_persona_templates", nil, func(ctx context.Context, _ trace.Span) error {
 		existing, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
-			return fmt.Errorf("list personas: %w", err)
+			return fmt.Errorf("list persona templates: %w", err)
 		}
 
 		if len(existing) > 0 {
@@ -27,17 +27,17 @@ func (m *Manager) EnsurePersonaTemplates(ctx context.Context) error {
 
 		client, _ := m.snapshotAPI()
 		if client == nil {
-			return fmt.Errorf("generate personas: api client not configured")
+			return fmt.Errorf("generate persona templates: api client not configured")
 		}
 
-		personas, err := client.GeneratePersonas(ctx, m.SmallModel())
+		templates, err := client.GeneratePersonaTemplates(ctx, m.SmallModel())
 		if err != nil {
-			return fmt.Errorf("generate personas: %w", err)
+			return fmt.Errorf("generate persona templates: %w", err)
 		}
 
-		for _, p := range personas {
+		for _, p := range templates {
 			if err := m.store.SavePersonaTemplate(ctx, p); err != nil {
-				return fmt.Errorf("save persona %q: %w", p.ID, err)
+				return fmt.Errorf("save persona template %q: %w", p.ID, err)
 			}
 		}
 
@@ -53,14 +53,14 @@ func (m *Manager) EnsurePersonaTemplates(ctx context.Context) error {
 func (m *Manager) RandomPersonaTemplate(ctx context.Context) (domain.PersonaTemplate, error) {
 	var chosen domain.PersonaTemplate
 
-	err := m.inSpan(ctx, "modelmanager.random_persona", nil, func(ctx context.Context, _ trace.Span) error {
-		personas, err := m.store.ListPersonaTemplates(ctx)
+	err := m.inSpan(ctx, "modelmanager.random_persona_template", nil, func(ctx context.Context, _ trace.Span) error {
+		templates, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
-			return fmt.Errorf("list personas: %w", err)
+			return fmt.Errorf("list persona templates: %w", err)
 		}
 
-		if len(personas) == 0 {
-			return fmt.Errorf("no personas available")
+		if len(templates) == 0 {
+			return fmt.Errorf("no persona templates available")
 		}
 
 		held, err := m.heldPersonaDescriptions(ctx)
@@ -68,8 +68,8 @@ func (m *Manager) RandomPersonaTemplate(ctx context.Context) (domain.PersonaTemp
 			return fmt.Errorf("list instances: %w", err)
 		}
 
-		pool := personas
-		if unheld := excludeHeld(personas, held); len(unheld) > 0 {
+		pool := templates
+		if unheld := excludeHeld(templates, held); len(unheld) > 0 {
 			pool = unheld
 		}
 
@@ -108,10 +108,10 @@ func (m *Manager) heldPersonaDescriptions(ctx context.Context) (map[string]bool,
 	return held, nil
 }
 
-// excludeHeld returns the personas whose description is not in held.
-func excludeHeld(personas []domain.PersonaTemplate, held map[string]bool) []domain.PersonaTemplate {
-	unheld := make([]domain.PersonaTemplate, 0, len(personas))
-	for _, p := range personas {
+// excludeHeld returns the templates whose description is not in held.
+func excludeHeld(templates []domain.PersonaTemplate, held map[string]bool) []domain.PersonaTemplate {
+	unheld := make([]domain.PersonaTemplate, 0, len(templates))
+	for _, p := range templates {
 		if !held[p.Description] {
 			unheld = append(unheld, p)
 		}
@@ -125,28 +125,28 @@ func excludeHeld(personas []domain.PersonaTemplate, held map[string]bool) []doma
 // happens first so that the existing pool is preserved if generation
 // fails. An operator's own templates are never touched.
 func (m *Manager) RegeneratePersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error) {
-	var personas []domain.PersonaTemplate
+	var templates []domain.PersonaTemplate
 
-	err := m.inSpan(ctx, "modelmanager.regenerate_personas", nil, func(ctx context.Context, _ trace.Span) error {
+	err := m.inSpan(ctx, "modelmanager.regenerate_persona_templates", nil, func(ctx context.Context, _ trace.Span) error {
 		client, _ := m.snapshotAPI()
 		if client == nil {
-			return fmt.Errorf("generate personas: api client not configured")
+			return fmt.Errorf("generate persona templates: api client not configured")
 		}
 
-		generated, err := client.GeneratePersonas(ctx, m.SmallModel())
+		generated, err := client.GeneratePersonaTemplates(ctx, m.SmallModel())
 		if err != nil {
-			return fmt.Errorf("generate personas: %w", err)
+			return fmt.Errorf("generate persona templates: %w", err)
 		}
 
 		if err := m.store.ReplaceGeneratedPersonaTemplates(ctx, generated); err != nil {
-			return fmt.Errorf("replace generated personas: %w", err)
+			return fmt.Errorf("replace generated persona templates: %w", err)
 		}
 
-		personas = generated
+		templates = generated
 		return nil
 	})
 
-	return personas, err
+	return templates, err
 }
 
 // SetPersonaTemplate saves a user-defined persona template to the store.
@@ -155,8 +155,8 @@ func (m *Manager) SetPersonaTemplate(ctx context.Context, id string, description
 		return domain.ErroneousPersonaError{Reason: reason, At: m.now()}
 	}
 
-	return m.inSpan(ctx, "modelmanager.set_persona", []attribute.KeyValue{
-		attribute.String("persona.id", id),
+	return m.inSpan(ctx, "modelmanager.set_persona_template", []attribute.KeyValue{
+		attribute.String("persona_template.id", id),
 	}, func(ctx context.Context, _ trace.Span) error {
 		p := domain.PersonaTemplate{
 			ID:          id,
@@ -170,33 +170,33 @@ func (m *Manager) SetPersonaTemplate(ctx context.Context, id string, description
 
 // ListPersonaTemplates returns every template in the store's pool.
 func (m *Manager) ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error) {
-	var personas []domain.PersonaTemplate
+	var templates []domain.PersonaTemplate
 
-	err := m.inSpan(ctx, "modelmanager.list_personas", nil, func(ctx context.Context, _ trace.Span) error {
+	err := m.inSpan(ctx, "modelmanager.list_persona_templates", nil, func(ctx context.Context, _ trace.Span) error {
 		listed, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
 			return err
 		}
-		personas = listed
+		templates = listed
 		return nil
 	})
 
-	return personas, err
+	return templates, err
 }
 
-// ResetPersonas removes all user-defined personas from the store,
-// leaving only generated ones. It returns the number of personas
+// ResetPersonaTemplates removes every operator-written template from
+// the store, leaving only generated ones. It returns the number
 // that were removed.
-func (m *Manager) ResetPersonas(ctx context.Context) (int, error) {
+func (m *Manager) ResetPersonaTemplates(ctx context.Context) (int, error) {
 	var count int
 
-	err := m.inSpan(ctx, "modelmanager.reset_personas", nil, func(ctx context.Context, _ trace.Span) error {
-		personas, err := m.store.ListPersonaTemplates(ctx)
+	err := m.inSpan(ctx, "modelmanager.reset_persona_templates", nil, func(ctx context.Context, _ trace.Span) error {
+		templates, err := m.store.ListPersonaTemplates(ctx)
 		if err != nil {
-			return fmt.Errorf("list personas: %w", err)
+			return fmt.Errorf("list persona templates: %w", err)
 		}
 
-		for _, p := range personas {
+		for _, p := range templates {
 			if p.Origin == domain.PersonaUser {
 				count++
 			}

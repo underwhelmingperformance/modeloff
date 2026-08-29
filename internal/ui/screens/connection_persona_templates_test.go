@@ -38,7 +38,7 @@ func drainCmd(cmd tea.Cmd) []tea.Msg {
 	return out
 }
 
-func TestConnectionScreen_Init_ensures_personas_when_api_key_present(t *testing.T) {
+func TestConnectionScreen_Init_ensures_persona_templates_when_api_key_present(t *testing.T) {
 	var calls atomic.Int32
 
 	seeded := []domain.PersonaTemplate{
@@ -46,7 +46,7 @@ func TestConnectionScreen_Init_ensures_personas_when_api_key_present(t *testing.
 	}
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return seeded, nil
 		},
@@ -72,11 +72,11 @@ func TestConnectionScreen_Init_ensures_personas_when_api_key_present(t *testing.
 	require.Equal(t, seeded, got)
 }
 
-func TestConnectionScreen_Init_skips_persona_generation_without_api_key(t *testing.T) {
+func TestConnectionScreen_Init_skips_template_generation_without_api_key(t *testing.T) {
 	var calls atomic.Int32
 
 	fake := &uitest.FakeAPI{
-		GeneratePersonasFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
+		GeneratePersonaTemplatesFn: func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 			calls.Add(1)
 			return nil, nil
 		},

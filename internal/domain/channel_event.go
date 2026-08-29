@@ -448,8 +448,8 @@ func (SystemNotice) issuerReply()                      {}
 // store, which [EventType] keeps because that vocabulary is
 // hand-maintained.
 type PersonaTemplatesList struct {
-	Personas []PersonaTemplate `json:"personas"`
-	At       time.Time         `json:"at"`
+	Templates []PersonaTemplate `json:"personas"`
+	At        time.Time         `json:"at"`
 }
 
 func (PersonaTemplatesList) persistableEvent()                 {}
