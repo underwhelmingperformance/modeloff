@@ -588,14 +588,47 @@ func (s *Session) attachmentValid(id protocol.ClientID, attachment *protocol.Att
 	return s.attachments[id] == attachment
 }
 
-// IssueAttachment returns the attachment token that authorises a
-// client to subscribe as `id`, creating one if the identity has none.
-// It is what [Session.Subscribe] checks a subscribing client's
-// [protocol.SubscribeOptions.Attachment] against.
-func (s *Session) IssueAttachment(id protocol.ClientID) *protocol.Attachment {
-	return s.issueAttachment(id)
+// AttachClient subscribes `client` under the identity it reports. It
+// takes the attachment [Session.Subscribe] checks, subscribes with it,
+// and withdraws it if the subscription is refused and no other client
+// holds it.
+//
+// It returns whatever [Session.Subscribe] returns, which includes
+// [ErrIdentityInUse] for an identity another client holds and a store
+// error for an identity with no instance row. A handle that is not a
+// non-nil pointer is refused here with [ErrInvalidClientHandle], since
+// the identity is read off the client before the token is taken.
+//
+// The attachment authenticates nobody: the identity comes from the
+// client, which the caller wrote. Two clients asking for one identity
+// are told apart by the owner check in `ensureSubscription`, which is
+// what `ErrIdentityInUse` reports. What this offers over handing the
+// token out is that no API returns it, so a call can only attach the
+// client passed to it.
+func (s *Session) AttachClient(
+	ctx context.Context,
+	client protocol.Client,
+) (protocol.Subscription, error) {
+	if !validClientHandle(client) {
+		return nil, fmt.Errorf("session.AttachClient: %w", ErrInvalidClientHandle)
+	}
+
+	id := client.Identity()
+	attachment := s.issueAttachment(id)
+	sub, err := s.Subscribe(ctx, client, protocol.SubscribeOptions{
+		Attachment: attachment,
+	})
+	if err != nil {
+		s.revokeAttachment(id, attachment)
+	}
+
+	return sub, err
 }
 
+// issueAttachment returns the token that authorises a client to
+// subscribe as `id`, creating one if the identity has none. An identity
+// that already has a token keeps it, so a client repeating its own
+// subscribe is answered with the envelope it holds.
 func (s *Session) issueAttachment(id protocol.ClientID) *protocol.Attachment {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
@@ -610,10 +643,24 @@ func (s *Session) issueAttachment(id protocol.ClientID) *protocol.Attachment {
 	return attachment
 }
 
+// revokeAttachment withdraws the token authorising `id` after an attach
+// that failed.
+//
+// An identity keeps one token however many clients ask for it, so the
+// caller that fails may not be the one that created it, and by the time
+// it fails another client may already have subscribed with the same
+// token. Withdrawing it then would refuse that client the next time it
+// subscribed, having done nothing. A token a subscriber holds therefore
+// stays, and this reads the registry under the lock that guards it, so
+// there is no interval in which the subscriber is registered and the
+// token is taken.
 func (s *Session) revokeAttachment(id protocol.ClientID, attachment *protocol.Attachment) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 
+	if s.subscribers[id] != nil {
+		return
+	}
 	if s.attachments[id] == attachment {
 		delete(s.attachments, id)
 	}

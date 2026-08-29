@@ -2523,3 +2523,116 @@ func TestSession_attach_hands_the_factory_a_snapshot(t *testing.T) {
 		SubscriptionNick: subscriptionNick,
 	})
 }
+
+// attachClientEffect records the attachment outcome.
+type attachClientEffect struct {
+	Refused          bool
+	ImpostorAttached bool
+	HolderTokenValid bool
+}
+
+// TestSession_AttachClient_leaves_a_subscriber_its_authority covers what
+// a refused attach does to the identity's token. One token authorises an
+// identity however many clients ask for it, so the refused client is
+// handed the token its holder subscribed with.
+func TestSession_AttachClient_leaves_a_subscriber_its_authority(t *testing.T) {
+	t.Parallel()
+
+	sess, store := newTestSession(t)
+	inst := seedInstanceRow(t, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+	id := protocol.ClientID(inst.ID())
+
+	holder := &subscribeFakeClient{id: id}
+	_, err := sess.AttachClient(t.Context(), holder)
+	require.NoError(t, err)
+	token := sess.issueAttachment(id)
+
+	impostor := &subscribeFakeClient{id: id}
+	impostorSub, attachErr := sess.AttachClient(t.Context(), impostor)
+
+	require.Equal(t, attachClientEffect{Refused: true, HolderTokenValid: true},
+		attachClientEffect{
+			Refused:          errors.Is(attachErr, ErrIdentityInUse),
+			ImpostorAttached: impostorSub != nil,
+			HolderTokenValid: sess.attachmentValid(id, token),
+		})
+}
+
+// revokeAttachmentCase is one identity a failed attach withdraws a token
+// from.
+type revokeAttachmentCase struct {
+	Name string
+	// Subscribed registers a client under the identity before the
+	// withdrawal, which is what the registry check reads.
+	Subscribed bool
+}
+
+// revokeAttachmentEffect records whether the token survived.
+type revokeAttachmentEffect struct {
+	StillValid bool
+}
+
+// TestSession_revokeAttachment_keeps_a_subscriber_token covers the guard
+// directly, because no sequential `AttachClient` pair reaches it.
+//
+// A client that takes the token and is then refused may be refused
+// because another client subscribed with that same token first. It
+// cannot tell the two apart from having created the token, so the
+// question the withdrawal asks is whether anybody is registered under
+// the identity now.
+func TestSession_revokeAttachment_keeps_a_subscriber_token(t *testing.T) {
+	t.Parallel()
+
+	cases := []revokeAttachmentCase{
+		{Name: "a subscriber holds the identity", Subscribed: true},
+		{Name: "the identity has no subscriber", Subscribed: false},
+	}
+	want := []revokeAttachmentEffect{{StillValid: true}, {StillValid: false}}
+
+	got := make([]revokeAttachmentEffect, 0, len(cases))
+	for _, testCase := range cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			sess, store := newTestSession(t)
+			inst := seedInstanceRow(t, store, instanceSpec{Nick: "botty", ModelID: "test/model"})
+			id := protocol.ClientID(inst.ID())
+
+			token := sess.issueAttachment(id)
+			if testCase.Subscribed {
+				_, err := sess.AttachClient(t.Context(), &subscribeFakeClient{id: id})
+				require.NoError(t, err)
+			}
+
+			sess.revokeAttachment(id, token)
+
+			got = append(got, revokeAttachmentEffect{
+				StillValid: sess.attachmentValid(id, token),
+			})
+		})
+	}
+
+	require.Equal(t, want, got)
+}
+
+// invalidHandleEffect records what an attach with a bad handle returns.
+type invalidHandleEffect struct {
+	Subscribed bool
+	Refused    bool
+}
+
+// TestSession_AttachClient_refuses_an_invalid_handle pins that the
+// wrapper answers a bad handle the way [Session.Subscribe] does. It
+// reads the identity off the client to take the attachment, so without
+// the check it would dereference a nil handle where Subscribe returns an
+// error.
+func TestSession_AttachClient_refuses_an_invalid_handle(t *testing.T) {
+	t.Parallel()
+
+	sess, _ := newTestSession(t)
+
+	sub, err := sess.AttachClient(t.Context(), nil)
+
+	require.Equal(t, invalidHandleEffect{Refused: true}, invalidHandleEffect{
+		Subscribed: sub != nil,
+		Refused:    errors.Is(err, ErrInvalidClientHandle),
+	})
+}

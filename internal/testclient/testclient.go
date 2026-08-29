@@ -30,7 +30,6 @@ type TestClient struct {
 	instance *domain.Instance
 	sess     *session.Session
 	store    instanceStore
-	attach   *protocol.Attachment
 
 	mu  sync.Mutex
 	sub protocol.Subscription
@@ -48,14 +47,6 @@ type config struct {
 	modelID    domain.ModelID
 	persona    string
 	channels   []domain.ChannelName
-	attachment *protocol.Attachment
-}
-
-// WithAttachment supplies the attachment the client subscribes with.
-// Without it the client asks the session for the token that
-// authorises its own identity.
-func WithAttachment(attachment *protocol.Attachment) Option {
-	return func(c *config) { c.attachment = attachment }
 }
 
 // WithInstanceID overrides the default `"test-"+nick` instance id.
@@ -116,18 +107,12 @@ func newClient(
 		opt(&cfg)
 	}
 
-	attachment := cfg.attachment
-	if attachment == nil {
-		attachment = sess.IssueAttachment(protocol.ClientID(cfg.instanceID))
-	}
-
 	channels := buildChannelMembership(cfg.channels)
 
 	return &TestClient{
 		instance: domain.NewModelInstance(cfg.instanceID, nick, cfg.modelID, cfg.persona, channels),
 		sess:     sess,
 		store:    store,
-		attach:   attachment,
 	}
 }
 
@@ -185,7 +170,7 @@ func (tc *TestClient) Attach(ctx context.Context) error {
 		return fmt.Errorf("save test instance %q: %w", tc.instance.ID(), err)
 	}
 
-	sub, err := tc.sess.Subscribe(ctx, tc, protocol.SubscribeOptions{Attachment: tc.attach})
+	sub, err := tc.sess.AttachClient(ctx, tc)
 	if err != nil {
 		return fmt.Errorf("attach test client %q: %w", tc.instance.ID(), err)
 	}

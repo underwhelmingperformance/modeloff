@@ -955,7 +955,14 @@ first attach creates it.
 
 A row is not a connection. `Session.Subscribe` allocates the
 subscription envelope to the client that asks for the identity, and
-refuses a second client asking for the same one with
+checks the attachment token the session holds for it. That token is what
+stops two clients reading one identity's deliveries; it authenticates
+nobody, since the identity is what the client reports. No API returns
+it: ADDMODEL and `Session.StartModelClients` hand it straight to the
+model-client factory, and `Session.AttachClient`, which is how a test
+harness places a synthetic actor on the bus, takes one and subscribes
+with it in the same call. Subscribe refuses a
+second client asking for an identity another already holds with
 `session.ErrIdentityInUse`: the envelope's events channel has one
 reader, and two goroutines receiving from it would take deliveries
 from each other. `Manager.Start` asks the same question the other way
