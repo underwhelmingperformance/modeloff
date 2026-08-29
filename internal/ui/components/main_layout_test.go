@@ -2,6 +2,7 @@ package components_test
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	bkey "charm.land/bubbles/v2/key"
@@ -60,10 +61,15 @@ type boundsRecordingStub struct {
 	stubModel
 
 	bounds *uv.Rectangle
+	drawn  *[]uv.Rectangle
 }
 
 func newBoundsRecordingStub(label string) boundsRecordingStub {
-	return boundsRecordingStub{stubModel: stubModel{label: label}, bounds: new(uv.Rectangle)}
+	return boundsRecordingStub{
+		stubModel: stubModel{label: label},
+		bounds:    new(uv.Rectangle),
+		drawn:     new([]uv.Rectangle),
+	}
 }
 
 func (s boundsRecordingStub) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
@@ -72,6 +78,21 @@ func (s boundsRecordingStub) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	}
 
 	return s, nil
+}
+
+func (s boundsRecordingStub) Draw(screen uv.Screen, area uv.Rectangle) {
+	*s.drawn = append(*s.drawn, area)
+	s.stubModel.Draw(screen, area)
+}
+
+// lastDrawn returns the rectangle the stub was last drawn into, and
+// whether it was drawn at all.
+func (s boundsRecordingStub) lastDrawn() (uv.Rectangle, bool) {
+	if len(*s.drawn) == 0 {
+		return uv.Rectangle{}, false
+	}
+
+	return (*s.drawn)[len(*s.drawn)-1], true
 }
 
 // dims formats a `label:WxH` dimension token matching stubModel.Draw,
@@ -536,4 +557,179 @@ func TestMainLayout_fullscreen_observability_updates_hidden_state_without_hidden
 	require.Equal(t, []tea.Msg{wheel}, *sidebarReceived)
 	require.Empty(t, *contentReceived)
 	require.Empty(t, *nickListReceived)
+}
+
+// TestMainLayout_draws_children_into_the_bounds_it_sent covers what a
+// child is told and what it is painted into. MainLayout computes its
+// layout twice, once in applyLayout to distribute BoundsMsg and once in
+// Draw from the area it is passed, and mouse hit testing compares a
+// click against the rectangle a child stored from the first. The two
+// agreeing is what puts a click inside the cells that child was
+// painted into.
+//
+// Three things keep a case from passing without the two rectangles
+// agreeing. Each case names the panels MainLayout paints in that
+// state, so a panel that goes unpainted cannot drop out of both sides. The area starts at
+// a non-zero origin, which is what Root hands down whenever a banner is
+// showing, so a Draw that computed from the corner of the screen would
+// disagree. And each case names the height the content panel gets,
+// which is the quantity the observability drawer takes a share of, so
+// the drawer cases cannot pass as ordinary ones.
+func TestMainLayout_draws_children_into_the_bounds_it_sent(t *testing.T) {
+	// Root shifts the origin down a row per visible banner and never
+	// shifts it across, so the Y here is a state the app reaches and the
+	// X is there to catch a Draw that works from the screen corner.
+	const originX, originY = 3, 2
+
+	type testCase struct {
+		width             int
+		height            int
+		nickList          bool
+		drawer            bool
+		fullscreen        bool
+		wantDrawn         []string
+		wantContentHeight int
+	}
+
+	cases := map[string]testCase{
+		"two panes": {
+			width: 100, height: defaultTestHeight,
+			wantDrawn: []string{"sidebar", "content"}, wantContentHeight: defaultTestHeight,
+		},
+		"three panes": {
+			width: 120, height: defaultTestHeight, nickList: true,
+			wantDrawn: []string{"sidebar", "content", "nicklist"}, wantContentHeight: defaultTestHeight,
+		},
+		"drawer split": {
+			width: 120, height: 40, nickList: true, drawer: true,
+			wantDrawn: []string{"sidebar", "content", "nicklist"}, wantContentHeight: 28,
+		},
+		"drawer fullscreen": {
+			width: 120, height: 40, nickList: true, drawer: true, fullscreen: true,
+			wantDrawn: []string{"sidebar"},
+		},
+		"below the min width": {
+			width: 60, height: defaultTestHeight, nickList: true,
+			wantDrawn: []string{"content"}, wantContentHeight: defaultTestHeight,
+		},
+		"one row for the lot": {
+			width: 100, height: 1,
+			wantDrawn: []string{"sidebar", "content"}, wantContentHeight: 1,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			panels := map[string]boundsRecordingStub{
+				"sidebar":  newBoundsRecordingStub("sidebar"),
+				"content":  newBoundsRecordingStub("content"),
+				"nicklist": newBoundsRecordingStub("nicklist"),
+			}
+
+			layout := components.NewMainLayout(panels["sidebar"], panels["content"])
+			if tc.nickList {
+				layout.NickList = panels["nicklist"]
+			}
+			if tc.drawer {
+				layout = layout.WithObservability(components.NewMetricsPane(t.Context, nil))
+			}
+
+			area := uv.Rect(originX, originY, tc.width, tc.height)
+			updated, _ := layout.Update(ui.BoundsMsg{Rect: area})
+			layout = updated.(components.MainLayout)
+
+			for _, key := range drawerKeys(tc.drawer, tc.fullscreen) {
+				updated, _ = layout.Update(key)
+				layout = updated.(components.MainLayout)
+			}
+
+			screen := uv.NewScreenBuffer(originX+tc.width, originY+tc.height)
+			layout.Draw(screen, area)
+
+			told := map[string]uv.Rectangle{}
+			for _, label := range tc.wantDrawn {
+				told[label] = *panels[label].bounds
+			}
+
+			drawn := map[string]uv.Rectangle{}
+			for label, panel := range panels {
+				if rect, wasDrawn := panel.lastDrawn(); wasDrawn {
+					drawn[label] = rect
+				}
+			}
+
+			require.Equal(t, told, drawn)
+			require.Equal(t, tc.wantContentHeight, drawn["content"].Dy(),
+				"the content panel's height is what the drawer takes its share of")
+
+			if tc.drawer {
+				requireDrawerPlacement(t, screen, area, drawn, tc.fullscreen)
+			}
+		})
+	}
+}
+
+// requireDrawerPlacement checks the rectangle the observability drawer
+// was drawn into. The drawer is built inside MainLayout, so no stub can
+// record what it was handed. Its two panes are bordered boxes, and the
+// panels beside it draw only vertical rules, so the drawer is what
+// drew every cell showing a corner or a horizontal rule. Their
+// bounding box is the rectangle the layout gave the drawer.
+//
+// Split, the drawer runs the full assigned width under the panels.
+// Filling the screen, it takes the columns to the right of the sidebar,
+// which keeps its own place either way.
+func requireDrawerPlacement(t *testing.T, screen uv.Screen, area uv.Rectangle, drawn map[string]uv.Rectangle, fullscreen bool) {
+	t.Helper()
+
+	want := uv.Rect(area.Min.X, drawn["content"].Max.Y, area.Dx(), area.Max.Y-drawn["content"].Max.Y)
+	if fullscreen {
+		left := drawn["sidebar"].Max.X + 1
+		want = uv.Rect(left, area.Min.Y, area.Max.X-left, area.Dy())
+	}
+
+	require.Equal(t, want, borderBox(screen))
+}
+
+// borderBox returns the smallest rectangle covering every cell of the
+// screen showing a box-drawing corner or horizontal rule.
+func borderBox(screen uv.Screen) uv.Rectangle {
+	edges := []string{"┌", "┐", "└", "┘", "─"}
+
+	box := uv.Rectangle{}
+	bounds := screen.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			cell := screen.CellAt(x, y)
+			if cell == nil || !slices.Contains(edges, cell.Content) {
+				continue
+			}
+
+			at := uv.Rect(x, y, 1, 1)
+			if box.Empty() {
+				box = at
+
+				continue
+			}
+			box = box.Union(at)
+		}
+	}
+
+	return box
+}
+
+// drawerKeys returns the key presses that put the observability drawer
+// into the requested state. alt+l opens it and ctrl+f fills the screen
+// with it.
+func drawerKeys(open, fullscreen bool) []tea.KeyPressMsg {
+	if !open {
+		return nil
+	}
+
+	keys := []tea.KeyPressMsg{{Code: 'l', Mod: tea.ModAlt}}
+	if fullscreen {
+		keys = append(keys, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	}
+
+	return keys
 }

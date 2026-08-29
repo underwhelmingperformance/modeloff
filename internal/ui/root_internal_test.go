@@ -287,3 +287,85 @@ func TestRoot_keyboard_help_remains_dismissible_in_tiny_bounds(t *testing.T) {
 	r = updateRoot(t, r, tea.KeyPressMsg{Code: tea.KeyEsc})
 	require.Equal(t, []string{"test:8x4"}, rootFrame(r))
 }
+
+// boundsRecordingScreen records the rectangle it was told to expect and
+// every rectangle it was drawn into, so a test can compare the two.
+type boundsRecordingScreen struct {
+	bounds *uv.Rectangle
+	drawn  *[]uv.Rectangle
+}
+
+func newBoundsRecordingScreen() boundsRecordingScreen {
+	return boundsRecordingScreen{bounds: new(uv.Rectangle), drawn: new([]uv.Rectangle)}
+}
+
+func (s boundsRecordingScreen) Init() tea.Cmd { return nil }
+
+func (s boundsRecordingScreen) Update(msg tea.Msg) (Component, tea.Cmd) {
+	if b, ok := msg.(BoundsMsg); ok {
+		*s.bounds = b.Rect
+	}
+
+	return s, nil
+}
+
+func (s boundsRecordingScreen) Draw(_ uv.Screen, area uv.Rectangle) {
+	*s.drawn = append(*s.drawn, area)
+}
+
+// TestRoot_gives_the_screen_the_rows_the_banners_leave covers both
+// halves of Root's one piece of layout. Each visible banner takes the
+// top row, so the screen starts one row lower per banner, and the same
+// rectangle has to reach it twice: once as the bounds it stores and
+// hit-tests against, and once as the area it is drawn into.
+//
+// The row is asserted alongside the two deliveries because one
+// function computes both: the two deliveries would agree with each
+// other however wrong the row was.
+func TestRoot_gives_the_screen_the_rows_the_banners_leave(t *testing.T) {
+	mouseOff := tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt}
+	armQuit := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+
+	type testCase struct {
+		triggers []tea.Msg
+		wantTop  int
+	}
+
+	cases := map[string]testCase{
+		"no banner":           {wantTop: 0},
+		"mouse-off banner":    {triggers: []tea.Msg{mouseOff}, wantTop: 1},
+		"quit-confirm banner": {triggers: []tea.Msg{armQuit}, wantTop: 1},
+		"both banners":        {triggers: []tea.Msg{mouseOff, armQuit}, wantTop: 2},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			screen := newBoundsRecordingScreen()
+			r := newRootWithClock(screen, &fakeClock{now: time.Now()})
+
+			updated, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			r = updated.(Root)
+
+			for _, trigger := range tc.triggers {
+				updated, _ = r.Update(trigger)
+				r = updated.(Root)
+			}
+
+			r.draw(uv.NewScreenBuffer(80, 24), r.bounds())
+
+			require.NotEmpty(t, *screen.drawn, "the screen was never drawn")
+
+			type delivery struct {
+				Told  uv.Rectangle
+				Drawn uv.Rectangle
+			}
+
+			want := uv.Rect(0, tc.wantTop, 80, 24-tc.wantTop)
+
+			require.Equal(t, delivery{Told: want, Drawn: want}, delivery{
+				Told:  *screen.bounds,
+				Drawn: (*screen.drawn)[len(*screen.drawn)-1],
+			})
+		})
+	}
+}

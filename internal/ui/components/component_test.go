@@ -1,7 +1,10 @@
 package components
 
 import (
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -126,4 +129,243 @@ func TestObservabilityDrawerChildBoundsMatchDrawLayout(t *testing.T) {
 
 	require.Equal(t, borderedContentRect(layout.LogsRect), drawer.Logs.bounds)
 	require.Equal(t, borderedContentRect(layout.MetricsRect), drawer.Metrics.feed.bounds)
+}
+
+// TestInputBarHeightCountsEveryRowTheLayoutPlaces covers the two halves
+// of the input bar's own geometry. `Height` reports the rows the bar
+// occupies and `layout` allots them to its bands, and the two are
+// maintained by hand. ChatView reserves `Height` rows at the bottom and
+// hands the bar exactly that rectangle, so a row the height omits is
+// one the layout has no room for, and a row the height counts and the
+// layout allots to nothing is one no band can be drawn into.
+func TestInputBarHeightCountsEveryRowTheLayoutPlaces(t *testing.T) {
+	cases := map[string]struct {
+		popover        bool
+		palette        bool
+		pasteFlattened bool
+	}{
+		"plain":               {},
+		"popover":             {popover: true},
+		"palette":             {palette: true},
+		"paste note":          {pasteFlattened: true},
+		"popover hides note":  {popover: true, pasteFlattened: true},
+		"palette and note":    {palette: true, pasteFlattened: true},
+		"palette and popover": {palette: true, popover: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			bar := NewInputBar()
+			bar.input.palette.open = tc.palette
+			bar.pasteFlattened = tc.pasteFlattened
+			if tc.popover {
+				bar.popover.completion = command.Completion{
+					Visible: true,
+					Suggestions: []command.Suggestion{
+						{Value: "/join", Label: "/join"},
+						{Value: "/part", Label: "/part"},
+					},
+				}
+			}
+
+			// Lay out in far more room than the bar needs, so the
+			// layout places every row it wants and clips nothing.
+			const ample = 40
+			area := uv.Rect(4, 6, 40, ample)
+
+			// The rows Height reserved are the ones at the bottom of the
+			// area, each allotted to one band. Comparing the whole list
+			// catches two bands sharing a row and a row no band covers,
+			// which a count or a span from the top row to the bottom
+			// would both accept. Where the bands are drawn is a separate
+			// question, and TestChatViewPaintsChildrenIntoTheirLayout-
+			// Rectangles is what answers it.
+			var want []int
+			for row := area.Max.Y - bar.Height(); row < area.Max.Y; row++ {
+				want = append(want, row)
+			}
+
+			require.Equal(t, want, placedRows(bar.layout(area)))
+		})
+	}
+}
+
+// placedRows returns the screen rows an input-bar layout devotes to a
+// band of its own, in order. A row appears once per band covering it,
+// so two bands sharing a row show up as a repeat. The editor is left
+// out: it sits on the input row, to the right of the prompt, so
+// counting it would report that row twice for every layout.
+func placedRows(layout inputBarLayout) []int {
+	var rows []int
+	for _, rect := range []uv.Rectangle{layout.palette, layout.popover, layout.note, layout.input} {
+		for row := rect.Min.Y; row < rect.Max.Y; row++ {
+			rows = append(rows, row)
+		}
+	}
+	slices.Sort(rows)
+
+	return rows
+}
+
+// TestChatViewPaintsChildrenIntoTheirLayoutRectangles locates each
+// child by what it puts on the screen, so the rectangle Draw handed it
+// is observable. One layout function serves the update and draw paths,
+// which fixes what the rectangles are but not which child each one is
+// given.
+//
+// The palette and the popover both sit above the input row and are
+// placed by the same pass, so the case with both open is the one where
+// handing a child its neighbour's rectangle is possible at all.
+func TestChatViewPaintsChildrenIntoTheirLayoutRectangles(t *testing.T) {
+	cases := map[string]struct {
+		popover bool
+		palette bool
+	}{
+		"bare":                {},
+		"popover":             {popover: true},
+		"palette":             {palette: true},
+		"palette and popover": {palette: true, popover: true},
+	}
+
+	// Long enough to wrap to the full width, and enough of them to
+	// reach every row, so the cells they cover are the message list's
+	// whole rectangle and not a point inside it.
+	content := WindowContent{Channel: "#general", Events: fillerMessages(40, 200)}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			view := NewChatView[testKind](
+				func() WindowContent { return content },
+				"#general",
+				domain.KindChannel,
+				"testuser",
+				"",
+			)
+			view.input.input.palette.open = tc.palette
+			if tc.popover {
+				view.input.popover.completion = command.Completion{
+					Visible: true,
+					Suggestions: []command.Suggestion{
+						{Value: "/join", Label: "/join"},
+						{Value: "/part", Label: "/part"},
+					},
+				}
+			}
+
+			// A non-zero origin, which is what Root hands down while a
+			// banner shows, so a Draw working from the corner of the
+			// screen disagrees.
+			area := uv.Rect(3, 2, 60, 20)
+			updated, _ := view.Update(ui.BoundsMsg{Rect: area})
+			view = updated.(ChatView[testKind])
+
+			screen := uv.NewScreenBuffer(area.Max.X, area.Max.Y)
+			uvscreen.FillArea(screen, &uv.Cell{Content: untouchedCell, Width: 1}, screen.Bounds())
+			view.Draw(screen, area)
+			rendered := screen.Render()
+
+			layout := view.layoutRectsFor(area)
+			bar := view.input.layout(layout.InputRect)
+
+			type painted struct {
+				PromptRows  []int
+				PopoverRows []int
+				PaletteRows []int
+			}
+
+			require.Equal(t, painted{
+				PromptRows:  rowsOf(bar.input),
+				PopoverRows: rowsOf(bar.popover),
+				PaletteRows: rowsOf(bar.palette),
+			}, painted{
+				PromptRows:  rowsContaining(rendered, "testuser"),
+				PopoverRows: rowsContaining(rendered, "/join", "/part"),
+				PaletteRows: rowsContaining(rendered, "fg:"),
+			})
+
+			// The transcript fills its rectangle, so the cells it
+			// reached bound the rectangle on every side.
+			require.Equal(t, layout.MessageRect, paintedBox(screen, rendered, "filler"))
+		})
+	}
+}
+
+// fillerMessages returns count messages of the given body width, each
+// containing the word "filler" so a test can find the cells they cover.
+func fillerMessages(count, width int) []domain.Event {
+	events := make([]domain.Event, count)
+	for i := range events {
+		events[i] = domain.Message{
+			Source: domain.ClientSource("inst-filler", "filler"),
+			Target: "#general",
+			Body:   strings.Repeat("filler ", width/len("filler ")),
+			At:     time.Date(2026, 4, 6, 12, 0, i, 0, time.UTC),
+		}
+	}
+
+	return events
+}
+
+// untouchedCell is what a test paints the screen with before drawing,
+// so the cells a component wrote into can be told from the cells
+// nothing wrote into.
+const untouchedCell = "."
+
+// paintedBox returns the smallest rectangle covering every cell a
+// component wrote into, on the rows its marker appears on. Drawing
+// clears the cells of the rectangle it was given before writing into
+// them, so a row runs to the rectangle's own edge even where its text
+// stops short, which a rendered string cannot show: rendering drops
+// the trailing spaces.
+func paintedBox(screen uv.Screen, rendered, marker string) uv.Rectangle {
+	box := uv.Rectangle{}
+	bounds := screen.Bounds()
+
+	for row, line := range strings.Split(rendered, "\n") {
+		if !strings.Contains(line, marker) {
+			continue
+		}
+
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			cell := screen.CellAt(x, row)
+			if cell == nil || cell.Content == untouchedCell {
+				continue
+			}
+
+			at := uv.Rect(x, row, 1, 1)
+			if box.Empty() {
+				box = at
+
+				continue
+			}
+			box = box.Union(at)
+		}
+	}
+
+	return box
+}
+
+// rowsContaining returns the rows of a rendered view whose text
+// includes any of the markers.
+func rowsContaining(view string, markers ...string) []int {
+	var rows []int
+	for row, line := range strings.Split(view, "\n") {
+		if slices.ContainsFunc(markers, func(marker string) bool {
+			return strings.Contains(line, marker)
+		}) {
+			rows = append(rows, row)
+		}
+	}
+
+	return rows
+}
+
+// rowsOf returns every row a rectangle covers.
+func rowsOf(rect uv.Rectangle) []int {
+	var rows []int
+	for row := rect.Min.Y; row < rect.Max.Y; row++ {
+		rows = append(rows, row)
+	}
+
+	return rows
 }
