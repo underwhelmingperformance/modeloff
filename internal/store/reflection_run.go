@@ -98,8 +98,9 @@ func (s *SQLiteStore) ReflectionRuns(
 }
 
 // reflectionRunsTx reads an instance's newest runs through whichever of
-// the database and a transaction the caller holds, so an inspection can
-// take them in the same read as the persona state.
+// the database and a transaction the caller holds, so
+// [SQLiteStore.PersonaInspection] can read them in the transaction it
+// reads the snapshot in.
 func reflectionRunsTx(
 	ctx context.Context,
 	queryer rowsQueryer,

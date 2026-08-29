@@ -1484,9 +1484,9 @@ woken by the manager once an inbox append has committed. A run is due
 when the instance has at least `reflectionSubstantiveThreshold`
 substantive events past its checkpoint and `reflectionCooldown` has
 passed since the last run finished, whatever that run's outcome was.
-The worker takes a bounded snapshot of the persona state and of the
-oldest `reflectionInputEventLimit` pending events, and reflects on
-that.
+The worker takes a `store.PendingReflectionSnapshot`, holding the
+instance's persona snapshot and the oldest
+`reflectionInputEventLimit` pending events, and reflects on it.
 
 The worker sits outside the window-guard authority model. It runs on
 no turn and holds no guard, so nothing it does is scoped to a window.

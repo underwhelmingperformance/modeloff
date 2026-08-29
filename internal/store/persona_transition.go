@@ -312,8 +312,8 @@ func (s *SQLiteStore) RecentPersonaTransitions(
 }
 
 // recentPersonaTransitionsTx reads through whichever of the database and
-// a transaction the caller holds, so an inspection can take the
-// transitions in the same read as the persona state.
+// a transaction the caller holds, so [SQLiteStore.PersonaInspection] can
+// read the transitions in the transaction it reads the snapshot in.
 func recentPersonaTransitionsTx(
 	ctx context.Context,
 	queryer rowsQueryer,

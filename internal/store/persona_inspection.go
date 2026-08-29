@@ -21,8 +21,9 @@ type PersonaInspectionSnapshot struct {
 	Transitions []domain.PersonaTransition
 }
 
-// PersonaInspection reads one instance's persona state, the revision it
-// came from, and its recent runs and transitions in a single transaction.
+// PersonaInspection reads one instance's persona snapshot, its parent
+// revision, and its recent runs and transitions in a single
+// transaction.
 //
 // Reflection runs on the manager's own schedule, so a reflection
 // committing between separate reads is the ordinary case, and an
