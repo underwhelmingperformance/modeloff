@@ -2576,13 +2576,19 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 	seedChannelWithMembers(t, sess, s, "#random", "testuser", "bot-b")
 
 	require.NoError(t, userPoke(ctx, t, sess))
-	events := drainEvents(t, sess, 2)
 
+	// A turn's notice follows its own `ModelDispatchDone`, so counting
+	// completions alone can stop before the notice is pumped. Reading
+	// until both have arrived terminates because both are emitted.
 	var failure *domain.ModelUnavailableError
 	var hasReply bool
+	for done := 0; done < 2 || failure == nil; {
+		evt, ok := nextEvent(t, sess)
+		require.True(t, ok, "the bus closed before the poked turns finished")
 
-	for _, evt := range events {
 		switch e := evt.(type) {
+		case domain.ModelDispatchDone:
+			done++
 		case domain.ModelUnavailableError:
 			ev := e
 			failure = &ev
@@ -2592,9 +2598,6 @@ func TestSession_Poke_api_error_emits_error_event(t *testing.T) {
 			}
 		}
 	}
-
-	require.NotNil(t, failure,
-		"dispatch failure should emit a ModelUnavailableError on the bus")
 	require.Equal(t, domain.ModelUnavailableError{Source: domain.ClientSource(testMemberID("bot-a"), "bot-a"), At: fixedTime}, *failure)
 	require.True(t, hasReply, "successful model dispatch should emit its reply Message on the wire")
 

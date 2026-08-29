@@ -157,6 +157,8 @@ const (
 	// model this instance was created with.
 	ModelFailureUnknownModel ModelFailureReason = "unknown_model"
 	// ModelFailureRateLimited is a provider asking for fewer requests.
+	// The dispatch loop reports it only once it has abandoned the turn,
+	// so the line offers the operator no further wait.
 	ModelFailureRateLimited ModelFailureReason = "rate_limited"
 	// ModelFailureBadRequest is a provider refusing the request as
 	// malformed, which is this application's fault and not the
@@ -186,7 +188,7 @@ func (r ModelFailureReason) String() string {
 	case ModelFailureUnknownModel:
 		return "names a model its provider does not serve: pick another with /add-model"
 	case ModelFailureRateLimited:
-		return "is being rate limited by its provider: it will answer again shortly"
+		return "was rate limited by its provider, and the turn was given up"
 	case ModelFailureBadRequest:
 		return "sent a request its provider would not accept, which is a fault " +
 			"in this application and not in the configuration"

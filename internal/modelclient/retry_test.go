@@ -40,6 +40,11 @@ type turnPrompt struct {
 type countingAPI struct {
 	apitest.Fake
 
+	// beforeReturn runs on the dispatch goroutine once the call has been
+	// recorded, so a test can move server state while the turn is
+	// upstream.
+	beforeReturn func()
+
 	mu    sync.Mutex
 	calls []turnPrompt
 	errs  []error
@@ -58,6 +63,9 @@ func (c *countingAPI) SendEvents(
 	defer c.mu.Unlock()
 
 	c.calls = append(c.calls, turnPrompt{history: bodies(history.Messages()), triggers: bodies(events)})
+	if c.beforeReturn != nil {
+		c.beforeReturn()
+	}
 
 	if len(c.calls) <= len(c.errs) {
 		return api.CompletionResult{}, c.errs[len(c.calls)-1]

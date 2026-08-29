@@ -278,14 +278,17 @@ options cannot grant capabilities.
   an expired deadline.
   The wait runs on a goroutine of its own and the turn returns to the
   loop's select, so the queue keeps draining while it runs; a second
-  failure stays failed. A turn raised for the same window during the
-  delay absorbs the pending turn's explicit triggers. `fileBatch` has
-  already filed those events into the ring, so the merge removes their
-  transcript copies and keeps each event in one prompt role. PART or
-  KICK cancels pending work for the closed window, and a later JOIN
-  starts a new backlog. The loop's `redispatchSet` is where the two
-  arms agree, and it is loop-owned, so it needs no lock. A panic in
-  the loop ends the connection through `Session.Disconnect`, so a dead
+  failure stays failed. The window receives one notice per abandoned
+  turn, raised after the last `ModelDispatchDone`, so every reason it
+  can name reads as final. A window closed mid-turn and a cancelled
+  context raise none. A turn raised for the same
+  window during the delay absorbs the pending turn's explicit triggers.
+  `fileBatch` has already filed those events into the ring, so the merge
+  removes their transcript copies and keeps each event in one prompt
+  role. PART or KICK cancels pending work for the closed window, and a
+  later JOIN starts a new backlog. The loop's `redispatchSet` is where
+  the two arms agree, and it is loop-owned, so it needs no lock. A panic
+  in the loop ends the connection through `Session.Disconnect`, so a dead
   dispatch goroutine leaves a QUIT in the channel and no orphaned
   subscription behind it.
 

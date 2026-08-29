@@ -228,14 +228,25 @@ func (mc *ModelClient) runBatch(ctx context.Context, batch *turnBatch, pending r
 	}
 	mc.mu.Unlock()
 
+	if err == nil {
+		return
+	}
+
+	reportCtx := trace.ContextWithSpanContext(ctx, batch.span)
+
 	var nonReplayable *nonReplayableTurnError
-	if err == nil || batch.retried || errors.As(err, &nonReplayable) || !replayableTurnError(err) {
+	if batch.retried || errors.As(err, &nonReplayable) || !replayableTurnError(err) {
+		mc.reportTurnFailure(reportCtx, batch, err)
+
 		return
 	}
 
 	if mc.scheduleRedispatch(ctx, batch, err) {
 		pending.hold(batch)
+
+		return
 	}
+	mc.reportTurnFailure(reportCtx, batch, err)
 }
 
 // replayableTurnError reports whether dispatching the batch again
@@ -361,6 +372,13 @@ type turnBatch struct {
 	// the dispatch loop once, which is what bounds a failing turn to
 	// two attempts.
 	retried bool
+
+	// span and nick are the turn's own. `runBatch` raises the failure
+	// notice after the turn has returned, a delivery carries whatever
+	// span its emitting context holds, and `mc.nick()` reads live server
+	// state that a NICK during the turn's tool loop has already moved.
+	span trace.SpanContext
+	nick domain.Nick
 }
 
 // fileBatch files `deliveries` into the per-channel history buffers
@@ -703,10 +721,11 @@ func sourceIs(source domain.Source, id domain.InstanceID) bool {
 // `ModelUnavailableError` an upstream failure would raise. Nothing
 // was unavailable; the client was closed.
 //
-// The returned error is what [ModelClient.runBatch] classifies to
-// decide whether the turn is worth a second attempt. A turn with no
-// API client behind it returns nil: no key configured is a state the
-// user changes, not a condition that passes.
+// [ModelClient.runBatch] classifies the returned error to decide
+// whether the turn is worth a second attempt, and raises the operator
+// diagnostic once no attempt is left. A turn with no API client behind
+// it emits its own `ModelUnavailableError` and returns nil, so the loop
+// treats it as complete.
 func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error {
 	inst := mc.instance
 	nick := mc.nick()
@@ -720,6 +739,8 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 	}
 
 	return mc.inSpan(ctx, "modelclient.dispatch_turn", attrs, func(ctx context.Context, span trace.Span) error {
+		batch.span = span.SpanContext()
+		batch.nick = nick
 		for _, cause := range batch.causes {
 			if cause.IsValid() {
 				span.AddLink(trace.Link{SpanContext: cause})
@@ -731,12 +752,10 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 			return nil
 		}
 		if err != nil {
-			return mc.reportTurnFailure(ctx, ch, nick, err)
+			return err
 		}
 		if batch.historyErr != nil {
-			return &nonReplayableTurnError{
-				Err: mc.reportTurnFailure(ctx, ch, nick, batch.historyErr),
-			}
+			return &nonReplayableTurnError{Err: batch.historyErr}
 		}
 
 		window, err := dispatchWindowFor(ctx, guard, ch)
@@ -744,7 +763,7 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 			return nil
 		}
 		if err != nil {
-			return mc.reportTurnFailure(ctx, ch, nick, err)
+			return err
 		}
 
 		apiClient := mc.apiFn()
@@ -786,7 +805,7 @@ func (mc *ModelClient) dispatchTurn(ctx context.Context, batch *turnBatch) error
 			if errors.Is(err, errDispatchWindowClosed) {
 				return nil
 			}
-			return mc.reportTurnFailure(ctx, ch, nick, observability.ErrWithKind(err, observability.ErrorKindDispatch))
+			return observability.ErrWithKind(err, observability.ErrorKindDispatch)
 		}
 
 		return nil
@@ -844,22 +863,29 @@ func invitationBatch(batch *turnBatch) bool {
 	return true
 }
 
-// reportTurnFailure raises the operator diagnostic for a turn that
-// could not run and hands the error back for the span to record. A
-// context cancellation is teardown, not a failure of the model, so
-// it is recorded on the span without a diagnostic.
-func (mc *ModelClient) reportTurnFailure(ctx context.Context, ch domain.ChannelName, nick domain.Nick, err error) error {
+// reportTurnFailure raises the operator diagnostic for a turn
+// [ModelClient.runBatch] has abandoned. No further attempt follows it,
+// so a reason may not name a wait or count the attempts made: a
+// replayable failure reaches here both after its retry was refused and
+// when scheduling that retry failed.
+//
+// A cancelled context is teardown and not a failure of the model, so it
+// raises nothing. `dispatchTurn` has already recorded the error on the
+// turn's span.
+func (mc *ModelClient) reportTurnFailure(ctx context.Context, batch *turnBatch, err error) {
 	if errors.Is(err, context.Canceled) {
-		return err
+		return
 	}
 
-	mc.sess.EmitModelFailure(ctx, protocol.WindowTargetForKey(ch), domain.ModelUnavailableError{
-		Source: domain.ClientSource(mc.instance.ID(), nick),
-		Reason: modelFailureReason(err),
-		At:     mc.sess.Now(),
-	})
-
-	return err
+	mc.sess.EmitModelFailure(
+		ctx,
+		protocol.WindowTargetForKey(batch.channel),
+		domain.ModelUnavailableError{
+			Source: domain.ClientSource(mc.instance.ID(), batch.nick),
+			Reason: modelFailureReason(err),
+			At:     mc.sess.Now(),
+		},
+	)
 }
 
 // modelFailureReason classifies what stopped a turn, so the line the

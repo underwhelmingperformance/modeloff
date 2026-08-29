@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -47,13 +48,19 @@ type fakeSession struct {
 	// capability the tool filter reads.
 	caps command.CapabilityHolder
 
-	mu          sync.Mutex
-	sub         *fakeSubscription
-	actor       *domain.Instance
-	subscribes  int
-	disconnects []protocol.ClientID
-	dmReads     []dmRead
-	emitted     []domain.ProtocolEvent
+	// tracer, when non-nil, is what the client traces under, so a test
+	// can read back the spans a turn opened and the span each emission
+	// was made from.
+	tracer trace.TracerProvider
+
+	mu           sync.Mutex
+	sub          *fakeSubscription
+	actor        *domain.Instance
+	subscribes   int
+	disconnects  []protocol.ClientID
+	dmReads      []dmRead
+	emitted      []domain.ProtocolEvent
+	failureSpans []trace.SpanContext
 }
 
 // dmRead records one subscription scrollback read, so a test can pin
@@ -187,11 +194,23 @@ func (f *fakeSession) BeginModelDispatch(
 }
 
 func (f *fakeSession) EmitModelFailure(
-	_ context.Context,
+	ctx context.Context,
 	_ protocol.WindowTarget,
 	event domain.ModelUnavailableError,
 ) {
+	f.mu.Lock()
+	f.failureSpans = append(f.failureSpans, trace.SpanContextFromContext(ctx))
+	f.mu.Unlock()
 	f.recordModelEvent(event)
+}
+
+// failureSpanContexts is the span each operator notice was emitted
+// under, in the order the notices were raised.
+func (f *fakeSession) failureSpanContexts() []trace.SpanContext {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.failureSpans)
 }
 
 func (f *fakeSession) recordModelEvent(evt domain.ModelClientEvent) {
@@ -229,7 +248,13 @@ func (f *fakeSession) ClientCaps(protocol.ClientID) command.CapabilityHolder {
 	return f.caps
 }
 
-func (f *fakeSession) TracerProvider() trace.TracerProvider { return noop.NewTracerProvider() }
+func (f *fakeSession) TracerProvider() trace.TracerProvider {
+	if f.tracer != nil {
+		return f.tracer
+	}
+
+	return noop.NewTracerProvider()
+}
 
 func (f *fakeSession) GetWindow(_ context.Context, name domain.ChannelName) (domain.Window, error) {
 	return domain.NewChannelWindow(name, f.Now()), nil
