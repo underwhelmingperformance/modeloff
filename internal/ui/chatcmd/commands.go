@@ -1397,33 +1397,33 @@ func (c QuitCommand) RunTool(ctx context.Context, tc modelclient.ToolContext) mo
 	return sendToolCommand(ctx, tc, c, "shut down and left all channels")
 }
 
-// PersonasCommand represents `/personas`.
-type PersonasCommand struct{}
+// PersonaTemplatesCommand represents `/templates`.
+type PersonaTemplatesCommand struct{}
 
 // Run implements Command.
-func (PersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
+func (PersonaTemplatesCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		personas, err := rc.Manager.ListPersonaTemplates(ctx)
 		if err != nil {
-			return rc.errorResult("personas", err)
+			return rc.errorResult("templates", err)
 		}
 
-		return PersonasListResult(personas)
+		return PersonaTemplatesResult(personas)
 	}
 }
 
-// RegeneratePersonasCommand represents `/regenerate-personas`.
-type RegeneratePersonasCommand struct{}
+// RegeneratePersonaTemplatesCommand represents `/regenerate-templates`.
+type RegeneratePersonaTemplatesCommand struct{}
 
 // Run implements Command.
-func (RegeneratePersonasCommand) Run(ctx context.Context, rc Context) tea.Cmd {
+func (RegeneratePersonaTemplatesCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
-		personas, err := rc.Manager.RegeneratePersonas(ctx)
+		personas, err := rc.Manager.RegeneratePersonaTemplates(ctx)
 		if err != nil {
-			return rc.errorResult("regenerate-personas", err)
+			return rc.errorResult("regenerate-templates", err)
 		}
 
-		return PersonasRegeneratedResult{Count: len(personas)}
+		return PersonaTemplatesRegeneratedResult{Count: len(personas)}
 	}
 }
 

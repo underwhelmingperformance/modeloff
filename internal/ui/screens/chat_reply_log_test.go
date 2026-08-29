@@ -60,7 +60,7 @@ func withoutAt(ev domain.PersistableEvent) domain.PersistableEvent {
 	case domain.CommandError:
 		e.At = time.Time{}
 		return e
-	case domain.PersonasList:
+	case domain.PersonaTemplatesList:
 		e.At = time.Time{}
 		return e
 	default:
@@ -75,11 +75,11 @@ func TestChatScreen_PersonasList_persists_to_user_reply_log(t *testing.T) {
 		{ID: "p1", Description: "first", Origin: domain.PersonaGenerated},
 	}
 
-	_, cmd := f.screen.Update(chatcmd.PersonasListResult(personas))
+	_, cmd := f.screen.Update(chatcmd.PersonaTemplatesResult(personas))
 	collectMsgs(cmd)
 
 	require.Equal(t, []domain.PersistableEvent{
-		domain.PersonasList{Personas: personas},
+		domain.PersonaTemplatesList{Personas: personas},
 	}, userReplies(t, f.store))
 }
 

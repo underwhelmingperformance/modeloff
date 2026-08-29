@@ -1063,7 +1063,7 @@ func TestChatScreen_WelcomeState_responsive(t *testing.T) {
 	tm.WaitFor("Welcome to modeloff", "/join #general")
 }
 
-func TestChatScreen_personas_command(t *testing.T) {
+func TestChatScreen_templates_command(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
 
@@ -1073,26 +1073,26 @@ func TestChatScreen_personas_command(t *testing.T) {
 	tm := newChatApp(t, h)
 	waitForChannelSeedDrain(tm)
 
-	tm.Submit("/personas")
+	tm.Submit("/templates")
 	tm.WaitFor("pirate (user): A salty sea dog", "wizard (user): A wise old mage")
 }
 
-func TestChatScreen_personas_command_empty(t *testing.T) {
+func TestChatScreen_templates_command_empty(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
-	tm.Submit("/personas")
-	tm.WaitFor("No personas defined.")
+	tm.Submit("/templates")
+	tm.WaitFor("No persona templates defined.")
 }
 
-func TestChatScreen_regenerate_personas_command(t *testing.T) {
+func TestChatScreen_regenerate_templates_command(t *testing.T) {
 	h := newTestSession(t)
 	uitest.SeedChannel(t, h.user, "#general")
 
 	tm := newChatAppWithConfig(t, h, newFakeConfigStore())
 	waitForChannelSeedDrain(tm)
 
-	tm.Submit("/regenerate-personas")
-	tm.WaitFor("Generated")
+	tm.Submit("/regenerate-templates")
+	tm.WaitFor("generated persona templates.")
 }
 
 func TestChatScreen_config_persona_command(t *testing.T) {

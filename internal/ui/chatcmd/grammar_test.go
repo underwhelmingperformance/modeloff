@@ -103,7 +103,7 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "kill",
 		"msg", "query", "close", "nick", "me", "whois", "config",
-		"personas", "persona", "regenerate-personas",
+		"templates", "persona", "regenerate-templates",
 		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
@@ -114,7 +114,7 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "close", "nick", "topic", "mode", "me", "whois", "config",
-		"personas", "persona", "regenerate-personas",
+		"templates", "persona", "regenerate-templates",
 		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
@@ -130,7 +130,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "close", "nick", "topic", "mode", "me", "whois", "config",
-		"personas", "persona", "regenerate-personas",
+		"templates", "persona", "regenerate-templates",
 		"help", "clear", "poke", "quit", "pass",
 	}, names)
 
@@ -639,7 +639,7 @@ func TestComplete_add_model_suggests_only_live_models(t *testing.T) {
 	require.Equal(t, []string{"anthropic/haiku", "anthropic/sonnet"}, suggestionValues(c))
 }
 
-func TestComplete_add_model_persona_suggests_personas(t *testing.T) {
+func TestComplete_add_model_persona_suggests_templates(t *testing.T) {
 	c := complete(t, "/add-model somemodel --persona ")
 
 	require.True(t, c.Visible)
@@ -734,16 +734,16 @@ func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing
 	require.Equal(t, []command.Suggestion(nil), c.Suggestions)
 }
 
-func TestParse_personas_command(t *testing.T) {
-	cmd, err := testParser.Parse("/personas")
+func TestParse_templates_command(t *testing.T) {
+	cmd, err := testParser.Parse("/templates")
 	require.NoError(t, err)
-	require.IsType(t, PersonasCommand{}, cmd)
+	require.IsType(t, PersonaTemplatesCommand{}, cmd)
 }
 
-func TestParse_regenerate_personas_command(t *testing.T) {
-	cmd, err := testParser.Parse("/regenerate-personas")
+func TestParse_regenerate_templates_command(t *testing.T) {
+	cmd, err := testParser.Parse("/regenerate-templates")
 	require.NoError(t, err)
-	require.IsType(t, RegeneratePersonasCommand{}, cmd)
+	require.IsType(t, RegeneratePersonaTemplatesCommand{}, cmd)
 }
 
 func TestParse_clear_command(t *testing.T) {

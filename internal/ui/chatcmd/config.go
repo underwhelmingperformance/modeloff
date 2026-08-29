@@ -161,8 +161,8 @@ func setReflectionModel(
 // subcommand, prints every setting's current value, following the
 // irssi `/set` convention. Each subcommand implements the same
 // behaviour for its own bare form (e.g. [APIKeyConfig.Run]).
-// [PersonaConfig] is excluded: it names a collection of personas,
-// not a single value, and `/personas` already lists them.
+// [PersonaConfig] is excluded: it names a collection of templates,
+// not a single value, and `/templates` already lists them.
 func (c ConfigCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		cfg, err := rc.Config.Load(ctx)

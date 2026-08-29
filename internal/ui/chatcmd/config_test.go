@@ -55,7 +55,7 @@ func (f *fakeManagerAPI) ListPersonaTemplates(context.Context) ([]domain.Persona
 	return nil, nil
 }
 
-func (f *fakeManagerAPI) RegeneratePersonas(context.Context) ([]domain.PersonaTemplate, error) {
+func (f *fakeManagerAPI) RegeneratePersonaTemplates(context.Context) ([]domain.PersonaTemplate, error) {
 	return nil, nil
 }
 

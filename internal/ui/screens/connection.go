@@ -305,7 +305,7 @@ func (s ConnectionScreen) runLoadModels() tea.Cmd {
 // the user reaches for it. Generation is best-effort: failures are
 // logged but never surface as an animation error, since the chat
 // path can still proceed (a model added without a persona just
-// gets none, and `/regenerate-personas` remains available).
+// gets none, and `/regenerate-templates` remains available).
 func (s ConnectionScreen) runEnsurePersonas() tea.Cmd {
 	mgr := s.cfg.Manager
 

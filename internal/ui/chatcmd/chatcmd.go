@@ -175,14 +175,15 @@ type TimestampFormatSetResult struct {
 	Reset  bool
 }
 
-// PersonasListResult is the chat-screen-side dispatch marker
-// for a `/personas` reply. The named-slice shape keeps the
+// PersonaTemplatesResult is the chat-screen-side dispatch marker
+// for a `/templates` reply. The named-slice shape keeps the
 // result distinguishable from a bare `[]domain.PersonaTemplate` in a
 // type switch.
-type PersonasListResult []domain.PersonaTemplate
+type PersonaTemplatesResult []domain.PersonaTemplate
 
-// PersonasRegeneratedResult signals that personas were regenerated.
-type PersonasRegeneratedResult struct {
+// PersonaTemplatesRegeneratedResult reports how many generated
+// templates were replaced.
+type PersonaTemplatesRegeneratedResult struct {
 	Count int
 }
 

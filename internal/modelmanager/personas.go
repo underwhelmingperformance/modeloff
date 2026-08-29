@@ -120,11 +120,11 @@ func excludeHeld(personas []domain.PersonaTemplate, held map[string]bool) []doma
 	return unheld
 }
 
-// RegeneratePersonas generates a fresh set of personas via the
-// API, then replaces all generated personas in the store. The API
-// call happens first so that the existing pool is preserved if
-// generation fails. User-defined personas are never touched.
-func (m *Manager) RegeneratePersonas(ctx context.Context) ([]domain.PersonaTemplate, error) {
+// RegeneratePersonaTemplates generates persona templates through the
+// API, then replaces the generated templates in the store. The API call
+// happens first so that the existing pool is preserved if generation
+// fails. An operator's own templates are never touched.
+func (m *Manager) RegeneratePersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error) {
 	var personas []domain.PersonaTemplate
 
 	err := m.inSpan(ctx, "modelmanager.regenerate_personas", nil, func(ctx context.Context, _ trace.Span) error {

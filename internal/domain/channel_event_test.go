@@ -179,7 +179,7 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 		},
 		{
 			name: "personas list",
-			event: domain.PersonasList{
+			event: domain.PersonaTemplatesList{
 				Personas: []domain.PersonaTemplate{
 					{ID: "pirate", Description: "A salty sea dog", Origin: domain.PersonaUser},
 					{ID: "wizard", Description: "A wise old mage", Origin: domain.PersonaGenerated},
@@ -248,7 +248,7 @@ func TestPersistableEvent_partition(t *testing.T) {
 		"list reply":          domain.ListReply{},
 		"command error":       domain.CommandError{},
 		"system notice":       domain.SystemNotice{},
-		"personas list":       domain.PersonasList{},
+		"personas list":       domain.PersonaTemplatesList{},
 	}
 
 	classify := func(e domain.PersistableEvent) classification {

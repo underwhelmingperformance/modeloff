@@ -362,7 +362,7 @@ func TestManager_RegeneratePersonas_preserves_user_defined(t *testing.T) {
 		ID: "old-gen", Description: "Old generated.", Origin: domain.PersonaGenerated,
 	}))
 
-	got, err := fx.mgr.RegeneratePersonas(ctx)
+	got, err := fx.mgr.RegeneratePersonaTemplates(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []domain.PersonaTemplate{
 		{ID: "new-gen", Description: "Freshly generated.", Origin: domain.PersonaGenerated},

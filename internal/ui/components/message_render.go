@@ -70,7 +70,7 @@ func renderChannelEvent[C command.KindProvider](
 		return wrap.Render(renderListReplyEvent(e))
 	case domain.ListEnd:
 		return wrap.Render(theme.SystemEvent.Render("*** End of /list"))
-	case domain.PersonasList:
+	case domain.PersonaTemplatesList:
 		return wrap.Render(renderPersonasListEvent(e))
 	case domain.CommandError:
 		return wrap.Render(theme.Error.Render("✗ " + e.Err))
@@ -325,9 +325,9 @@ func renderListReplyEvent(r domain.ListReply) string {
 	return theme.SystemEvent.Render("*** " + line)
 }
 
-func renderPersonasListEvent(pl domain.PersonasList) string {
+func renderPersonasListEvent(pl domain.PersonaTemplatesList) string {
 	if len(pl.Personas) == 0 {
-		return theme.SystemEvent.Render("*** No personas defined.")
+		return theme.SystemEvent.Render("*** No persona templates defined.")
 	}
 
 	var parts []string

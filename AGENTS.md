@@ -915,8 +915,8 @@ have a wire counterpart: `/join`, `/part`, `/list`, `/add-model`,
 `/me`, `/whois`, and `/quit` (for example `ListCommand` returns
 `protocol.List` and `WhoisCommand` returns `protocol.Whois`). The
 remaining commands are purely UI-side, have no wire counterpart, and
-do not implement `ToCommand`: `/config`, `/query`, `/personas`,
-`/persona`, `/regenerate-personas`, `/help`, `/clear`, `/poke`, and
+do not implement `ToCommand`: `/config`, `/query`, `/templates`,
+`/persona`, `/regenerate-templates`, `/help`, `/clear`, `/poke`, and
 the tool-only `pass`.
 
 Whether a command becomes a model-callable tool is a separate question
@@ -1582,6 +1582,12 @@ from a reflection in the history. `--rollback` takes a pointer so that
 `internal/command` builds the tool registry from the presence of that
 tag, so leaving it off keeps the command out of every model's tools.
 That is the write-authority split the four levels rest on.
+
+`/templates` and `/regenerate-templates` act on the persona pool. A pool
+row is a template: the text `ADDMODEL` copies into a new instance's
+revision zero. Editing one changes nothing about an instance already
+running, so the pool commands and `/persona` reach different things,
+and their names say which.
 
 Two `/config` settings control reflection. `reflection-mode` takes
 `disabled`, `shadow` or `active`, and an installation that has never

@@ -16,8 +16,8 @@ import (
 )
 
 // routeConfigResults answers the results a `/config` change reports,
-// plus the persona-pool results `/personas` and
-// `/regenerate-personas` share with `/config persona`. Each renders a
+// plus the persona-pool results `/templates` and
+// `/regenerate-templates` share with `/config persona`. Each renders a
 // confirmation line in the window the command was issued from. Three
 // of the settings are ones the running screen reads for itself, the
 // API key, the highlight words and the timestamp format, and those
@@ -59,8 +59,8 @@ func (s ChatScreen) routeConfigResults(
 	case chatcmd.TimestampFormatSetResult:
 		return s, s.handleTimestampFormatSet(issuingWindow, msg), true
 
-	case chatcmd.PersonasListResult:
-		personasList := domain.PersonasList{
+	case chatcmd.PersonaTemplatesResult:
+		personasList := domain.PersonaTemplatesList{
 			Personas: msg,
 			At:       time.Now(),
 		}
@@ -70,8 +70,9 @@ func (s ChatScreen) routeConfigResults(
 			s.recordReply(nil, personasList),
 		), true
 
-	case chatcmd.PersonasRegeneratedResult:
-		return s, s.notice(issuingWindow, fmt.Sprintf("Generated %d personas.", msg.Count)), true
+	case chatcmd.PersonaTemplatesRegeneratedResult:
+		return s, s.notice(issuingWindow,
+			fmt.Sprintf("Replaced %d generated persona templates.", msg.Count)), true
 
 	case chatcmd.PersonaSetResult:
 		return s, s.notice(issuingWindow, fmt.Sprintf("Persona %s saved.", msg.ID)), true
