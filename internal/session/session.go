@@ -232,7 +232,16 @@ type Session struct {
 
 	connectedC    chan struct{}
 	connectedOnce sync.Once
-	connectedAt   time.Time
+
+	// connectedAt is the time Connect ran, and it is the one piece of
+	// session state a caller reads without going through the command
+	// loop: the chat-screen consults it while building windows, on the
+	// Bubble Tea update goroutine, while Connect runs on the goroutine
+	// of the `tea.Cmd` that started it. A `tea.Cmd`'s result reaches
+	// the update loop through a channel, but a message that arrives
+	// before it does not wait for the connect, so the two goroutines
+	// meet here with nothing else ordering them.
+	connectedAt atomic.Pointer[time.Time]
 
 	persistenceFailures metric.Int64Counter
 
@@ -751,7 +760,11 @@ func (s *Session) Connected() <-chan struct{} {
 // from previous sessions remain in the event log without being
 // rendered.
 func (s *Session) ConnectedAt() time.Time {
-	return s.connectedAt
+	if at := s.connectedAt.Load(); at != nil {
+		return *at
+	}
+
+	return time.Time{}
 }
 
 // Shutdown closes the session's shutdown gate so that any further
@@ -854,7 +867,7 @@ func (s *Session) DrainHandlers(ctx context.Context) error {
 // the same bus during its boot-time pane.
 func (s *Session) Connect(ctx context.Context) error {
 	userHandle := s.lookupClientHandle(protocol.UserClientID)
-	if !s.connectedAt.IsZero() {
+	if s.connectedAt.Load() != nil {
 		if userHandle != nil {
 			if _, active := userHandle.connection(); !active {
 				return s.reactivateUser(ctx, userHandle)
@@ -885,7 +898,7 @@ func (s *Session) Connect(ctx context.Context) error {
 		if err := s.store.SetSessionActive(ctx, connectedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("set session active: %w", err)
 		}
-		s.connectedAt = connectedAt
+		s.connectedAt.Store(&connectedAt)
 
 		if userClient := s.lookupClientHandle(protocol.UserClientID); userClient != nil {
 			userClient.activateConnection()
@@ -951,7 +964,7 @@ func (s *Session) reactivateUser(ctx context.Context, userHandle *serverClient) 
 			}
 
 			userHandle.activateConnection()
-			s.connectedAt = connectedAt
+			s.connectedAt.Store(&connectedAt)
 			s.deliverToClient(ctx, user.ID(), domain.Welcome{
 				ServerName: domain.StatusServerName,
 				Nick:       user.Nick(),
