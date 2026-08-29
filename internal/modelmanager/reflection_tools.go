@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
@@ -57,6 +58,36 @@ type reflectionTools struct {
 	// asks for history without saying where gets the events immediately
 	// preceding the ones it has just read.
 	checkpoint domain.ReflectionSequence
+
+	// recalled is every event a tool returned during this run. What the
+	// instance went back to read is the signal for what still matters to
+	// it, so a run that reaches a commit refreshes the salience of the
+	// experiences those events are behind. The set is written nowhere
+	// until then: the worker holds no authority beyond its own single
+	// commit, and a run that fails or is discarded did not finish the
+	// thought.
+	recalled map[domain.ReflectionSequence]struct{}
+}
+
+// recall records the events one tool result returned.
+func (t *reflectionTools) recall(events []store.ReflectionEvent) {
+	if t.recalled == nil {
+		t.recalled = make(map[domain.ReflectionSequence]struct{}, len(events))
+	}
+	for _, event := range events {
+		t.recalled[event.Sequence] = struct{}{}
+	}
+}
+
+// recalledSequences returns what the run read back, in order.
+func (t *reflectionTools) recalledSequences() []domain.ReflectionSequence {
+	sequences := make([]domain.ReflectionSequence, 0, len(t.recalled))
+	for sequence := range t.recalled {
+		sequences = append(sequences, sequence)
+	}
+	slices.Sort(sequences)
+
+	return sequences
 }
 
 func newReflectionTools(
@@ -232,9 +263,13 @@ func (t *reflectionTools) windowTarget(name string) protocol.WindowTarget {
 	return nil
 }
 
+// render turns one tool result into the event shape the request already
+// carries, and records what the instance read back on the way through.
 func (t *reflectionTools) render(
 	events []store.ReflectionEvent,
 ) []api.ReflectionInputEvent {
+	t.recall(events)
+
 	rendered := make([]api.ReflectionInputEvent, 0, len(events))
 	for _, event := range events {
 		rendered = append(rendered, reflectionInputEvent(event, t.aliases))

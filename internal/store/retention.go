@@ -103,6 +103,8 @@ func (s *SQLiteStore) retentionPasses() []retentionPass {
 		{"dm", s.pruneAllDMEvents},
 		{"model_turns", s.pruneModelTurns},
 		{"memories", s.pruneMemories},
+		{"experiences", s.pruneExperiences},
+		{"transitions", s.pruneTransitions},
 	}
 }
 

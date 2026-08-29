@@ -84,6 +84,12 @@ type PersonaReflectionAcceptance struct {
 	Amendments              []PersonaAmendmentDraft
 	Retract                 []domain.PersonaAmendmentID
 	Consolidate             []domain.PersonaAmendmentID
+
+	// RecalledSources is every event the run read back through its recall
+	// tools. The experiences those events are behind have their salience
+	// refreshed, so an instance that keeps returning to an episode keeps
+	// it live.
+	RecalledSources []domain.ReflectionSequence
 }
 
 // PersonaReflectionCommit is the complete durable state produced by one
@@ -213,6 +219,10 @@ func (s *SQLiteStore) CommitPersonaReflection(
 		return PersonaReflectionCommit{}, err
 	}
 
+	if err := refreshRecalledSalienceTx(ctx, tx, acceptance); err != nil {
+		return PersonaReflectionCommit{}, err
+	}
+
 	revision, err := nextPersonaRevisionTx(
 		ctx, tx, acceptance, experiences, experienceByKey, amendments,
 	)
@@ -332,12 +342,15 @@ func insertPersonaExperiencesTx(
 		}
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO persona_experiences
-				(instance_id, kind, summary, subject_id, confidence, occurred_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+				(instance_id, kind, summary, subject_id, confidence, occurred_at,
+				 created_at, last_cited_at, salience_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			acceptance.InstanceID, draft.Kind, draft.Summary, draft.SubjectID,
 			draft.Confidence, formatTime(draft.OccurredAt),
 			formatTime(acceptance.FinishedAt),
+			formatTime(acceptance.FinishedAt),
+			formatTime(domain.SalienceAt(draft.Confidence, acceptance.FinishedAt)),
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("insert persona experience: %w", err)
@@ -360,7 +373,10 @@ func insertPersonaExperiencesTx(
 			ID: experienceID, InstanceID: acceptance.InstanceID,
 			Kind: draft.Kind, Summary: draft.Summary, SubjectID: draft.SubjectID,
 			Confidence: draft.Confidence, OccurredAt: draft.OccurredAt,
-			CreatedAt: acceptance.FinishedAt, Sources: slices.Clone(draft.Sources),
+			CreatedAt:   acceptance.FinishedAt,
+			LastCitedAt: acceptance.FinishedAt,
+			SalienceAt:  domain.SalienceAt(draft.Confidence, acceptance.FinishedAt),
+			Sources:     slices.Clone(draft.Sources),
 		})
 	}
 
@@ -1044,15 +1060,15 @@ func personaExperiencesTx(
 	for _, id := range ids {
 		var experience domain.Experience
 		var subject sql.NullString
-		var occurredAt, createdAt string
+		var occurredAt, createdAt, lastCitedAt, salienceAt string
 		if err := tx.QueryRowContext(ctx, `
 			SELECT id, instance_id, kind, summary, subject_id, confidence,
-			       occurred_at, created_at
+			       occurred_at, created_at, last_cited_at, salience_at
 			FROM persona_experiences WHERE id = ?
 		`, id).Scan(
 			&experience.ID, &experience.InstanceID, &experience.Kind,
 			&experience.Summary, &subject, &experience.Confidence,
-			&occurredAt, &createdAt,
+			&occurredAt, &createdAt, &lastCitedAt, &salienceAt,
 		); err != nil {
 			return nil, fmt.Errorf("read persona experience %d: %w", id, err)
 		}
@@ -1061,6 +1077,14 @@ func personaExperiencesTx(
 			experience.SubjectID = &subjectID
 		}
 		var err error
+		experience.LastCitedAt, err = parseTime(lastCitedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse persona experience citation: %w", err)
+		}
+		experience.SalienceAt, err = parseTime(salienceAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse persona experience salience: %w", err)
+		}
 		experience.OccurredAt, err = parseTime(occurredAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse persona experience occurrence: %w", err)

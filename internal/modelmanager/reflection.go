@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -210,6 +211,10 @@ func (m *Manager) runReflection(
 		m.recordReflectionRun(ctx, stored, baseRun)
 		return
 	}
+	// What the instance went back and read is the signal for what still
+	// matters to it, and it is written only here: a run that failed or was
+	// discarded did not finish the thought.
+	acceptance.RecalledSources = tools.recalledSequences()
 	commit, err := stored.CommitPersonaReflection(ctx, acceptance)
 	if err != nil {
 		if errors.Is(err, store.ErrPersonaLineageChanged) {
@@ -331,10 +336,24 @@ func reflectionAPIInput(
 		events = append(events, reflectionInputEvent(event, aliases))
 	}
 
-	experiences := make(
-		[]api.ReflectionInputExperience, 0, len(snapshot.Persona.Experiences),
-	)
-	for _, experience := range snapshot.Persona.Experiences {
+	// The revision carries every experience it has accepted that the
+	// retention backstop has not taken away, so the request would grow
+	// with the instance. Send the most salient of them: what the instance
+	// has gone back to, ahead of what merely happened last.
+	ranked := slices.Clone(snapshot.Persona.Experiences)
+	slices.SortStableFunc(ranked, func(first, second domain.Experience) int {
+		if bySalience := second.SalienceAt.Compare(first.SalienceAt); bySalience != 0 {
+			return bySalience
+		}
+
+		return int(second.ID - first.ID)
+	})
+	if len(ranked) > maxReflectionInputExperiences {
+		ranked = ranked[:maxReflectionInputExperiences]
+	}
+
+	experiences := make([]api.ReflectionInputExperience, 0, len(ranked))
+	for _, experience := range ranked {
 		entry := api.ReflectionInputExperience{
 			Kind: experience.Kind, Summary: experience.Summary,
 			Confidence: experience.Confidence, OccurredAt: experience.OccurredAt,

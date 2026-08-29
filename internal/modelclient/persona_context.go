@@ -193,12 +193,15 @@ func relevantPersonaExperiences(
 		}
 		relevant = append(relevant, candidate)
 	}
+	// An experience about somebody in the window comes first, because the
+	// block is about the people here. Salience decides the rest: it ranks
+	// what the instance has gone back to over what merely happened last.
 	slices.SortStableFunc(relevant, func(a, b relevantPersonaExperience) int {
 		if a.priority != b.priority {
 			return a.priority - b.priority
 		}
-		if byTime := b.experience.OccurredAt.Compare(a.experience.OccurredAt); byTime != 0 {
-			return byTime
+		if bySalience := b.experience.SalienceAt.Compare(a.experience.SalienceAt); bySalience != 0 {
+			return bySalience
 		}
 
 		return int(b.experience.ID - a.experience.ID)

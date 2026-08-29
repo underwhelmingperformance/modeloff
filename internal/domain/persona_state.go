@@ -17,8 +17,8 @@ type PersonaTemplateProvenance struct {
 	DescriptionHash string
 }
 
-// PersonaRevisionID identifies one immutable revision of an instance's
-// evolving personality state.
+// PersonaRevisionID identifies one revision of an instance's evolving
+// personality state.
 type PersonaRevisionID int64
 
 // ExperienceID identifies one reflection-derived experience.
@@ -136,11 +136,14 @@ type PersonaCounts struct {
 	Tendencies  int               `json:"tendencies,omitzero"`
 }
 
-// PersonaRevision is one immutable point in an instance's persona
-// history. Description is the persona in force while this revision is
-// active. Revision zero has no parent, experiences or amendments, and its
-// description is [PersonaLineage.Baseline]: it is the persona the instance
-// was created with, and no reflection produced it.
+// PersonaRevision is one point in an instance's persona history. No
+// reflection rewrites one; what can change is which experiences a
+// revision still names, because the storage backstop unlinks an
+// experience it removes from every revision that held it. Description is
+// the persona in force while this revision is active. Revision zero has
+// no parent, experiences or amendments, and its description is
+// [PersonaLineage.Baseline]: it is the persona the instance was created
+// with, and no reflection produced it.
 //
 // DescriptionEvidence names the experiences the description was built from,
 // which is what an operator reads to judge whether an accepted change was
@@ -168,16 +171,65 @@ type ReflectionEventRef struct {
 // Experience is one occasion a reflection accepted, and what the instance
 // made of it. [ExperienceKind] says which: something it observed, a
 // reading it drew, or a claim somebody made.
+//
+// No reflection removes an experience. What changes is how live it is:
+// LastCitedAt records when a revision last drew on it, either as evidence
+// for a description or a tendency, or because the instance went back and
+// read it during a reflection that reached a commit. SalienceAt is the
+// ordering key that follows from it, and [SalienceAt] is what computes it.
+//
+// The storage backstop does remove one, from the bottom of that ranking
+// and never one an active description or tendency cites. An instance
+// that has accumulated more than the headroom therefore has old
+// revisions naming fewer experiences than they were committed with, and
+// a rollback to one of those restores the description and the
+// experiences that are left.
 type Experience struct {
-	ID         ExperienceID
-	InstanceID InstanceID
-	Kind       ExperienceKind
-	Summary    string
-	SubjectID  *InstanceID
-	Confidence Confidence
-	OccurredAt time.Time
-	CreatedAt  time.Time
-	Sources    []ReflectionEventRef
+	ID          ExperienceID
+	InstanceID  InstanceID
+	Kind        ExperienceKind
+	Summary     string
+	SubjectID   *InstanceID
+	Confidence  Confidence
+	OccurredAt  time.Time
+	CreatedAt   time.Time
+	LastCitedAt time.Time
+	SalienceAt  time.Time
+	Sources     []ReflectionEventRef
+}
+
+// ExperienceSalienceHalfLife is how long an experience nothing cites takes
+// to become half as salient as it was.
+//
+// A month is roughly how long a working relationship keeps referring to the
+// same events, and it is the middle of the three amendment lifetimes, so a
+// tendency and the experiences behind it fade on comparable terms.
+const ExperienceSalienceHalfLife = 30 * 24 * time.Hour
+
+// SalienceAt is the ordering key for an experience: the moment it was last
+// cited, brought forward by what its confidence is worth.
+//
+// Salience decays by halves, so ranking by confidence times the decay is
+// the same as ranking by the time each experience would have been cited to
+// stand where it does. Confidence therefore buys a fixed head start rather
+// than a factor to recompute, and a stored timestamp is enough to order by
+// at any later moment.
+func SalienceAt(confidence Confidence, lastCitedAt time.Time) time.Time {
+	return lastCitedAt.Add(confidenceHalfLives(confidence) * ExperienceSalienceHalfLife)
+}
+
+// confidenceHalfLives is how many half-lives of head start each confidence
+// is worth: a medium experience counts as twice as salient as a low one,
+// and a high one as four times.
+func confidenceHalfLives(confidence Confidence) time.Duration {
+	switch confidence {
+	case ConfidenceHigh:
+		return 2
+	case ConfidenceMedium:
+		return 1
+	}
+
+	return 0
 }
 
 // PersonaAmendment is one tendency a persona revision applies. Its text,

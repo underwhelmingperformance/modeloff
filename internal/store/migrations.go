@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 18
+const SchemaVersion = 19
 
 type schemaTooNewError struct {
 	Found     int
@@ -654,6 +654,28 @@ var migrations = []migration{
 	{
 		Version: 18,
 		Apply:   normaliseStoredTimes,
+	},
+	{
+		Version: 19,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			statements := []migrationStatement{
+				{"add experience last cited", `
+					ALTER TABLE persona_experiences
+						ADD COLUMN last_cited_at TEXT NOT NULL DEFAULT ''
+				`},
+				{"add experience salience", `
+					ALTER TABLE persona_experiences
+						ADD COLUMN salience_at TEXT NOT NULL DEFAULT ''
+				`},
+			}
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+					return fmt.Errorf("%s: %w", statement.name, err)
+				}
+			}
+
+			return backfillExperienceSalience(ctx, tx)
+		},
 	},
 }
 

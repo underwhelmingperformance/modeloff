@@ -195,7 +195,9 @@ func TestSQLiteStore_commits_reflection_state_atomically_and_idempotently(t *tes
 			Summary:   "Alice's patient reproduction made the correction easy to trust.",
 			SubjectID: &subject, Confidence: domain.ConfidenceHigh,
 			OccurredAt: occurredAt, CreatedAt: finishedAt,
-			Sources: []domain.ReflectionEventRef{{Sequence: 2}, {Sequence: 3}},
+			LastCitedAt: finishedAt,
+			SalienceAt:  domain.SalienceAt(domain.ConfidenceHigh, finishedAt),
+			Sources:     []domain.ReflectionEventRef{{Sequence: 2}, {Sequence: 3}},
 		}},
 		Amendments: []domain.PersonaAmendment{{
 			ID: got.Amendments[0].ID, InstanceID: instance.ID(),
@@ -357,7 +359,9 @@ func TestSQLiteStore_successive_reflections_accumulate_experiences(t *testing.T)
 				Summary:    "A calm discussion ended with a useful answer.",
 				Confidence: domain.ConfidenceHigh,
 				OccurredAt: firstAt, CreatedAt: firstAt,
-				Sources: []domain.ReflectionEventRef{{Sequence: 1}},
+				LastCitedAt: firstAt,
+				SalienceAt:  domain.SalienceAt(domain.ConfidenceHigh, firstAt),
+				Sources:     []domain.ReflectionEventRef{{Sequence: 1}},
 			},
 			{
 				ID: 2, InstanceID: instance.ID(),
@@ -365,14 +369,16 @@ func TestSQLiteStore_successive_reflections_accumulate_experiences(t *testing.T)
 				Summary:    "Asking one more question made the explanation clearer.",
 				Confidence: domain.ConfidenceMedium,
 				OccurredAt: secondAt, CreatedAt: secondAt,
-				Sources: []domain.ReflectionEventRef{{Sequence: 2}},
+				LastCitedAt: secondAt,
+				SalienceAt:  domain.SalienceAt(domain.ConfidenceMedium, secondAt),
+				Sources:     []domain.ReflectionEventRef{{Sequence: 2}},
 			},
 		},
 		Amendments: []domain.PersonaAmendment{},
 	}, snapshot)
 }
 
-func TestSQLiteStore_rollback_and_reset_select_exact_immutable_revisions(t *testing.T) {
+func TestSQLiteStore_rollback_and_reset_select_an_exact_revision(t *testing.T) {
 	store := storetest.NewMemoryStore(t)
 	instance := domain.NewModelInstance("inst-botty", "botty", "test/model", "quiet", nil)
 	require.NoError(t, store.SaveInstance(t.Context(), instance))
@@ -740,7 +746,9 @@ func TestSQLiteStore_consolidation_drains_the_active_set_and_keeps_the_row(t *te
 				Summary:    "A figure came with its risk attached.",
 				Confidence: domain.ConfidenceHigh,
 				OccurredAt: firstAt, CreatedAt: firstAt,
-				Sources: []domain.ReflectionEventRef{{Sequence: 1}},
+				LastCitedAt: firstAt,
+				SalienceAt:  domain.SalienceAt(domain.ConfidenceHigh, firstAt),
+				Sources:     []domain.ReflectionEventRef{{Sequence: 1}},
 			}},
 			Amendments: []domain.PersonaAmendment{},
 		},

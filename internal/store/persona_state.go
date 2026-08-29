@@ -128,7 +128,9 @@ func (s *SQLiteStore) PersonaCounts(
 	return counts, nil
 }
 
-// PersonaRevision returns one immutable persona revision.
+// PersonaRevision returns one persona revision. Its description and
+// parent are fixed; which experiences it names follows the retention
+// backstop, which unlinks the ones it removes.
 func (s *SQLiteStore) PersonaRevision(
 	ctx context.Context,
 	revisionID domain.PersonaRevisionID,

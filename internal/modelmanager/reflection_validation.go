@@ -19,6 +19,13 @@ const (
 	maxReflectionAmendments    = 4
 	maxActivePersonaAmendments = 12
 	maxReflectionKeyLength     = 64
+
+	// maxReflectionInputExperiences bounds how many of an instance's
+	// experiences one request carries. No reflection removes an
+	// experience, so without a bound here the request grows with the
+	// instance; what the bound selects is the most salient of them, and
+	// the recall tools reach whatever it left out.
+	maxReflectionInputExperiences = 24
 )
 
 // An accepted amendment expires unless a later run supersedes it, so a

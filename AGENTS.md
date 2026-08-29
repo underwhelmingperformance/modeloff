@@ -1257,6 +1257,47 @@ bothered by, seeks out and avoids. The persona is the description on
 the current revision, and it is what the system prompt puts at the top
 of every turn.
 
+### How an instance forgets
+
+No reflection removes an experience. Consolidation marks a tendency and
+leaves the experiences behind it in place, and an experience carries no
+expiry, because the citations are the audit trail every accepted change
+rests on. What changes is how live an experience is. The storage
+backstop below is the one thing that takes one away.
+
+`persona_experiences.last_cited_at` records when a revision last drew on
+it, and `salience_at` is the ordering key that follows:
+`domain.SalienceAt` brings the citation time forward by what the
+confidence is worth. Salience decays by halves, so ranking by confidence
+times the decay is the same as ranking by the time each experience would
+have been cited to stand where it does. Confidence therefore buys a
+fixed head start rather than a factor to recompute, and one stored
+timestamp orders the set correctly at any later moment.
+
+Three readers cut against that ranking, and each takes the top of it:
+the people block in a dispatch prompt
+(`maxPersonaContextExperiences`), the experiences one reflection
+request carries (`maxReflectionInputExperiences`), and the storage
+backstop (`experienceRetentionHeadroom`), which never removes an
+experience an accepted description or tendency cites.
+
+An experience the backstop does remove is unlinked from every revision
+that named it, because that link has no cascade of its own. So an
+instance past the headroom has old revisions naming fewer experiences
+than they were committed with, and a rollback to one of those restores
+its description and the experiences still there. That is the cost of
+bounding the table: the alternative is a revision naming a row nothing
+answers to.
+
+What raises salience after an experience is written is the instance
+going back to read the events behind it. A reflection run records what
+its recall tools returned and writes it as part of the single commit
+that ends the run, so a run that failed or was discarded strengthens
+nothing: it did not finish the thought. An instance drawn back to how a
+particular person treats it keeps those episodes live, and one that
+never looks again lets them sink. That is what makes evolution depend on
+who the instance already is, and it needs no parameter.
+
 The test that separates the last two is whether the clause would
 survive the instance having a different job. "Gives people a figure
 and its risk" would not: in a channel with no figures in it there is
@@ -1307,7 +1348,10 @@ operator's per-revision diff in `/persona` is the backstop.
 
 The persona is the current revision. Revision zero is the immutable
 reset target, an operator edit is a revision like any other, and every
-revision is diffable and reversible. The acting model holds no tool
+revision is diffable and can be rolled back to. A rollback restores the
+revision's description and the experiences still there, which is fewer
+than it was committed with once the retention backstop has been past
+it. The acting model holds no tool
 that reaches any of it: `/persona` carries no `tool:` tag, so it is in
 no model's tool registry, and reflection is quarantined to the
 background worker. That separation is what the whole arrangement
