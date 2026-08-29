@@ -189,7 +189,7 @@ func requireErrorEvent(t *testing.T, msg tea.Msg, wantOperation string, wantErr 
 }
 
 // zeroAt returns a copy of err with any struct field named "At" of
-// type time.Time set to its zero value, via reflection, so error
+// type time.Time set to its zero value, found with `reflect`, so error
 // comparisons in tests do not depend on when the command ran.
 func zeroAt(err error) error {
 	v := reflect.ValueOf(err)

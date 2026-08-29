@@ -901,8 +901,9 @@ under `actor.ID()`.
 `/`-commands and model-callable tools share a single source of truth.
 The `internal/ui/chatcmd` grammar declares each command as a Go struct
 with `arg:`/`help:`/`tool:` tags; the `internal/command` package walks
-the grammar at registration time and derives the OpenAI tool schema
-(name, description, JSON-schema parameters) by reflection. When a
+the grammar at registration time and reads each struct's fields and tags
+with `reflect` to derive the OpenAI tool schema (name, description,
+JSON-schema parameters). When a
 chatcmd struct implements `ToCommand(Context) (protocol.Command, error)`,
 the same wire command flows whether the user typed `/foo` or a model
 called the `foo` tool. Most commands implement `ToCommand` and so
