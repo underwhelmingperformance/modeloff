@@ -242,7 +242,7 @@ func TestReflectionScheduler_coalesces_work_per_instance(t *testing.T) {
 		release := make(chan struct{})
 		var first sync.Once
 		scheduler := newReflectionScheduler(
-			t.Context(), stored, time.Now,
+			t.Context(), stored, systemReflectionClock{},
 			func(_ context.Context, snapshot store.PendingReflectionSnapshot) {
 				started <- reflectionRange(snapshot)
 				first.Do(func() { <-release })
@@ -316,7 +316,7 @@ func TestReflectionScheduler_waits_for_the_cooldown(t *testing.T) {
 
 		observed := make(chan reflectionRunRange, 1)
 		scheduler := newReflectionScheduler(
-			t.Context(), stored, time.Now,
+			t.Context(), stored, systemReflectionClock{},
 			func(_ context.Context, snapshot store.PendingReflectionSnapshot) {
 				observed <- reflectionRange(snapshot)
 			},
@@ -352,7 +352,7 @@ func TestReflectionScheduler_cancels_and_joins_active_work(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
 	scheduler := newReflectionScheduler(
-		t.Context(), stored, time.Now,
+		t.Context(), stored, systemReflectionClock{},
 		func(ctx context.Context, _ store.PendingReflectionSnapshot) {
 			close(started)
 			<-ctx.Done()
@@ -484,7 +484,7 @@ func TestReflectionScheduler_waits_after_a_run_that_committed_nothing(t *testing
 			errs:   make(chan error, 8),
 		}
 		scheduler := newReflectionScheduler(
-			t.Context(), stored, time.Now, recorder.run,
+			t.Context(), stored, systemReflectionClock{}, recorder.run,
 		)
 
 		scheduler.notify(instance.ID())
@@ -529,7 +529,7 @@ func TestReflectionScheduler_runs_again_past_the_input_event_limit(t *testing.T)
 			errs:   make(chan error, 8),
 		}
 		scheduler := newReflectionScheduler(
-			t.Context(), stored, time.Now, recorder.run,
+			t.Context(), stored, systemReflectionClock{}, recorder.run,
 		)
 
 		scheduler.notify(instance.ID())

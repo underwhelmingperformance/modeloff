@@ -317,7 +317,8 @@ func New(cfg Config) *Manager {
 	if reflectionStore, ok := cfg.Store.(reflectionStateStore); ok &&
 		manager.reflectionMode != ReflectionDisabled {
 		manager.reflections = newReflectionScheduler(
-			lifecycleContext, reflectionStore, now, manager.runReflection,
+			lifecycleContext, reflectionStore,
+			systemReflectionClock{}, manager.runReflection,
 		)
 	}
 

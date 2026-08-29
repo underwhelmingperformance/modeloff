@@ -53,7 +53,7 @@ func (m *Manager) SetReflectionMode(ctx context.Context, mode ReflectionMode) er
 			return errors.New("persona reflection store is unavailable")
 		}
 		m.reflections = newReflectionScheduler(
-			m.lifecycleContext, stored, m.now, m.runReflection,
+			m.lifecycleContext, stored, systemReflectionClock{}, m.runReflection,
 		)
 	}
 	m.reflectionMode = mode

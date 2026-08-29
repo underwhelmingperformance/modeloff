@@ -33,6 +33,34 @@ type reflectionStateStore interface {
 
 type reflectionSnapshotRunner func(context.Context, store.PendingReflectionSnapshot)
 
+// reflectionClock is the scheduler's source of time. A run is due at an
+// instant derived from stored wall-clock times, and the worker compares
+// that instant against Now and waits on After to reach it. One type
+// supplies both so a caller cannot pair a clock with another clock's
+// wait.
+//
+// The stored times come from the manager's own clock, which production
+// takes from the wall clock as this does. A caller that freezes that
+// one shifts the cooldown; it cannot make a worker wait for an instant
+// its own clock will never reach.
+type reflectionClock interface {
+	Now() time.Time
+	After(time.Duration) <-chan time.Time
+}
+
+// systemReflectionClock is the wall clock. Under testing/synctest both
+// halves are virtualised together, so a test drives a cooldown by
+// sleeping.
+type systemReflectionClock struct{}
+
+// Now reports the current wall-clock time.
+func (systemReflectionClock) Now() time.Time { return time.Now() }
+
+// After reports a channel that receives once d has elapsed.
+func (systemReflectionClock) After(d time.Duration) <-chan time.Time {
+	return time.After(d)
+}
+
 type reflectionWorker struct {
 	wake chan struct{}
 
@@ -60,7 +88,7 @@ type reflectionScheduler struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	store  reflectionSnapshotStore
-	now    func() time.Time
+	clock  reflectionClock
 	run    reflectionSnapshotRunner
 
 	mu      sync.Mutex
@@ -77,13 +105,13 @@ type reflectionScheduler struct {
 func newReflectionScheduler(
 	parent context.Context,
 	stored reflectionSnapshotStore,
-	now func() time.Time,
+	clock reflectionClock,
 	run reflectionSnapshotRunner,
 ) *reflectionScheduler {
 	ctx, cancel := context.WithCancel(parent)
 
 	return &reflectionScheduler{
-		ctx: ctx, cancel: cancel, store: stored, now: now, run: run,
+		ctx: ctx, cancel: cancel, store: stored, clock: clock, run: run,
 		workers:   make(map[domain.InstanceID]*reflectionWorker),
 		forgotten: make(map[domain.InstanceID]chan struct{}),
 	}
@@ -202,7 +230,7 @@ func (s *reflectionScheduler) work(
 			continue
 		}
 
-		schedule := reflectionScheduleFor(snapshot.Status, lastAttempt, s.now())
+		schedule := reflectionScheduleFor(snapshot.Status, lastAttempt, s.clock.Now())
 		if !schedule.Ready {
 			if !s.waitUntilReady(worker, schedule) {
 				return
@@ -211,7 +239,7 @@ func (s *reflectionScheduler) work(
 		}
 
 		s.run(worker.ctx, snapshot)
-		lastAttempt = s.now()
+		lastAttempt = s.clock.Now()
 	}
 }
 
@@ -223,12 +251,10 @@ func (s *reflectionScheduler) waitUntilReady(
 		return s.waitForWake(worker)
 	}
 
-	delay := schedule.DueAt.Sub(s.now())
+	delay := schedule.DueAt.Sub(s.clock.Now())
 	if delay <= 0 {
 		return true
 	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
 
 	select {
 	case <-s.ctx.Done():
@@ -237,7 +263,7 @@ func (s *reflectionScheduler) waitUntilReady(
 		return false
 	case <-worker.wake:
 		return true
-	case <-timer.C:
+	case <-s.clock.After(delay):
 		return true
 	}
 }

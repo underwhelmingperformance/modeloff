@@ -2,6 +2,7 @@ package modelmanager
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -41,7 +42,7 @@ func TestReflectionScheduler_forget_releases_a_parked_worker(t *testing.T) {
 		const instanceID = domain.InstanceID("inst-botty")
 
 		scheduler := newReflectionScheduler(
-			t.Context(), quietReflectionStore{}, time.Now,
+			t.Context(), quietReflectionStore{}, systemReflectionClock{},
 			func(context.Context, store.PendingReflectionSnapshot) {},
 		)
 
@@ -63,5 +64,96 @@ func TestReflectionScheduler_forget_releases_a_parked_worker(t *testing.T) {
 		scheduler.mu.Unlock()
 
 		require.Equal(t, []int{1, 0}, []int{parked, remaining})
+	})
+}
+
+// cooldownReflectionStore answers above the activity threshold with an
+// attempt recorded at recordedAt, which puts a worker reading it inside
+// its cooldown.
+type cooldownReflectionStore struct {
+	recordedAt time.Time
+}
+
+func (s *cooldownReflectionStore) PendingReflectionSnapshot(
+	context.Context,
+	domain.InstanceID,
+	int,
+) (store.PendingReflectionSnapshot, error) {
+	recorded := s.recordedAt
+
+	return store.PendingReflectionSnapshot{
+		Status: store.ReflectionInboxStatus{
+			HighWaterMark:     reflectionSubstantiveThreshold,
+			PendingEvents:     reflectionSubstantiveThreshold,
+			SubstantiveEvents: reflectionSubstantiveThreshold,
+			LastAttemptAt:     &recorded,
+		},
+	}, nil
+}
+
+// stoppedClock never advances and its wait never fires.
+type stoppedClock struct {
+	at    time.Time
+	waits chan time.Duration
+}
+
+// Now reports the instant this clock stopped at.
+func (c *stoppedClock) Now() time.Time { return c.at }
+
+// After records the wait and returns a channel that never receives. The
+// send cannot block, or the worker would park inside the wait being
+// observed. An overflowed buffer fails the effect comparison.
+func (c *stoppedClock) After(delay time.Duration) <-chan time.Time {
+	select {
+	case c.waits <- delay:
+	default:
+	}
+
+	return make(chan time.Time)
+}
+
+// cooldownWaitEffect records the delays requested and the runs made.
+type cooldownWaitEffect struct {
+	Delays    []time.Duration
+	Reflected int64
+}
+
+// TestReflectionScheduler_waits_out_the_cooldown_on_its_own_clock pins
+// that the comparison and the wait come from the clock the constructor
+// was given.
+//
+// It asks twice because `notify` both starts the worker and wakes it,
+// and the buffered wake is taken by the first wait; the second is the
+// one the worker parks on.
+func TestReflectionScheduler_waits_out_the_cooldown_on_its_own_clock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const instanceID = domain.InstanceID("inst-botty")
+		frozen := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+		stored := &cooldownReflectionStore{recordedAt: frozen.Add(-reflectionCooldown / 2)}
+		clock := &stoppedClock{at: frozen, waits: make(chan time.Duration, 8)}
+
+		var reflected atomic.Int64
+		scheduler := newReflectionScheduler(
+			t.Context(), stored, clock,
+			func(context.Context, store.PendingReflectionSnapshot) {
+				reflected.Add(1)
+			},
+		)
+
+		scheduler.notify(instanceID)
+		synctest.Wait()
+
+		close(clock.waits)
+		var delays []time.Duration
+		for delay := range clock.waits {
+			delays = append(delays, delay)
+		}
+
+		require.Equal(t, cooldownWaitEffect{
+			Delays: []time.Duration{
+				reflectionCooldown / 2, reflectionCooldown / 2,
+			},
+			Reflected: 0,
+		}, cooldownWaitEffect{Delays: delays, Reflected: reflected.Load()})
 	})
 }

@@ -1495,6 +1495,20 @@ The worker takes a `store.PendingReflectionSnapshot`, holding the
 instance's persona snapshot and the oldest
 `reflectionInputEventLimit` pending events, and reflects on it.
 
+The cooldown is measured on wall-clock time, because it runs from
+`reflection_runs.finished_at` and has to survive a restart. The
+scheduler takes one `reflectionClock`, which supplies both the instant
+it compares the due time against and the wait it spends reaching it. A
+wait on any other clock would bring the comparison no closer, so a
+worker whose clock stood still would wake, re-read the store, find the
+same instant ahead of it, and wait again.
+
+`finished_at` is stamped from the manager's `Config.Now`, which
+production and the scheduler both take from the wall clock. A caller
+that freezes `Config.Now` therefore shifts the cooldown by however far
+that instant sits from now, which is a skew and not the loop above: the
+scheduler's own comparison and wait still agree.
+
 The worker sits outside the window-guard authority model. It runs on
 no turn and holds no guard, so nothing it does is scoped to a window.
 What bounds it instead is that every store method it can reach is
