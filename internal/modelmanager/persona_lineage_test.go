@@ -186,6 +186,7 @@ func activePersonaInspection(
 		Parent:      &fixture.Zero,
 		Experiences: fixture.Commit.Experiences,
 		Amendments:  fixture.Commit.Amendments,
+		Departed:    []domain.PersonaAmendment{},
 		Counterparts: []domain.PersonaCounterpart{
 			{InstanceID: fixture.Subject.ID(), Nick: fixture.Subject.Nick()},
 			{InstanceID: fixture.Counterpart.ID(), Nick: fixture.Counterpart.Nick()},
@@ -214,6 +215,7 @@ func basePersonaInspection(
 		Revision:     fixture.Zero,
 		Experiences:  []domain.Experience{},
 		Amendments:   []domain.PersonaAmendment{},
+		Departed:     []domain.PersonaAmendment{},
 		Counterparts: []domain.PersonaCounterpart{},
 		RecentRuns:   []domain.ReflectionRun{fixture.Commit.Run},
 		Transitions: []domain.PersonaTransition{

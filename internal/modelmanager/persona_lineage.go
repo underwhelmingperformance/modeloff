@@ -2,6 +2,7 @@ package modelmanager
 
 import (
 	"context"
+	"slices"
 
 	"github.com/laney/modeloff/internal/domain"
 )
@@ -142,7 +143,8 @@ func (m *Manager) inspectPersonaInstance(
 	// Counterpart nicks are display state read from the live instance
 	// directory, which the inspection's own coherence does not depend on.
 	counterparts, err := m.personaCounterparts(
-		ctx, inspection.Persona.Experiences, inspection.Persona.Amendments,
+		ctx, inspection.Persona.Experiences,
+		slices.Concat(inspection.Persona.Amendments, inspection.Departed),
 	)
 	if err != nil {
 		return domain.PersonaInspection{}, err
@@ -155,6 +157,7 @@ func (m *Manager) inspectPersonaInstance(
 		Parent:       inspection.Parent,
 		Experiences:  inspection.Persona.Experiences,
 		Amendments:   inspection.Persona.Amendments,
+		Departed:     inspection.Departed,
 		Counterparts: counterparts,
 		RecentRuns:   inspection.RecentRuns,
 		Transitions:  inspection.Transitions,

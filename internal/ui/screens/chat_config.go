@@ -95,6 +95,17 @@ func reflectionModelNotice(modelID domain.ModelID) string {
 	return string(modelID)
 }
 
+// formatAmendmentDeparture renders the recorded removal kind and time.
+// Schema v20 could backfill consolidations only, so a retraction or
+// supersession recorded before that migration has no reason to show.
+func formatAmendmentDeparture(departure *domain.AmendmentDeparture) string {
+	if departure == nil {
+		return " (departure not recorded)"
+	}
+
+	return fmt.Sprintf(" (%s %s)", departure.Kind, departure.At.Format(time.RFC3339))
+}
+
 func formatPersonaResult(result chatcmd.PersonaResult) string {
 	inspection := result.Inspection
 	var text strings.Builder
@@ -164,6 +175,18 @@ func formatPersonaResult(result chatcmd.PersonaResult) string {
 			amendment.ID, formatAmendmentScope(amendment, inspection.Counterparts),
 			amendment.Confidence, formatExperienceIDs(amendment.Evidence),
 			amendment.Tendency,
+		)
+	}
+
+	if len(inspection.Departed) > 0 {
+		text.WriteString("\nTendencies this revision removed:")
+	}
+	for _, amendment := range inspection.Departed {
+		fmt.Fprintf(
+			&text, "\n- #%d [%s/%s; evidence %s] %s%s",
+			amendment.ID, formatAmendmentScope(amendment, inspection.Counterparts),
+			amendment.Confidence, formatExperienceIDs(amendment.Evidence),
+			amendment.Tendency, formatAmendmentDeparture(amendment.Departure),
 		)
 	}
 

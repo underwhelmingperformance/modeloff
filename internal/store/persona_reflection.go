@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -563,7 +564,8 @@ func nextPersonaRevisionTx(
 // consolidation folds it into the new description, and a new tendency
 // supersedes it. Each removal has to name a tendency this instance owns and
 // one the base revision still holds, so a stale proposal is refused before
-// any row is written.
+// any row is written. Each removal writes its kind and time to the row
+// that left, and the row and its evidence stay.
 func nextRevisionAmendmentsTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -571,30 +573,29 @@ func nextRevisionAmendmentsTx(
 	parent domain.PersonaRevision,
 	amendments []domain.PersonaAmendment,
 ) ([]domain.PersonaAmendmentID, error) {
-	active := parent.AmendmentIDs
-	remove := make(map[domain.PersonaAmendmentID]struct{}, len(acceptance.Retract)+len(amendments))
+	remove := make(
+		map[domain.PersonaAmendmentID]domain.AmendmentDepartureKind,
+		len(acceptance.Retract)+len(acceptance.Consolidate)+len(amendments),
+	)
 	for _, id := range acceptance.Retract {
-		remove[id] = struct{}{}
+		remove[id] = domain.AmendmentRetracted
 	}
 	for _, id := range acceptance.Consolidate {
-		remove[id] = struct{}{}
+		remove[id] = domain.AmendmentConsolidated
 	}
 	for _, amendment := range amendments {
 		if amendment.SupersedesID != nil {
-			remove[*amendment.SupersedesID] = struct{}{}
+			remove[*amendment.SupersedesID] = domain.AmendmentSuperseded
 		}
 	}
-	removedIDs := make([]domain.PersonaAmendmentID, 0, len(remove))
-	for id := range remove {
-		removedIDs = append(removedIDs, id)
-	}
+	removedIDs := slices.Sorted(maps.Keys(remove))
 	if err := requirePersonaAmendmentIDsOwnedTx(
 		ctx, tx, acceptance.InstanceID, removedIDs,
 	); err != nil {
 		return nil, err
 	}
 	for _, id := range removedIDs {
-		if !slices.Contains(active, id) {
+		if !slices.Contains(parent.AmendmentIDs, id) {
 			return nil, fmt.Errorf(
 				"persona amendment %d is not active in revision %d",
 				id,
@@ -602,22 +603,21 @@ func nextRevisionAmendmentsTx(
 			)
 		}
 	}
-	for _, id := range acceptance.Consolidate {
+	for _, id := range removedIDs {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE persona_amendments SET consolidated_at = ?
+			UPDATE persona_amendments SET departed_at = ?, departure = ?
 			WHERE id = ? AND instance_id = ?
-		`, formatTime(acceptance.FinishedAt),
+		`, formatTime(acceptance.FinishedAt), string(remove[id]),
 			id, acceptance.InstanceID); err != nil {
-			return nil, fmt.Errorf("consolidate persona amendment %d: %w", id, err)
+			return nil, fmt.Errorf("record persona amendment %d departure: %w", id, err)
 		}
 	}
-	kept := active[:0]
-	for _, id := range active {
+	active := make([]domain.PersonaAmendmentID, 0, len(parent.AmendmentIDs)+len(amendments))
+	for _, id := range parent.AmendmentIDs {
 		if _, removed := remove[id]; !removed {
-			kept = append(kept, id)
+			active = append(active, id)
 		}
 	}
-	active = kept
 	for _, amendment := range amendments {
 		active = append(active, amendment.ID)
 	}
@@ -983,18 +983,23 @@ func personaReflectionCommitTx(
 // asOfReflectionCommit undoes what happened to an amendment after the run
 // being replayed finished.
 //
-// The replay reads the amendment rows as they stand now, and
-// `consolidated_at` is written after the fact by a later run folding the
-// tendency into a description. Reading it back would make a retry of the
+// The replay reads the amendment rows as they stand now, and a departure
+// is written after the fact by the later run that retracted, consolidated
+// or superseded the tendency. Reading it back would make a retry of the
 // earlier commit answer with state that commit never produced, which is
 // the one thing the run-id replay exists to rule out.
+//
+// The comparison is on time, so it cannot separate a departure written
+// by a later run sharing this run's `FinishedAt` from one this run
+// already saw. Telling those apart needs the departing run recorded on
+// the row.
 func asOfReflectionCommit(
 	amendments []domain.PersonaAmendment,
 	finishedAt time.Time,
 ) []domain.PersonaAmendment {
 	for index, amendment := range amendments {
-		if amendment.ConsolidatedAt != nil && amendment.ConsolidatedAt.After(finishedAt) {
-			amendments[index].ConsolidatedAt = nil
+		if amendment.Departure != nil && amendment.Departure.At.After(finishedAt) {
+			amendments[index].Departure = nil
 		}
 	}
 
@@ -1132,15 +1137,15 @@ func personaAmendmentsTx(
 		var createdAt string
 		var expiresAt sql.NullString
 		var supersedes sql.NullInt64
-		var consolidatedAt sql.NullString
+		var departedAt, departure sql.NullString
 		if err := tx.QueryRowContext(ctx, `
 			SELECT id, instance_id, scope, counterpart_id, tendency, confidence,
-			       created_at, expires_at, supersedes_id, consolidated_at
+			       created_at, expires_at, supersedes_id, departed_at, departure
 			FROM persona_amendments WHERE id = ?
 		`, id).Scan(
 			&amendment.ID, &amendment.InstanceID, &amendment.Scope,
 			&counterpart, &amendment.Tendency, &amendment.Confidence,
-			&createdAt, &expiresAt, &supersedes, &consolidatedAt,
+			&createdAt, &expiresAt, &supersedes, &departedAt, &departure,
 		); err != nil {
 			return nil, fmt.Errorf("read persona amendment %d: %w", id, err)
 		}
@@ -1164,12 +1169,14 @@ func personaAmendmentsTx(
 			supersedesID := domain.PersonaAmendmentID(supersedes.Int64)
 			amendment.SupersedesID = &supersedesID
 		}
-		if consolidatedAt.Valid {
-			at, err := parseTime(consolidatedAt.String)
+		if departedAt.Valid {
+			at, err := parseTime(departedAt.String)
 			if err != nil {
-				return nil, fmt.Errorf("parse persona amendment consolidation: %w", err)
+				return nil, fmt.Errorf("parse persona amendment departure: %w", err)
 			}
-			amendment.ConsolidatedAt = &at
+			amendment.Departure = &domain.AmendmentDeparture{
+				Kind: domain.AmendmentDepartureKind(departure.String), At: at,
+			}
 		}
 		rows, err := tx.QueryContext(ctx, `
 			SELECT experience_id FROM persona_amendment_evidence

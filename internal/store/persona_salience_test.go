@@ -75,11 +75,10 @@ func TestCommitPersonaReflection_refreshes_a_recalled_experience(t *testing.T) {
 	})
 }
 
-// replayedAmendmentEffect is what a run-id replay reports about the
-// amendment the original commit produced.
+// replayedAmendmentEffect records the amendments a run-id replay
+// reports.
 type replayedAmendmentEffect struct {
-	ConsolidatedAt *time.Time
-	Tendency       string
+	Amendments []domain.PersonaAmendment
 }
 
 // TestCommitPersonaReflection_replays_a_run_as_it_committed pins that
@@ -135,12 +134,15 @@ func TestCommitPersonaReflection_replays_a_run_as_it_committed(t *testing.T) {
 
 	replayed, err := stored.CommitPersonaReflection(ctx, original)
 	require.NoError(t, err)
-	require.Len(t, replayed.Amendments, 1)
 
 	require.Equal(t, replayedAmendmentEffect{
-		Tendency: "Usually gives people a figure and its risk.",
-	}, replayedAmendmentEffect{
-		ConsolidatedAt: replayed.Amendments[0].ConsolidatedAt,
-		Tendency:       replayed.Amendments[0].Tendency,
-	})
+		Amendments: []domain.PersonaAmendment{{
+			ID: first.Amendments[0].ID, InstanceID: instance.ID(),
+			Scope:      domain.AmendmentGlobal,
+			Tendency:   "Usually gives people a figure and its risk.",
+			Confidence: domain.ConfidenceMedium,
+			Evidence:   []domain.ExperienceID{1},
+			CreatedAt:  firstAt,
+		}},
+	}, replayedAmendmentEffect{Amendments: replayed.Amendments})
 }

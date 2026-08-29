@@ -26,7 +26,7 @@ import (
 // that predates this version. Every database — fresh or
 // pre-existing — reaches the current shape through applyMigrations,
 // the single path from v1 onward.
-const SchemaVersion = 19
+const SchemaVersion = 20
 
 type schemaTooNewError struct {
 	Found     int
@@ -675,6 +675,35 @@ var migrations = []migration{
 			}
 
 			return backfillExperienceSalience(ctx, tx)
+		},
+	},
+	{
+		// A row carrying `consolidated_at` is a consolidation, which is
+		// the only removal v19 recorded. A retraction or a supersession
+		// from before this migration therefore keeps a null `departure`,
+		// and naming a reason for those rows would invent one.
+		Version: 20,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			statements := []migrationStatement{
+				{"rename consolidated to departed", `
+					ALTER TABLE persona_amendments
+						RENAME COLUMN consolidated_at TO departed_at
+				`},
+				{"add amendment departure", `
+					ALTER TABLE persona_amendments ADD COLUMN departure TEXT
+				`},
+				{"name the recorded departures", `
+					UPDATE persona_amendments SET departure = 'consolidated'
+					WHERE departed_at IS NOT NULL
+				`},
+			}
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+					return fmt.Errorf("%s: %w", statement.name, err)
+				}
+			}
+
+			return nil
 		},
 	},
 }

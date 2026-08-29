@@ -1444,7 +1444,14 @@ behind it and expiring on its own after a period its confidence sets.
 A tendency leaves the active set three ways: a retraction, a
 supersession by a newer tendency, or consolidation into an accepted
 description. All three keep the row and its citations, so the trail
-from a description back to what it was built from survives.
+from a description back to what it was built from survives. All three
+write their kind and time to the row that left.
+
+Which tendencies apply is decided by the active revision's set, so a
+rollback to a revision from before a departure makes that tendency
+apply again. The rollback does not clear the recorded departure, and a
+tendency that leaves twice keeps only the second: the row holds one
+departure, not a history of them.
 
 ### The reflection inbox
 
@@ -1564,10 +1571,13 @@ outcomes that record a run, so the cooldown paces them.
 `/persona <nick>` shows an instance's lineage: the current revision
 and its description, the experiences the description was built from,
 the parent revision's text where it differs, the baseline a reset
-restores, the active experiences and tendencies, the recent reflection
-runs, and the transitions between revisions. Showing the parent's text
-beside the current one is the per-revision diff, and that is where an
-operator judges whether reflection is behaving.
+restores, the active experiences and tendencies, the tendencies present
+in the parent revision and absent from the active one with each
+recorded departure, the recent reflection runs, and the transitions
+between revisions. The parent's text beside the current one and the
+departed tendencies are the two halves of the per-revision diff: what
+the change that produced this revision wrote, and what it removed. That
+is where an operator judges whether reflection is behaving.
 
 The same command writes. A description positional writes an
 operator-authored revision, `--reset` selects revision zero, and

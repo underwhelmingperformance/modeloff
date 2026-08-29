@@ -232,28 +232,49 @@ func confidenceHalfLives(confidence Confidence) time.Duration {
 	return 0
 }
 
+// AmendmentDepartureKind identifies how a reflection removed a tendency
+// from an active set. A reflection applies no other removal.
+type AmendmentDepartureKind string
+
+const (
+	// AmendmentRetracted means a reflection withdrew the tendency without
+	// putting anything in its place.
+	AmendmentRetracted AmendmentDepartureKind = "retracted"
+	// AmendmentConsolidated means a reflection folded the tendency into an
+	// accepted persona description.
+	AmendmentConsolidated AmendmentDepartureKind = "consolidated"
+	// AmendmentSuperseded means a newer tendency replaced it, and that
+	// tendency's SupersedesID names this one.
+	AmendmentSuperseded AmendmentDepartureKind = "superseded"
+)
+
+// AmendmentDeparture records how and when a tendency left an active set.
+type AmendmentDeparture struct {
+	Kind AmendmentDepartureKind
+	At   time.Time
+}
+
 // PersonaAmendment is one tendency a persona revision applies. Its text,
-// scope, evidence and expiry are fixed when it is written; ConsolidatedAt
-// is the one field a later reflection writes.
+// scope, evidence and expiry are fixed when it is written; Departure is
+// the one field a later reflection writes.
 //
-// ConsolidatedAt records when a reflection folded this tendency into a
-// persona description. It is a fact about the amendment's history and not
-// its current standing: which amendments apply is decided by the active
-// revision's set, so a rollback to a revision from before the
-// consolidation makes the amendment apply again with the mark still on
-// it.
+// Departure is the last removal recorded for this amendment, and a fact
+// about its history and not its current standing: which amendments
+// apply is decided by the active revision's set. A rollback can make the
+// amendment active again without clearing Departure, and a later removal
+// replaces it.
 type PersonaAmendment struct {
-	ID             PersonaAmendmentID
-	InstanceID     InstanceID
-	Scope          AmendmentScope
-	Counterpart    *InstanceID
-	Tendency       string
-	Confidence     Confidence
-	Evidence       []ExperienceID
-	CreatedAt      time.Time
-	ExpiresAt      *time.Time
-	SupersedesID   *PersonaAmendmentID
-	ConsolidatedAt *time.Time
+	ID           PersonaAmendmentID
+	InstanceID   InstanceID
+	Scope        AmendmentScope
+	Counterpart  *InstanceID
+	Tendency     string
+	Confidence   Confidence
+	Evidence     []ExperienceID
+	CreatedAt    time.Time
+	ExpiresAt    *time.Time
+	SupersedesID *PersonaAmendmentID
+	Departure    *AmendmentDeparture
 }
 
 // ReflectionRun is the bounded diagnostic record for one reflection attempt.
@@ -298,7 +319,9 @@ type PersonaCounterpart struct {
 // active persona revision and recent reflection diagnostics.
 //
 // Parent is the revision the active one was derived from, which is what
-// makes the change at this revision readable. It is nil for revision zero.
+// makes the change at this revision readable. It is nil for revision
+// zero. Departed contains the amendments present in Parent and absent
+// from Revision, each carrying its departure when one was recorded.
 type PersonaInspection struct {
 	Nick         Nick
 	Lineage      PersonaLineage
@@ -306,6 +329,7 @@ type PersonaInspection struct {
 	Parent       *PersonaRevision
 	Experiences  []Experience
 	Amendments   []PersonaAmendment
+	Departed     []PersonaAmendment
 	Counterparts []PersonaCounterpart
 	RecentRuns   []ReflectionRun
 	Transitions  []PersonaTransition

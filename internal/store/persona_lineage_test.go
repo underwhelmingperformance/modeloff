@@ -758,7 +758,10 @@ func TestSQLiteStore_consolidation_drains_the_active_set_and_keeps_the_row(t *te
 			Tendency:   "Usually gives people a figure and its risk.",
 			Confidence: domain.ConfidenceMedium,
 			Evidence:   []domain.ExperienceID{1},
-			CreatedAt:  firstAt, ConsolidatedAt: &secondAt,
+			CreatedAt:  firstAt,
+			Departure: &domain.AmendmentDeparture{
+				Kind: domain.AmendmentConsolidated, At: secondAt,
+			},
 		}},
 	}, consolidatedAmendmentEffect{
 		Snapshot: snapshot, Amendments: restored.Amendments,
@@ -1084,6 +1087,160 @@ func TestSQLiteStore_persona_counts_follow_the_active_revision(t *testing.T) {
 			counts, err := store.PersonaCounts(t.Context(), testCase.Instance.ID())
 			require.NoError(t, err)
 			got = append(got, personaCountsEffect{Counts: counts})
+		})
+	}
+
+	require.Equal(t, want, got)
+}
+
+// departedTendencyCase is one inspected revision.
+type departedTendencyCase struct {
+	Name string
+}
+
+// departedTendencyEffect records the amendments a revision holds and the
+// ones it dropped, each complete so a wrong departure time or a lost
+// citation shows.
+type departedTendencyEffect struct {
+	Active   []domain.PersonaAmendmentID
+	Departed []domain.PersonaAmendment
+}
+
+// TestSQLiteStore_a_departed_tendency_says_why_it_left covers retraction,
+// supersession and consolidation against one instance: each leaves the
+// active set carrying its kind and time, and keeps its row and its
+// citations.
+func TestSQLiteStore_a_departed_tendency_says_why_it_left(t *testing.T) {
+	ctx := t.Context()
+	store := storetest.NewMemoryStore(t)
+	instance := domain.NewModelInstance("inst-botty", "botty", "test/model", "quiet", nil)
+	require.NoError(t, store.SaveInstance(ctx, instance))
+	base, err := store.PersonaLineage(ctx, instance.ID())
+	require.NoError(t, err)
+
+	at := time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)
+	appendReflectionSources(t, store, instance.ID(), 3, at)
+
+	first, err := store.CommitPersonaReflection(ctx, storemod.PersonaReflectionAcceptance{
+		RunID: "reflection-first", InstanceID: instance.ID(),
+		BaseRevisionID:  base.CurrentRevisionID,
+		PriorCheckpoint: 0, HighWaterMark: 1,
+		ModelID: "test/reflection", StartedAt: at, FinishedAt: at,
+		Experiences: []storemod.PersonaExperienceDraft{{
+			Key: "reproduction", Kind: domain.ExperienceObservation,
+			Summary:    "Alice supplied a reproduction before agreeing.",
+			Confidence: domain.ConfidenceHigh, OccurredAt: at,
+			Sources: []domain.ReflectionEventRef{{Sequence: 1}},
+		}},
+		Amendments: []storemod.PersonaAmendmentDraft{{
+			Scope:        domain.AmendmentGlobal,
+			Tendency:     "Asks for a reproduction before agreeing.",
+			Confidence:   domain.ConfidenceMedium,
+			EvidenceKeys: []string{"reproduction"},
+		}, {
+			Scope:        domain.AmendmentGlobal,
+			Tendency:     "Gives people a figure and its risk.",
+			Confidence:   domain.ConfidenceMedium,
+			EvidenceKeys: []string{"reproduction"},
+		}},
+	})
+	require.NoError(t, err)
+	retracted, replaced := first.Amendments[0].ID, first.Amendments[1].ID
+
+	secondAt := at.Add(time.Hour)
+	second, err := store.CommitPersonaReflection(ctx, storemod.PersonaReflectionAcceptance{
+		RunID: "reflection-second", InstanceID: instance.ID(),
+		BaseRevisionID:  first.Revision.ID,
+		PriorCheckpoint: 1, HighWaterMark: 2,
+		ModelID: "test/reflection", StartedAt: secondAt, FinishedAt: secondAt,
+		Retract: []domain.PersonaAmendmentID{retracted},
+		Experiences: []storemod.PersonaExperienceDraft{{
+			Key: "provenance", Kind: domain.ExperienceObservation,
+			Summary:    "Bob asked where the figure had come from.",
+			Confidence: domain.ConfidenceHigh, OccurredAt: secondAt,
+			Sources: []domain.ReflectionEventRef{{Sequence: 2}},
+		}},
+		Amendments: []storemod.PersonaAmendmentDraft{{
+			Scope:        domain.AmendmentGlobal,
+			Tendency:     "Gives people a figure, its risk and where it came from.",
+			Confidence:   domain.ConfidenceHigh,
+			EvidenceKeys: []string{"provenance"},
+			SupersedesID: &replaced,
+		}},
+	})
+	require.NoError(t, err)
+	successor := second.Amendments[0].ID
+
+	afterRemovals, err := store.PersonaInspection(ctx, instance.ID(), 10, 10)
+	require.NoError(t, err)
+
+	thirdAt := secondAt.Add(time.Hour)
+	description := "Cares more about being right than about being easy to be around."
+	_, err = store.CommitPersonaReflection(ctx, storemod.PersonaReflectionAcceptance{
+		RunID: "reflection-third", InstanceID: instance.ID(),
+		BaseRevisionID:  second.Revision.ID,
+		PriorCheckpoint: 2, HighWaterMark: 3,
+		ModelID: "test/reflection", StartedAt: thirdAt, FinishedAt: thirdAt,
+		Description: &description,
+		Consolidate: []domain.PersonaAmendmentID{successor},
+	})
+	require.NoError(t, err)
+
+	afterConsolidation, err := store.PersonaInspection(ctx, instance.ID(), 10, 10)
+	require.NoError(t, err)
+
+	cases := []departedTendencyCase{
+		{Name: "a retraction and a supersession in one run"},
+		{Name: "a consolidation into a description"},
+	}
+	want := []departedTendencyEffect{{
+		Active: []domain.PersonaAmendmentID{successor},
+		Departed: []domain.PersonaAmendment{{
+			ID: retracted, InstanceID: instance.ID(),
+			Scope:      domain.AmendmentGlobal,
+			Tendency:   "Asks for a reproduction before agreeing.",
+			Confidence: domain.ConfidenceMedium,
+			Evidence:   []domain.ExperienceID{1},
+			CreatedAt:  at,
+			Departure: &domain.AmendmentDeparture{
+				Kind: domain.AmendmentRetracted, At: secondAt,
+			},
+		}, {
+			ID: replaced, InstanceID: instance.ID(),
+			Scope:      domain.AmendmentGlobal,
+			Tendency:   "Gives people a figure and its risk.",
+			Confidence: domain.ConfidenceMedium,
+			Evidence:   []domain.ExperienceID{1},
+			CreatedAt:  at,
+			Departure: &domain.AmendmentDeparture{
+				Kind: domain.AmendmentSuperseded, At: secondAt,
+			},
+		}},
+	}, {
+		Active: []domain.PersonaAmendmentID{},
+		Departed: []domain.PersonaAmendment{{
+			ID: successor, InstanceID: instance.ID(),
+			Scope:        domain.AmendmentGlobal,
+			Tendency:     "Gives people a figure, its risk and where it came from.",
+			Confidence:   domain.ConfidenceHigh,
+			Evidence:     []domain.ExperienceID{2},
+			CreatedAt:    secondAt,
+			SupersedesID: &replaced,
+			Departure: &domain.AmendmentDeparture{
+				Kind: domain.AmendmentConsolidated, At: thirdAt,
+			},
+		}},
+	}}
+
+	inspections := []storemod.PersonaInspectionSnapshot{afterRemovals, afterConsolidation}
+	got := make([]departedTendencyEffect, 0, len(cases))
+	for index, testCase := range cases {
+		t.Run(testCase.Name, func(*testing.T) {
+			inspection := inspections[index]
+			got = append(got, departedTendencyEffect{
+				Active:   inspection.Persona.Revision.AmendmentIDs,
+				Departed: inspection.Departed,
+			})
 		})
 	}
 

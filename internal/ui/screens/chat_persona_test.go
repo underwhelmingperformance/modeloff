@@ -42,7 +42,7 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 			ID: 3, InstanceID: "inst-botty",
 			Description:   "careful and curious",
 			ExperienceIDs: []domain.ExperienceID{7},
-			AmendmentIDs:  []domain.PersonaAmendmentID{},
+			AmendmentIDs:  []domain.PersonaAmendmentID{10, 11},
 		},
 		Experiences: []domain.Experience{
 			{
@@ -62,6 +62,19 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 			Counterpart: &aliceID,
 			Tendency:    "Usually asks for evidence.", Confidence: domain.ConfidenceMedium,
 			Evidence: []domain.ExperienceID{7},
+		}},
+		Departed: []domain.PersonaAmendment{{
+			ID: 10, InstanceID: "inst-botty", Scope: domain.AmendmentGlobal,
+			Tendency: "Gives people a figure.", Confidence: domain.ConfidenceLow,
+			Evidence: []domain.ExperienceID{7},
+			Departure: &domain.AmendmentDeparture{
+				Kind: domain.AmendmentSuperseded, At: at,
+			},
+		}, {
+			ID: 11, InstanceID: "inst-botty", Scope: domain.AmendmentGlobal,
+			Tendency:   "Answers the question that was asked.",
+			Confidence: domain.ConfidenceLow,
+			Evidence:   []domain.ExperienceID{7},
 		}},
 		Counterparts: []domain.PersonaCounterpart{{
 			InstanceID: "inst-alice", Nick: "Alice",
@@ -94,6 +107,9 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 				"Experiences:\n- #7 [observation/high; sources 11, 12] Alice supplied a reproduction.\n" +
 				"- #8 [assertion by Alice/medium; sources 12] Alice said the migration is safe to re-run.\n" +
 				"Tendencies:\n- #9 [relationship with Alice/medium; evidence 7] Usually asks for evidence.\n" +
+				"Tendencies this revision removed:\n" +
+				"- #10 [global/low; evidence 7] Gives people a figure. (superseded 2026-08-27T15:00:00Z)\n" +
+				"- #11 [global/low; evidence 7] Answers the question that was asked. (departure not recorded)\n" +
 				"Recent reflections:\n- reflection-12: accepted via test/reflection, revision 3 -> 4, 1 experience, 1 tendency change, finished 2026-08-27T15:00:00Z\n" +
 				"Revision transitions:\n- reflection: 3 -> 4 at 2026-08-27T15:00:00Z",
 		},

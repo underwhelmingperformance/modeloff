@@ -962,3 +962,94 @@ func TestReadSchemaVersion_absent_row_returns_zero(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, got)
 }
+
+// amendmentDepartureCase is one persona amendment as schema v19 left it.
+type amendmentDepartureCase struct {
+	Name           string
+	ID             int64
+	ConsolidatedAt string
+}
+
+// amendmentDepartureRow is what schema v20 leaves on that amendment.
+type amendmentDepartureRow struct {
+	DepartedAt sql.NullString
+	Departure  sql.NullString
+}
+
+// TestApplyMigrations_v19_to_v20_names_the_recorded_departures covers the
+// v20 backfill: a row carrying `consolidated_at` becomes a recorded
+// consolidation, and a row that never left keeps both columns null.
+func TestApplyMigrations_v19_to_v20_names_the_recorded_departures(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	for _, migration := range migrations {
+		if migration.Version > 19 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+
+	data, err := json.Marshal(domain.NewModelInstance(
+		"inst-botty", "botty", "test/model", "careful and curious", nil,
+	))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data) VALUES ('inst-botty', 'botty', ?)`,
+		string(data))
+	require.NoError(t, err)
+
+	cases := []amendmentDepartureCase{
+		{Name: "a tendency a description absorbed", ID: 1, ConsolidatedAt: "2026-08-01T10:00:00.000000000Z"},
+		{Name: "a tendency still in the active set", ID: 2},
+	}
+	for _, testCase := range cases {
+		consolidated := any(nil)
+		if testCase.ConsolidatedAt != "" {
+			consolidated = testCase.ConsolidatedAt
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO persona_amendments
+				(id, instance_id, scope, tendency, confidence, created_at, consolidated_at)
+			VALUES (?, 'inst-botty', 'global', 'Gives people a figure.', 'medium',
+			        '2026-07-01T10:00:00.000000000Z', ?)
+		`, testCase.ID, consolidated)
+		require.NoError(t, err)
+	}
+
+	for _, migration := range migrations {
+		if migration.Version != 20 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+
+	want := []amendmentDepartureRow{
+		{
+			DepartedAt: sql.NullString{String: "2026-08-01T10:00:00.000000000Z", Valid: true},
+			Departure:  sql.NullString{String: "consolidated", Valid: true},
+		},
+		{},
+	}
+
+	got := make([]amendmentDepartureRow, 0, len(cases))
+	for _, testCase := range cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			var row amendmentDepartureRow
+			require.NoError(t, tx.QueryRowContext(ctx,
+				`SELECT departed_at, departure FROM persona_amendments WHERE id = ?`,
+				testCase.ID,
+			).Scan(&row.DepartedAt, &row.Departure))
+			got = append(got, row)
+		})
+	}
+
+	require.Equal(t, want, got)
+}
