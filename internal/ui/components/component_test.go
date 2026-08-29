@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -133,11 +134,16 @@ func TestObservabilityDrawerChildBoundsMatchDrawLayout(t *testing.T) {
 
 // TestInputBarHeightCountsEveryRowTheLayoutPlaces covers the two halves
 // of the input bar's own geometry. `Height` reports the rows the bar
-// occupies and `layout` allots them to its bands, and the two are
-// maintained by hand. ChatView reserves `Height` rows at the bottom and
-// hands the bar exactly that rectangle, so a row the height omits is
-// one the layout has no room for, and a row the height counts and the
-// layout allots to nothing is one no band can be drawn into.
+// needs and `layout` allots them to its bands. ChatView reserves
+// `Height` rows at the bottom and hands the bar exactly that rectangle,
+// so a row the height omits is one the layout has no room for, and a
+// row the height counts and the layout allots to nothing is one no band
+// can be drawn into.
+//
+// Both now read `bandRows`, so this covers the arithmetic that turns
+// those rows into a total and into rectangles. Which band gives way in
+// an area too short for all of them is a separate decision, and
+// TestInputBarKeepsTheInputRowInAShortArea is what covers it.
 func TestInputBarHeightCountsEveryRowTheLayoutPlaces(t *testing.T) {
 	cases := map[string]struct {
 		popover        bool
@@ -368,4 +374,109 @@ func rowsOf(rect uv.Rectangle) []int {
 	}
 
 	return rows
+}
+
+// TestInputBarKeepsTheInputRowInAShortArea covers what the bar gives up
+// when it has less room than it asked for. ChatView clamps the bar's
+// height to the window, so a short window is the ordinary way the bar
+// is handed fewer rows than its bands want, and the input row is the
+// one the operator is typing at.
+func TestInputBarKeepsTheInputRowInAShortArea(t *testing.T) {
+	type bands struct {
+		Palette uv.Rectangle
+		Popover uv.Rectangle
+		Input   uv.Rectangle
+	}
+
+	// The bar wants four rows here: a palette, a two-row popover, and
+	// the input row.
+	bar := NewInputBar()
+	bar.input.palette.open = true
+	bar.popover.completion = command.Completion{
+		Visible: true,
+		Suggestions: []command.Suggestion{
+			{Value: "/join", Label: "/join"},
+			{Value: "/part", Label: "/part"},
+		},
+	}
+
+	require.Equal(t, 4, bar.Height(), "the bar under test wants four rows")
+
+	cases := map[int]bands{
+		0: {},
+		1: {Input: uv.Rect(4, 9, 40, 1)},
+		2: {Popover: uv.Rect(4, 8, 40, 1), Input: uv.Rect(4, 9, 40, 1)},
+		3: {Popover: uv.Rect(4, 7, 40, 2), Input: uv.Rect(4, 9, 40, 1)},
+		4: {
+			Palette: uv.Rect(4, 6, 40, 1),
+			Popover: uv.Rect(4, 7, 40, 2),
+			Input:   uv.Rect(4, 9, 40, 1),
+		},
+	}
+
+	for height, want := range cases {
+		t.Run(fmt.Sprintf("%d rows", height), func(t *testing.T) {
+			area := uv.Rect(4, 10-height, 40, height)
+			layout := bar.layout(area)
+
+			require.Equal(t, want, bands{
+				Palette: occupied(layout.palette),
+				Popover: occupied(layout.popover),
+				Input:   occupied(layout.input),
+			})
+		})
+	}
+}
+
+// occupied returns a band's rectangle, and the zero rectangle when the
+// band has no rows. The layout gives such a band a zero-height
+// rectangle, which `Empty` already reports as empty. Normalising it to
+// the zero value lets these tests compare with `uv.Rectangle{}`.
+func occupied(rect uv.Rectangle) uv.Rectangle {
+	if rect.Empty() {
+		return uv.Rectangle{}
+	}
+
+	return rect
+}
+
+// TestChatViewKeepsTheInputRowInAShortWindow is the same priority one
+// level up. The header and the input bar both ask for fixed rows, and a
+// window with too few gives them to the bar: a window showing its title
+// and nothing to type into is worse than one showing neither.
+func TestChatViewKeepsTheInputRowInAShortWindow(t *testing.T) {
+	type rows struct {
+		Message int
+		Input   int
+	}
+
+	// The header renders two rows for a channel with a topic, and
+	// the bar wants one, so the transcript gets nothing until the
+	// fourth.
+	cases := map[int]rows{
+		0: {},
+		1: {Input: 1},
+		2: {Input: 1},
+		3: {Input: 1},
+		4: {Message: 1, Input: 1},
+	}
+
+	for height, want := range cases {
+		t.Run(fmt.Sprintf("%d rows", height), func(t *testing.T) {
+			view := NewChatView[testKind](
+				func() WindowContent { return WindowContent{Channel: "#general"} },
+				"#general",
+				domain.KindChannel,
+				"testuser",
+				"a topic long enough to render a header",
+			)
+
+			layout := view.layoutRectsFor(uv.Rect(3, 2, 60, height))
+
+			require.Equal(t, want, rows{
+				Message: layout.MessageRect.Dy(),
+				Input:   layout.InputRect.Dy(),
+			})
+		})
+	}
 }

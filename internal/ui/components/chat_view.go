@@ -5,6 +5,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	uvlayout "github.com/charmbracelet/ultraviolet/layout"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -296,27 +297,41 @@ func (c ChatView[C]) layoutRects() chatViewLayout {
 	return c.layoutRectsFor(c.bounds)
 }
 
+// layoutRectsFor stacks the header, the transcript and the input bar
+// down the assigned rectangle. The header and the input bar each ask
+// for the rows they need and the transcript fills what is left, so a
+// window too short for all three gives up transcript rows first. The
+// bar clamps its own bands to whatever rows it ends up with, keeping
+// the row the operator types at.
 func (c ChatView[C]) layoutRectsFor(bounds uv.Rectangle) chatViewLayout {
 	width := bounds.Dx()
 	if width <= 0 {
 		return chatViewLayout{}
 	}
 
-	inputHeight := min(c.input.Height(), bounds.Dy())
-	inputRect := uv.Rect(bounds.Min.X, bounds.Max.Y-inputHeight, width, inputHeight)
-
-	headerHeight := 0
+	headerRows := 0
 	if headerView := c.renderHeader(width); headerView != "" {
-		headerHeight = lipgloss.Height(headerView)
+		headerRows = lipgloss.Height(headerView)
 	}
 
-	headerHeight = min(headerHeight, max(bounds.Dy()-inputHeight, 0))
-	messageHeight := max(bounds.Dy()-headerHeight-inputHeight, 0)
-	messageRect := uv.Rect(bounds.Min.X, bounds.Min.Y+headerHeight, width, messageHeight)
+	// The two fixed bands take their rows before the split, in this
+	// window's own order, because the solver ranks constraint kinds and
+	// not two constraints of one kind. Left to it, the header could take
+	// a short window's only row, leaving no row for the input bar to
+	// draw its prompt on.
+	inputRows := min(c.input.Height(), bounds.Dy())
+	headerRows = min(headerRows, max(bounds.Dy()-inputRows, 0))
+
+	var header, message, input uv.Rectangle
+	uvlayout.Vertical(
+		uvlayout.Len(headerRows),
+		uvlayout.Fill(1),
+		uvlayout.Len(inputRows),
+	).Split(bounds).Assign(&header, &message, &input)
 
 	return chatViewLayout{
-		InputRect:   inputRect,
-		MessageRect: messageRect,
+		InputRect:   input,
+		MessageRect: message,
 	}
 }
 

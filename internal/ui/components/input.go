@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	uvlayout "github.com/charmbracelet/ultraviolet/layout"
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
@@ -782,22 +783,48 @@ func (b InputBar) prefixWidth() int {
 	return lipgloss.Width(nickLabel) + lipgloss.Width(lockBadge) + lipgloss.Width(prompt)
 }
 
-// Height returns the number of rows the input bar currently occupies.
-func (b InputBar) Height() int {
-	height := 1
+// bandRows returns the rows the input bar's three bands want, from the
+// top down: the colour palette, the completion popover or the paste
+// note in the one band they share, and the input row itself. Height and
+// layout both read it, so the rows the bar asks its parent for are the
+// rows it sets out to place.
+func (b InputBar) bandRows() (palette, aux, input int) {
 	if b.input.PaletteVisible() {
-		height++
+		palette = 1
 	}
 
-	if popoverHeight := b.popover.height(); popoverHeight > 0 {
-		return height + popoverHeight
+	switch {
+	case b.popover.height() > 0:
+		aux = b.popover.height()
+	case b.pasteFlattened:
+		aux = 1
 	}
 
-	if b.pasteFlattened {
-		height++
-	}
+	return palette, aux, 1
+}
 
-	return height
+// bandRowsWithin returns the rows the bands take in an area of the
+// given height. An area too short for all three keeps the input row
+// first, then the popover or note, and gives up the palette soonest:
+// the input row is where the operator is typing, and a bar that painted
+// a colour swatch in place of the prompt would leave them typing into
+// nothing.
+func (b InputBar) bandRowsWithin(height int) (palette, aux, input int) {
+	palette, aux, input = b.bandRows()
+
+	input = min(input, max(height, 0))
+	aux = min(aux, max(height-input, 0))
+	palette = min(palette, max(height-input-aux, 0))
+
+	return palette, aux, input
+}
+
+// Height returns the rows the bar needs, which is what ChatView
+// reserves for it at the bottom of the window.
+func (b InputBar) Height() int {
+	palette, aux, input := b.bandRows()
+
+	return palette + aux + input
 }
 
 func (b InputBar) inputPrefix() (nickLabel, lockBadge, prompt string) {
@@ -818,29 +845,38 @@ func (b InputBar) layout(area uv.Rectangle) inputBarLayout {
 		return inputBarLayout{}
 	}
 
-	input := uv.Rect(area.Min.X, area.Max.Y-1, area.Dx(), 1)
+	// The bands take their rows before the split, because the solver
+	// ranks constraint kinds and not two constraints of one kind, and
+	// which band survives a short area is a decision this bar makes.
+	// The leading fill is what holds the rest against the bottom of
+	// whatever room the bar is given.
+	paletteRows, auxRows, inputRows := b.bandRowsWithin(area.Dy())
+
+	var surplus, palette, aux, input uv.Rectangle
+	uvlayout.Vertical(
+		uvlayout.Fill(1),
+		uvlayout.Len(paletteRows),
+		uvlayout.Len(auxRows),
+		uvlayout.Len(inputRows),
+	).Split(area).Assign(&surplus, &palette, &aux, &input)
+
 	nickLabel, lockBadge, prompt := b.inputPrefix()
 	prefixWidth := min(
 		lipgloss.Width(nickLabel)+lipgloss.Width(lockBadge)+lipgloss.Width(prompt),
 		input.Dx(),
 	)
-	editor := uv.Rect(input.Min.X+prefixWidth, input.Min.Y, input.Dx()-prefixWidth, 1)
 
-	layout := inputBarLayout{input: input, editor: editor}
-	availableTop := input.Min.Y
+	var prefix, editor uv.Rectangle
+	uvlayout.Horizontal(
+		uvlayout.Len(prefixWidth),
+		uvlayout.Fill(1),
+	).Split(input).Assign(&prefix, &editor)
 
-	auxHeight := b.popover.height()
-	if auxHeight > 0 {
-		auxHeight = min(auxHeight, max(availableTop-area.Min.Y, 0))
-		layout.popover = uv.Rect(area.Min.X, availableTop-auxHeight, area.Dx(), auxHeight)
-		availableTop -= auxHeight
-	} else if b.pasteFlattened && availableTop > area.Min.Y {
-		layout.note = uv.Rect(area.Min.X, availableTop-1, area.Dx(), 1)
-		availableTop--
-	}
-
-	if b.input.PaletteVisible() && availableTop > area.Min.Y {
-		layout.palette = uv.Rect(area.Min.X, availableTop-1, area.Dx(), 1)
+	layout := inputBarLayout{input: input, editor: editor, palette: palette}
+	if b.popover.height() > 0 {
+		layout.popover = aux
+	} else {
+		layout.note = aux
 	}
 
 	return layout
