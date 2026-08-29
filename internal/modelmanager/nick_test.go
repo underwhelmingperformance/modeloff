@@ -28,6 +28,12 @@ func newTestSession(t *testing.T, fx *managerFixture) *session.Session {
 	return sess
 }
 
+// nickTestPersona is the persona these tests prepare with. Preparation
+// refuses without one, and what a nick test is about is the nick, so
+// every case here supplies the same literal and never draws from the
+// pool.
+const nickTestPersona = "a terse reviewer"
+
 // toolsCatalogue returns a fake ListModels response listing modelID
 // with tool-calling support, which
 // [modelmanager.Manager.EnsureToolCapableModel] requires before nick
@@ -122,7 +128,7 @@ func TestManager_PrepareInstance_nickGeneration_fallsBackToDeterministicNick(t *
 
 			sess := newTestSession(t, fx)
 
-			prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
+			prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, nickTestPersona)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantNick, prepared.Nick)
 		})
@@ -160,7 +166,7 @@ func TestManager_PrepareInstance_nickGeneration_retriesPastAnInvalidSuggestion(t
 	})
 	sess := newTestSession(t, fx)
 
-	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, nickTestPersona)
 	require.NoError(t, err)
 	require.Equal(t, domain.Nick("goodnick"), prepared.Nick)
 	require.Equal(t, [][]domain.Nick{nil, {"1bad"}}, seenExclusions,
@@ -195,7 +201,7 @@ func TestManager_PrepareInstance_deterministicFallback_avoidsCollision(t *testin
 
 	sess := newTestSession(t, fx)
 
-	prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
+	prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, nickTestPersona)
 	require.NoError(t, err)
 	require.Equal(t, domain.Nick("gpt-5-42"), prepared.Nick)
 }

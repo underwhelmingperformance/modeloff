@@ -484,7 +484,11 @@ func (f *FakeAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, p
 	return api.NicknameResult{Nick: "fakenick"}, nil
 }
 
-// GeneratePersonaTemplates delegates to GeneratePersonaTemplatesFn or returns nil.
+// GeneratePersonaTemplates delegates to GeneratePersonaTemplatesFn or
+// returns one template. Adding a model refuses when the pool can supply
+// no persona, so a fake answering with nothing would stop every test
+// that puts a model in a channel. A test about an empty pool sets the
+// function and returns nothing from it.
 func (f *FakeAPI) GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -493,7 +497,11 @@ func (f *FakeAPI) GeneratePersonaTemplates(ctx context.Context, smallModel domai
 		return f.GeneratePersonaTemplatesFn(ctx, smallModel)
 	}
 
-	return nil, nil
+	return []domain.PersonaTemplate{{
+		ID:          "fake-persona",
+		Description: "a terse reviewer",
+		Origin:      domain.PersonaGenerated,
+	}}, nil
 }
 
 // AddModel attaches a model instance to a channel through the

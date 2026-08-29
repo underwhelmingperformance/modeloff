@@ -559,16 +559,25 @@ const maxDeterministicNickAttempts = 1000
 // failure, no API client configured, or every suggestion colliding
 // with a taken nick. Nick generation therefore never blocks an
 // add-model on its own.
+// preparedNick is the nick a new instance takes. `Fallback` carries the
+// failure that sent the manager to the deterministic nick, which the
+// caller reports to the operator; it is nil when the small model
+// supplied the nick.
+type preparedNick struct {
+	Nick     domain.Nick
+	Fallback error
+}
+
 func (m *Manager) generateUniqueNick(
 	ctx context.Context,
 	sess *session.Session,
 	modelID domain.ModelID,
 	persona string,
 	logger *slog.Logger,
-) (domain.Nick, error) {
+) (preparedNick, error) {
 	nick, err := m.generateNickFromModel(ctx, sess, modelID, persona, logger)
 	if err == nil {
-		return nick, nil
+		return preparedNick{Nick: nick}, nil
 	}
 
 	logger.WarnContext(ctx, "nick generation unavailable, falling back to a deterministic nick",
@@ -577,10 +586,10 @@ func (m *Manager) generateUniqueNick(
 
 	fallback, fallbackErr := m.fallbackNick(ctx, sess, modelID)
 	if fallbackErr != nil {
-		return "", fmt.Errorf("generate nick: %w; deterministic fallback also failed: %w", err, fallbackErr)
+		return preparedNick{}, fmt.Errorf("generate nick: %w; deterministic fallback also failed: %w", err, fallbackErr)
 	}
 
-	return fallback, nil
+	return preparedNick{Nick: fallback, Fallback: err}, nil
 }
 
 // generateNickFromModel asks the small model for a nickname guided
@@ -605,7 +614,8 @@ func (m *Manager) generateNickFromModel(
 	}, func(generateCtx context.Context, generateSpan trace.Span) error {
 		client, _ := m.snapshotAPI()
 		if client == nil {
-			return observability.ErrWithKind(fmt.Errorf("generate nick: api client not configured"), observability.ErrorKindValidation)
+			return observability.ErrWithKind(
+				fmt.Errorf("generate nick: %w", api.ErrClientNotConfigured), observability.ErrorKindValidation)
 		}
 
 		small := m.SmallModel()
@@ -785,13 +795,15 @@ func (m *Manager) nickIsTaken(ctx context.Context, sess *session.Session, nick d
 }
 
 // PrepareInstance resolves the persona and unique nick for a new
-// model instance. The session's `AddModel` handler calls this
-// before attaching the constructed instance to a channel. Nick
-// failures and tool-capability validation fail the command; a
-// persona the pool could not supply does not, since a model with no
-// persona still works, so it comes back as a warning the handler
-// answers with a server notice. The supplied session is consulted
-// for nick-uniqueness resolution so the manager does not hold a
+// model instance. The session's `AddModel` handler calls this before
+// attaching the constructed instance to a channel. A persona the pool
+// could not supply fails the command: the persona becomes revision zero
+// of the instance's lineage, which every later revision is a change to
+// and which a reset restores, and nothing after ADDMODEL supplies one.
+// Nick generation is the part that degrades: the deterministic fallback
+// gives the instance a usable nick, and the warning the handler answers
+// with a server notice says so. The supplied session is consulted for
+// nick-uniqueness resolution so the manager does not hold a
 // back-reference.
 func (m *Manager) PrepareInstance(
 	ctx context.Context,
@@ -820,22 +832,22 @@ func (m *Manager) PrepareInstance(
 	}
 
 	if !assigned {
-		// A pool that could not be topped up is only a problem if it
-		// is also empty, which the draw below is what discovers.
-		if err := m.EnsurePersonaTemplates(ctx); err != nil {
-			logger.WarnContext(ctx, "persona pool generation failed", "error", err)
-		}
+		// Topping the pool up is a no-op unless it is empty, so a
+		// failure here matters only when the draw then finds nothing.
+		// Reporting both says what went wrong as well as what it cost.
+		generateErr := m.EnsurePersonaTemplates(ctx)
 
 		p, err := m.RandomPersonaTemplate(ctx)
 		if err != nil {
-			logger.WarnContext(ctx, "persona assignment failed, instance will have no persona", "error", err)
+			if generateErr != nil {
+				err = fmt.Errorf("%w: %w", generateErr, err)
+			}
 
-			prepared.Warnings = append(prepared.Warnings,
-				fmt.Sprintf("no persona was assigned to %s (%v); it joins without one", modelID, err))
-		} else {
-			prepared.Persona = p.Description
-			prepared.PersonaTemplate = personaTemplateProvenance(p)
+			return prepared, fmt.Errorf("assign a persona to %s: %w", modelID, err)
 		}
+
+		prepared.Persona = p.Description
+		prepared.PersonaTemplate = personaTemplateProvenance(p)
 	}
 
 	if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
@@ -847,17 +859,27 @@ func (m *Manager) PrepareInstance(
 		return prepared, err
 	}
 
-	prepared.Nick = nick
+	prepared.Nick = nick.Nick
+	if nick.Fallback != nil {
+		prepared.Warnings = append(prepared.Warnings, fmt.Sprintf(
+			"could not generate a nick for %s: %v. It joins as %s, derived from its model id.",
+			modelID, nick.Fallback, nick.Nick))
+	}
 
 	return prepared, nil
 }
 
-// resolvePersona copies a persona template when requested is its exact ID.
-// Text that does not identify a template remains a literal persona.
+// resolvePersona copies a persona template when requested names one.
+// Text that identifies no template is the persona itself. Surrounding
+// whitespace is dropped before either reading: a persona is prose bound
+// for a prompt, and padding on a template id would otherwise make the
+// id miss and be taken as a two-word character the instance keeps for
+// good.
 func (m *Manager) resolvePersona(
 	ctx context.Context,
 	requested string,
 ) (string, *domain.PersonaTemplateProvenance, bool, error) {
+	requested = strings.TrimSpace(requested)
 	if requested == "" {
 		return "", nil, false, nil
 	}

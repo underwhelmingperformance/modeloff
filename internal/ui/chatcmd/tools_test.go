@@ -366,7 +366,11 @@ func (toolTestAPI) GenerateNick(context.Context, domain.ModelID, string, []domai
 }
 
 func (toolTestAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
-	return nil, nil
+	return []domain.PersonaTemplate{{
+		ID:          "fake-persona",
+		Description: "a terse reviewer",
+		Origin:      domain.PersonaGenerated,
+	}}, nil
 }
 
 func newToolTestSession(t *testing.T) (*session.Session, *userclient.UserClient) {
@@ -1297,6 +1301,7 @@ func TestRunTool_whois_returns_the_actor_snapshot(t *testing.T) {
 		Data: domain.Whois{
 			Nick:           "testbot",
 			ModelID:        "anthropic/haiku",
+			Persona:        "a terse reviewer",
 			PersonaLineage: domain.PersonaCounts{Revision: 1},
 			Channels:       []domain.ChannelName{"#lobby"},
 		},

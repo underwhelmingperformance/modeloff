@@ -78,7 +78,11 @@ func (stubAPI) GenerateNick(context.Context, domain.ModelID, string, []domain.Ni
 }
 
 func (stubAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
-	return nil, nil
+	return []domain.PersonaTemplate{{
+		ID:          "fake-persona",
+		Description: "a terse reviewer",
+		Origin:      domain.PersonaGenerated,
+	}}, nil
 }
 
 func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager, *userclient.UserClient) {

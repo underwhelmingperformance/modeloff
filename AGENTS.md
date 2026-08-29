@@ -1429,8 +1429,17 @@ from: the template's id, its origin and a hash of its description, so an
 operator can tell which pool row an instance started from after the pool
 row itself has been edited. A lineage created before those columns
 existed carries none of it, and neither does one written from
-operator-supplied text or with no persona available, so an absent
-provenance is read as unrecorded and not as an absent template.
+operator-supplied text, so an absent provenance is read as unrecorded
+and not as an absent template.
+
+ADDMODEL refuses when no persona was given and the pool can supply
+none, reporting both the generation failure and the empty pool it left
+behind. Revision zero is the description every later revision is a
+change to and the one a reset restores, and nothing after ADDMODEL
+supplies it, so an instance admitted without one could never acquire a
+character. Nick generation is the part of preparation that degrades:
+the deterministic fallback derives a nick from the model id and the
+warning reporting it reaches the operator as a server notice.
 
 A reset, a rollback and an operator edit each move the current-revision
 pointer through the one compare-and-swap in `movePersonaRevisionTx`,

@@ -493,7 +493,11 @@ func (f *integrationAPI) GenerateNick(ctx context.Context, smallModel domain.Mod
 }
 
 func (f *integrationAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
-	return nil, nil
+	return []domain.PersonaTemplate{{
+		ID:          "fake-persona",
+		Description: "a terse reviewer",
+		Origin:      domain.PersonaGenerated,
+	}}, nil
 }
 
 type integrationConfigStore struct {

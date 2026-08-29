@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
 )
 
@@ -27,12 +28,16 @@ func (m *Manager) EnsurePersonaTemplates(ctx context.Context) error {
 
 		client, _ := m.snapshotAPI()
 		if client == nil {
-			return fmt.Errorf("generate persona templates: api client not configured")
+			return fmt.Errorf("generate persona templates: %w", api.ErrClientNotConfigured)
 		}
 
 		templates, err := client.GeneratePersonaTemplates(ctx, m.SmallModel())
 		if err != nil {
 			return fmt.Errorf("generate persona templates: %w", err)
+		}
+
+		if len(templates) == 0 {
+			return fmt.Errorf("generate persona templates: %s produced none", m.SmallModel())
 		}
 
 		for _, p := range templates {
@@ -130,7 +135,7 @@ func (m *Manager) RegeneratePersonaTemplates(ctx context.Context) ([]domain.Pers
 	err := m.inSpan(ctx, "modelmanager.regenerate_persona_templates", nil, func(ctx context.Context, _ trace.Span) error {
 		client, _ := m.snapshotAPI()
 		if client == nil {
-			return fmt.Errorf("generate persona templates: api client not configured")
+			return fmt.Errorf("generate persona templates: %w", api.ErrClientNotConfigured)
 		}
 
 		generated, err := client.GeneratePersonaTemplates(ctx, m.SmallModel())

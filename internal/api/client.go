@@ -26,6 +26,12 @@ var ErrContentFiltered = errors.New("response blocked by content filter")
 // ErrResponseTruncated indicates the response was truncated due to token limits.
 var ErrResponseTruncated = errors.New("response truncated: hit token limit")
 
+// ErrClientNotConfigured reports that no API client has been built,
+// which is the state until an OpenRouter key is configured. Every
+// upstream call is refused on it, so a caller can tell a missing key
+// from a request the provider answered badly.
+var ErrClientNotConfigured = errors.New("api client not configured")
+
 // ErrPromptTooLong indicates the provider refused the request because
 // its prompt exceeds the model's context window. It is not retryable
 // on its own: the same request produces the same refusal. What

@@ -56,7 +56,7 @@ func TestManager_PrepareInstance_nickGeneration_prefers_NickReasonGenerator(t *t
 
 	sess := newTestSession(t, fx)
 
-	prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, "")
+	prepared, err := fx.mgr.PrepareInstance(ctx, sess, modelID, nickTestPersona)
 	require.NoError(t, err)
 	require.Equal(t, domain.Nick("goodnick"), prepared.Nick)
 
@@ -97,7 +97,7 @@ func TestManager_PrepareInstance_nickGeneration_falls_back_without_NickReasonGen
 	})
 	sess := newTestSession(t, fx)
 
-	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, nickTestPersona)
 	require.NoError(t, err)
 	require.Equal(t, domain.Nick("goodnick"), prepared.Nick)
 	require.Equal(t, [][]domain.Nick{nil}, seenExclusions)
