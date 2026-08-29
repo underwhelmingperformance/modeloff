@@ -255,7 +255,7 @@ type personaItem struct {
 
 // personaTemplateListWrapper is the top-level structured output envelope.
 type personaTemplateListWrapper struct {
-	Personas []personaItem `json:"personas"`
+	Templates []personaItem `json:"templates"`
 }
 
 var personaTemplateSchemaMap = generateSchema[personaTemplateListWrapper]()
@@ -278,7 +278,7 @@ func personaResponseFormat() openai.ChatCompletionNewParamsResponseFormatUnion {
 	}
 }
 
-// GeneratePersonaTemplates asks a model to generate a set of IRC user personas
+// GeneratePersonaTemplates asks a model to write a set of persona templates
 // using structured output, returning them with PersonaGenerated origin.
 func (c *OpenRouterClient) GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
 	ctx, cancel := ensureDeadline(ctx, c.metaTimeout)
@@ -327,8 +327,8 @@ func (c *OpenRouterClient) GeneratePersonaTemplates(ctx context.Context, smallMo
 			// state record expects rather than taking model output as
 			// written. One unusable persona does not spoil the batch:
 			// the pool is drawn from whatever passed.
-			templates = make([]domain.PersonaTemplate, 0, len(wrapper.Personas))
-			for _, p := range wrapper.Personas {
+			templates = make([]domain.PersonaTemplate, 0, len(wrapper.Templates))
+			for _, p := range wrapper.Templates {
 				if reason := domain.ValidatePersona(p.Description); reason != domain.PersonaAccepted {
 					logger.WarnContext(ctx, "discarding generated persona",
 						"persona_id", p.ID,

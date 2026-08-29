@@ -261,6 +261,31 @@ func TestApplyMigrations_at_current_is_noop(t *testing.T) {
 	require.Equal(t, SchemaVersion, got)
 }
 
+// TestNewSQLiteStore_reopen_does_not_restore_a_v1_table pins that the
+// `schema` constant runs for a fresh database and not again. `personas`
+// is the case that exists: it is a v1 table the migration chain takes
+// away, so a second open that re-ran `schema` would put it back.
+func TestNewSQLiteStore_reopen_does_not_restore_a_v1_table(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	_, err = NewSQLiteStore(ctx, db)
+	require.NoError(t, err)
+	_, err = NewSQLiteStore(ctx, db)
+	require.NoError(t, err)
+
+	var present bool
+	require.NoError(t, db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'personas'
+		)`).Scan(&present))
+
+	require.False(t, present)
+}
+
 func TestApplyMigrations_v9_to_v10_adds_the_model_turn_journal(t *testing.T) {
 	ctx := t.Context()
 	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
@@ -1052,4 +1077,117 @@ func TestApplyMigrations_v19_to_v20_names_the_recorded_departures(t *testing.T) 
 	}
 
 	require.Equal(t, want, got)
+}
+
+// storedEventRow is one row of a table holding a serialised
+// [domain.PersistableEvent]: the discriminator in its own column and
+// the envelope in `data`.
+type storedEventRow struct {
+	Type string
+	Data string
+}
+
+// TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool
+// covers the three stored names the template rename left behind: the
+// pool's table, the discriminator a template list is written under, and
+// the field holding the templates inside it. A row written before the
+// migration must come back through
+// [domain.UnmarshalPersistableEvent], which knows only the new names.
+func TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	seedV1Database(t, db)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	for _, migration := range migrations {
+		if migration.Version > 20 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO personas (id, description, origin) VALUES ('bard', 'A travelling storyteller', 'user')`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO channels (name, data) VALUES ('#dev', '{}')`)
+	require.NoError(t, err)
+
+	const listedAt = "2026-08-01T10:00:00Z"
+
+	const storedList = `{"version":2,"type":"personas_list","data":{"personas":` +
+		`[{"id":"bard","description":"A travelling storyteller","origin":"user"}],` +
+		`"at":"2026-08-01T10:00:00Z"}}`
+
+	for _, insert := range []string{
+		`INSERT INTO events (channel, type, data, at) VALUES ('#dev', 'personas_list', ?, '2026-08-01T10:00:00Z')`,
+		`INSERT INTO instance_replies (instance_id, type, data, at, window_key, window_kind)
+		 VALUES ('', 'personas_list', ?, '2026-08-01T10:00:00Z', '#dev', 1)`,
+		`INSERT INTO channel_scrollback (instance_id, channel, type, data, at)
+		 VALUES ('', '#dev', 'personas_list', ?, '2026-08-01T10:00:00Z')`,
+	} {
+		_, err = tx.ExecContext(ctx, insert, storedList)
+		require.NoError(t, err)
+	}
+
+	for _, migration := range migrations {
+		if migration.Version != 21 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
+	}
+
+	var template domain.PersonaTemplate
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT id, description, origin FROM persona_templates`,
+	).Scan(&template.ID, &template.Description, &template.Origin))
+
+	rows := map[string]storedEventRow{}
+	events := map[string]domain.PersistableEvent{}
+	for _, table := range []string{"events", "instance_replies", "channel_scrollback"} {
+		var row storedEventRow
+		require.NoError(t, tx.QueryRowContext(ctx,
+			`SELECT type, data FROM `+table+` WHERE at = ?`, listedAt,
+		).Scan(&row.Type, &row.Data))
+		rows[table] = storedEventRow{Type: row.Type}
+
+		decoded, err := domain.UnmarshalPersistableEvent([]byte(row.Data))
+		require.NoError(t, err, table)
+		events[table] = decoded
+	}
+
+	wantList := domain.PersonaTemplatesList{
+		Templates: []domain.PersonaTemplate{
+			{ID: "bard", Description: "A travelling storyteller", Origin: domain.PersonaUser},
+		},
+		At: time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC),
+	}
+
+	require.Equal(t, struct {
+		Template domain.PersonaTemplate
+		Rows     map[string]storedEventRow
+		Events   map[string]domain.PersistableEvent
+	}{
+		Template: domain.PersonaTemplate{
+			ID: "bard", Description: "A travelling storyteller", Origin: domain.PersonaUser,
+		},
+		Rows: map[string]storedEventRow{
+			"events":             {Type: "persona_templates_list"},
+			"instance_replies":   {Type: "persona_templates_list"},
+			"channel_scrollback": {Type: "persona_templates_list"},
+		},
+		Events: map[string]domain.PersistableEvent{
+			"events": wantList, "instance_replies": wantList, "channel_scrollback": wantList,
+		},
+	}, struct {
+		Template domain.PersonaTemplate
+		Rows     map[string]storedEventRow
+		Events   map[string]domain.PersistableEvent
+	}{Template: template, Rows: rows, Events: events})
 }

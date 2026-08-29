@@ -15,7 +15,7 @@ func (s *SQLiteStore) ListPersonaTemplates(ctx context.Context) ([]domain.Person
 	var templates []domain.PersonaTemplate
 	err := s.inSpan(ctx, "store.sqlite.list_persona_templates", nil, func(ctx context.Context, _ trace.Span) error {
 		got, err := queryRows(ctx, s.db,
-			`SELECT id, description, origin FROM personas ORDER BY id`, nil,
+			`SELECT id, description, origin FROM persona_templates ORDER BY id`, nil,
 			personaTemplateRow)
 		if err != nil {
 			return err
@@ -35,7 +35,7 @@ func (s *SQLiteStore) GetPersonaTemplate(ctx context.Context, id string) (domain
 		[]attribute.KeyValue{attribute.String("persona_template.id", id)},
 		func(ctx context.Context, _ trace.Span) error {
 			got, err := queryRow(ctx, s.db,
-				`SELECT id, description, origin FROM personas WHERE id = ?`,
+				`SELECT id, description, origin FROM persona_templates WHERE id = ?`,
 				[]any{id}, nil, personaTemplateRow)
 			if err != nil {
 				return fmt.Errorf("persona template %q: %w", id, err)
@@ -54,7 +54,7 @@ func (s *SQLiteStore) SavePersonaTemplate(ctx context.Context, p domain.PersonaT
 		[]attribute.KeyValue{attribute.String("persona_template.id", p.ID)},
 		func(ctx context.Context, _ trace.Span) error {
 			return execMutation(ctx, s.db,
-				`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
+				`INSERT INTO persona_templates (id, description, origin) VALUES (?, ?, ?)
 				 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
 				p.ID, p.Description, p.Origin)
 		})
@@ -65,12 +65,12 @@ func (s *SQLiteStore) DeletePersonaTemplatesByOrigin(ctx context.Context, origin
 	return s.inSpan(ctx, "store.sqlite.delete_persona_templates_by_origin",
 		[]attribute.KeyValue{attribute.String("persona_template.origin", string(origin))},
 		func(ctx context.Context, _ trace.Span) error {
-			return execMutation(ctx, s.db, `DELETE FROM personas WHERE origin = ?`, origin)
+			return execMutation(ctx, s.db, `DELETE FROM persona_templates WHERE origin = ?`, origin)
 		})
 }
 
 // personaTemplateRow decodes the (id, description, origin) shape used by
-// every personas-table query.
+// every persona_templates query.
 func personaTemplateRow(r rowScanner) (domain.PersonaTemplate, error) {
 	var p domain.PersonaTemplate
 	return p, r.Scan(&p.ID, &p.Description, &p.Origin)
@@ -88,13 +88,13 @@ func (s *SQLiteStore) ReplaceGeneratedPersonaTemplates(ctx context.Context, temp
 
 		defer func() { _ = tx.Rollback() }()
 
-		if _, err := tx.ExecContext(ctx, `DELETE FROM personas WHERE origin = ?`, domain.PersonaGenerated); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM persona_templates WHERE origin = ?`, domain.PersonaGenerated); err != nil {
 			return fmt.Errorf("delete generated: %w", err)
 		}
 
 		for _, p := range templates {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO personas (id, description, origin) VALUES (?, ?, ?)
+				`INSERT INTO persona_templates (id, description, origin) VALUES (?, ?, ?)
 				 ON CONFLICT (id) DO UPDATE SET description = excluded.description, origin = excluded.origin`,
 				p.ID, p.Description, p.Origin); err != nil {
 				return fmt.Errorf("insert persona template %q: %w", p.ID, err)

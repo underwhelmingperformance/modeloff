@@ -217,10 +217,14 @@ func NewDefaultSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 // caller is responsible for opening the database with a DSN that
 // configures the required connection-time PRAGMAs (`busy_timeout`,
 // `journal_mode`, `foreign_keys`); `SQLitePragmaDSN` builds one.
-// The schema is created on first open; subsequent opens are no-ops
-// thanks to `CREATE TABLE IF NOT EXISTS`. Existing databases whose
-// recorded schema version differs from [SchemaVersion] are
-// reconciled through [applyMigrations].
+// The `schema` constant creates a v1 database and runs only for a
+// database that records no version. [applyMigrations] then brings it,
+// and every existing database, to [SchemaVersion].
+//
+// Running `schema` at every open would look harmless, since every
+// object it creates is created `IF NOT EXISTS`, but a migration that
+// renames or drops a v1 table would find the table back on the next
+// open.
 func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 	// Read the resulting journal mode for operator visibility — an
 	// on-disk database normally reports `wal` here, but a `:memory:`
@@ -236,8 +240,15 @@ func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
 		"mode", journalMode,
 	)
 
-	if _, err := db.ExecContext(ctx, schema); err != nil {
-		return nil, fmt.Errorf("create schema: %w", err)
+	recorded, err := schemaRecorded(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	if !recorded {
+		if _, err := db.ExecContext(ctx, schema); err != nil {
+			return nil, fmt.Errorf("create schema: %w", err)
+		}
 	}
 
 	if err := applyMigrations(ctx, db); err != nil {
@@ -3034,7 +3045,7 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 			`DELETE FROM pending_memory_deletions`,
 			`DELETE FROM instances`,
 			`DELETE FROM memories`,
-			`DELETE FROM personas`,
+			`DELETE FROM persona_templates`,
 			`DELETE FROM state`,
 			`DELETE FROM autojoin`,
 		} {

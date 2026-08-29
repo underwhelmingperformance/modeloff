@@ -16,17 +16,14 @@ import (
 // [migration] entry brings a v(N-1) database forward to vN.
 //
 // `schema` (sqlite.go) only ever describes the v1 shape and seeds
-// `state.schema_version` to '1' via `INSERT OR IGNORE` — it never
-// grows the v2+ shape directly. NewSQLiteStore execs `schema` before
-// running migrations, and `CREATE TABLE IF NOT EXISTS` /
-// `CREATE INDEX IF NOT EXISTS` are no-ops against a table an earlier
-// version already created; if `schema` also carried a v2+ column or
-// index reference, that statement would run before the migration
-// that is supposed to introduce it and fail against any database
-// that predates this version. Every database — fresh or
-// pre-existing — reaches the current shape through applyMigrations,
-// the single path from v1 onward.
-const SchemaVersion = 20
+// `state.schema_version` to '1' via `INSERT OR IGNORE`; it never grows
+// the v2+ shape directly. [NewSQLiteStore] runs it for a database that
+// records no version, and applyMigrations then brings every database,
+// fresh or pre-existing, to this version: that is the single path from
+// v1 onward. If `schema` carried a v2+ column or index, a fresh
+// database would receive it before the migration meant to introduce
+// it ran, and that migration would fail on an object already there.
+const SchemaVersion = 21
 
 type schemaTooNewError struct {
 	Found     int
@@ -706,6 +703,56 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		Version: 21,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			statements := []migrationStatement{
+				{"rename the template pool", `
+					ALTER TABLE personas RENAME TO persona_templates
+				`},
+				{"retag stored template lists in the channel log", `
+					UPDATE events
+					   SET type = 'persona_templates_list',
+					       data = json_set(
+					                json_remove(
+					                  json_set(data, '$.type', 'persona_templates_list'),
+					                  '$.data.personas'),
+					                '$.data.templates',
+					                json_extract(data, '$.data.personas'))
+					 WHERE type = 'personas_list'
+				`},
+				{"retag stored template lists in the reply log", `
+					UPDATE instance_replies
+					   SET type = 'persona_templates_list',
+					       data = json_set(
+					                json_remove(
+					                  json_set(data, '$.type', 'persona_templates_list'),
+					                  '$.data.personas'),
+					                '$.data.templates',
+					                json_extract(data, '$.data.personas'))
+					 WHERE type = 'personas_list'
+				`},
+				{"retag stored template lists in projected scrollback", `
+					UPDATE channel_scrollback
+					   SET type = 'persona_templates_list',
+					       data = json_set(
+					                json_remove(
+					                  json_set(data, '$.type', 'persona_templates_list'),
+					                  '$.data.personas'),
+					                '$.data.templates',
+					                json_extract(data, '$.data.personas'))
+					 WHERE type = 'personas_list'
+				`},
+			}
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+					return fmt.Errorf("%s: %w", statement.name, err)
+				}
+			}
+
+			return nil
+		},
+	},
 }
 
 type migrationStoredEvent struct {
@@ -1009,8 +1056,34 @@ func missingMigrations(from int) []migration {
 	return chain
 }
 
+// schemaRecorded reports whether db already records a schema version.
+// The `INSERT OR IGNORE` that writes version 1 is the last statement in
+// the `schema` constant, so the row is written only after every
+// preceding schema statement has run: a first open interrupted part way
+// through leaves no row, and the next open creates the schema again.
+func schemaRecorded(ctx context.Context, db *sql.DB) (bool, error) {
+	var present bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'state'
+		)`).Scan(&present); err != nil {
+		return false, fmt.Errorf("look for the state table: %w", err)
+	}
+
+	if !present {
+		return false, nil
+	}
+
+	version, err := readSchemaVersion(ctx, db)
+	if err != nil {
+		return false, fmt.Errorf("read schema version: %w", err)
+	}
+
+	return version > 0, nil
+}
+
 // readSchemaVersion returns the recorded version, or 0 when no
-// row exists. A 0 result from an empty database is normal — the
+// row exists. A 0 result from an empty database is normal: the
 // `INSERT OR IGNORE` in `schema` seeds the row to '1' on first
 // exec, and applyMigrations brings it to [SchemaVersion] right
 // after. A 0 from a populated database indicates a state row that

@@ -3246,7 +3246,7 @@ func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
 		"pending_memory_deletions": `SELECT * FROM pending_memory_deletions`,
 		"instances":                `SELECT * FROM instances`,
 		"memories":                 `SELECT * FROM memories`,
-		"personas":                 `SELECT * FROM personas`,
+		"persona_templates":        `SELECT * FROM persona_templates`,
 		"state":                    `SELECT * FROM state`,
 		"autojoin":                 `SELECT * FROM autojoin`,
 	}

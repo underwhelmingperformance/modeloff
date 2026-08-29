@@ -443,12 +443,10 @@ func (SystemNotice) persistableEvent()                 {}
 func (e SystemNotice) persistableEventTime() time.Time { return e.At }
 func (SystemNotice) issuerReply()                      {}
 
-// PersonaTemplatesList carries the persona templates a `/templates` reply
-// lists. Its discriminator stays `personas_list`, the tag already in the
-// store, which [EventType] keeps because that vocabulary is
-// hand-maintained.
+// PersonaTemplatesList carries the persona templates a `/templates`
+// reply lists.
 type PersonaTemplatesList struct {
-	Templates []PersonaTemplate `json:"personas"`
+	Templates []PersonaTemplate `json:"templates"`
 	At        time.Time         `json:"at"`
 }
 
@@ -545,7 +543,7 @@ func EventType(e PersistableEvent) string {
 	case SystemNotice:
 		return "system_notice"
 	case PersonaTemplatesList:
-		return "personas_list"
+		return "persona_templates_list"
 	default:
 		return ""
 	}
@@ -657,7 +655,7 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 	case "system_notice":
 		var e SystemNotice
 		return e, unmarshal(&e)
-	case "personas_list":
+	case "persona_templates_list":
 		var e PersonaTemplatesList
 		return e, unmarshal(&e)
 	default:
@@ -822,7 +820,7 @@ func unmarshalPersistableEventV2(eventType string, data json.RawMessage) (Persis
 	case "system_notice":
 		var e SystemNotice
 		return e, unmarshal(&e)
-	case "personas_list":
+	case "persona_templates_list":
 		var e PersonaTemplatesList
 		return e, unmarshal(&e)
 	default:
