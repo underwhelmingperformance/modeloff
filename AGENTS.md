@@ -1299,6 +1299,44 @@ particular person treats it keeps those episodes live, and one that
 never looks again lets them sink. That is what makes evolution depend on
 who the instance already is, and it needs no parameter.
 
+For that to reach past the recent, a run has to be able to find an
+episode it did not know to look for. `recall_history` and
+`recall_events` follow links the instance already holds, so they confirm
+what it went looking for. `memory.ExperienceIndex` is a chromem-go
+collection per instance over its own experience summaries, and
+`recall_like` asks it whether something resembling the present has
+happened before. Experiences are indexed and raw events are not: an
+experience is summarised prose written for the purpose and arrives a
+handful per accepted run, while embedding the event stream would cost
+one call per substantive delivery.
+
+The index is derived state and the store is the source of truth. It is
+written after the acceptance commit and outside it, because indexing
+calls an embedding endpoint; a failure is logged and nothing else. It
+answers with ids, which the store turns back into experiences, so an id
+retention has removed drops out of the answer. An instance whose
+embedding endpoint is unreachable is not offered `recall_like` at all
+and keeps its structural recall.
+
+Being derived, the index drifts from the store in both directions, so a
+run reconciles its own instance's collection before reading it.
+Retention removes experiences and leaves their documents, which then
+take places in a result the store drops, so a query whose nearest
+matches are all stale answers with nothing while live experiences rank
+below them. A reset of the vector database, which changing the embedding
+model performs, drops documents the store still holds, and only a newly
+accepted experience is ever indexed. Reconciliation compares the
+collection with the run's own retained set and rebuilds it when they
+disagree; when they agree it costs a count and a lookup each, and no
+embedding call.
+
+A character with retrieval can go looking for evidence that supports
+what it already believes, and similarity search makes that cheaper. The
+defences are unchanged: cited events must have happened, the operator
+sees every revision's diff, and rollback exists. The failure mode to
+watch is the one where every citation is genuine and the conclusion is
+still wrong.
+
 The test that separates the last two is whether the clause would
 survive the instance having a different job. "Gives people a figure
 and its risk" would not: in a channel with no figures in it there is

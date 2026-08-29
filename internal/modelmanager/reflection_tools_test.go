@@ -60,7 +60,7 @@ func reflectionToolFixture(
 	require.NoError(t, err)
 	_, aliases := reflectionAPIInput(snapshot)
 
-	return newReflectionTools(stored, snapshot, aliases), snapshot
+	return newReflectionTools(stored, snapshot, aliases, nil), snapshot
 }
 
 func TestReflectionTools_read_an_instances_past_under_the_run_tokens(t *testing.T) {

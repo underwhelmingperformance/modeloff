@@ -3,11 +3,14 @@ package modelmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/modelclient"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
@@ -23,6 +26,11 @@ const (
 	// result carries is repeated in every later request of the run, so
 	// the cap is what keeps a run's prompt from growing per call.
 	maxReflectionRecallEvents = 40
+
+	// maxReflectionRecallExperiences caps one similarity result. An
+	// experience is a whole summary rather than one line, so fewer of
+	// them fit the same budget.
+	maxReflectionRecallExperiences = 10
 )
 
 // reflectionRecallStore is the read-only capability a reflecting
@@ -30,6 +38,11 @@ const (
 // and match on it, so a tool call reaches no other instance's stream, and
 // neither read can change anything.
 type reflectionRecallStore interface {
+	ExperiencesByID(
+		ctx context.Context,
+		instanceID domain.InstanceID,
+		ids []domain.ExperienceID,
+	) ([]domain.Experience, error)
 	ReflectionEventsBefore(
 		ctx context.Context,
 		instanceID domain.InstanceID,
@@ -58,6 +71,11 @@ type reflectionTools struct {
 	// asks for history without saying where gets the events immediately
 	// preceding the ones it has just read.
 	checkpoint domain.ReflectionSequence
+
+	// index answers the similarity question, and is nil when the memory
+	// store has no experience index or its embedding endpoint is
+	// unreachable. The tool is then not offered at all.
+	index *memory.ExperienceIndex
 
 	// recalled is every event a tool returned during this run. What the
 	// instance went back to read is the signal for what still matters to
@@ -94,17 +112,25 @@ func newReflectionTools(
 	stored reflectionRecallStore,
 	snapshot store.PendingReflectionSnapshot,
 	aliases *reflectionAliases,
+	index *memory.ExperienceIndex,
 ) *reflectionTools {
-	return &reflectionTools{
+	tools := &reflectionTools{
 		store:      stored,
 		aliases:    aliases,
 		instanceID: snapshot.Persona.Lineage.InstanceID,
 		checkpoint: snapshot.Range.Checkpoint,
 	}
+	// An index whose embedding endpoint is unreachable answers nothing,
+	// so the tool is not offered and the run keeps its structural recall.
+	if index.Searchable() {
+		tools.index = index
+	}
+
+	return tools
 }
 
 func (t *reflectionTools) definitions() []api.ToolDefinition {
-	return []api.ToolDefinition{
+	definitions := []api.ToolDefinition{
 		{
 			Name:        "recall_history",
 			Description: "Read further back through what you saw, older than the events in this request. Use it to tell a one-off from a pattern, and to see what surrounded a remark. Set window to a channel name or to a participant token for your direct conversation with them, or leave it empty to read every window at once. Set before to a sequence number to page further back, or 0 to start where this request's events start.",
@@ -145,6 +171,30 @@ func (t *reflectionTools) definitions() []api.ToolDefinition {
 			},
 		},
 	}
+
+	if t.index == nil {
+		return definitions
+	}
+
+	return append(definitions, api.ToolDefinition{
+		Name:        "recall_like",
+		Description: "Find your own past experiences that resemble a description, whether or not this request listed them. The other two tools follow links you already hold, so they show you what you went looking for; use this to find out whether something has happened before in a way you had not connected.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "What to look for, in your own words.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "How many experiences to read back, at most 10.",
+				},
+			},
+			"required":             []string{"query", "limit"},
+			"additionalProperties": false,
+		},
+	})
 }
 
 // execute answers one batch of tool calls. A refusal is reported to the
@@ -156,10 +206,9 @@ func (t *reflectionTools) execute(
 ) []api.ToolResult {
 	results := make([]api.ToolResult, 0, len(calls))
 	for _, call := range calls {
-		events, err := t.call(ctx, call)
+		result, err := t.call(ctx, call)
 		payload := modelclient.ToolResultPayload{
-			OK: true, Data: events,
-			Summary: fmt.Sprintf("read %d events", len(events)),
+			OK: true, Data: result.data, Summary: result.summary,
 		}
 		if err != nil {
 			payload = modelclient.ToolResultPayload{OK: false, Error: err.Error()}
@@ -176,18 +225,79 @@ func (t *reflectionTools) execute(
 	return results
 }
 
+// reflectionToolResult is what one tool read, and the one-line summary
+// that goes back with it.
+type reflectionToolResult struct {
+	data    any
+	summary string
+}
+
+func eventsRead(events []api.ReflectionInputEvent) reflectionToolResult {
+	return reflectionToolResult{
+		data: events, summary: fmt.Sprintf("read %d events", len(events)),
+	}
+}
+
 func (t *reflectionTools) call(
 	ctx context.Context,
 	call api.PendingToolCall,
-) ([]api.ReflectionInputEvent, error) {
+) (reflectionToolResult, error) {
 	switch call.Name {
 	case "recall_history":
-		return t.recallHistory(ctx, call.Args)
+		events, err := t.recallHistory(ctx, call.Args)
+
+		return eventsRead(events), err
 	case "recall_events":
-		return t.recallEvents(ctx, call.Args)
+		events, err := t.recallEvents(ctx, call.Args)
+
+		return eventsRead(events), err
+	case "recall_like":
+		return t.recallLike(ctx, call.Args)
 	default:
-		return nil, fmt.Errorf("unknown tool %q", call.Name)
+		return reflectionToolResult{}, fmt.Errorf("unknown tool %q", call.Name)
 	}
+}
+
+// recallLike answers with the instance's own experiences most like the
+// query, whether or not this request carried them.
+//
+// The other two tools follow links the instance already holds, so they
+// confirm what it went looking for. This is how it finds an episode it
+// did not know to look for, which is where a pattern hides.
+func (t *reflectionTools) recallLike(
+	ctx context.Context,
+	rawArgs json.RawMessage,
+) (reflectionToolResult, error) {
+	var args struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return reflectionToolResult{}, err
+	}
+	if strings.TrimSpace(args.Query) == "" {
+		return reflectionToolResult{}, errors.New("recall_like needs a query")
+	}
+
+	limit := min(max(args.Limit, 1), maxReflectionRecallExperiences)
+	ids, err := t.index.Search(ctx, t.instanceID, args.Query, limit)
+	if err != nil {
+		return reflectionToolResult{}, err
+	}
+	experiences, err := t.store.ExperiencesByID(ctx, t.instanceID, ids)
+	if err != nil {
+		return reflectionToolResult{}, err
+	}
+
+	rendered := make([]api.ReflectionInputExperience, 0, len(experiences))
+	for _, experience := range experiences {
+		rendered = append(rendered, reflectionInputExperience(experience, t.aliases))
+	}
+
+	return reflectionToolResult{
+		data:    rendered,
+		summary: fmt.Sprintf("read %d experiences", len(rendered)),
+	}, nil
 }
 
 func (t *reflectionTools) recallHistory(

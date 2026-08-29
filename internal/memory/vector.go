@@ -430,15 +430,24 @@ func (s *IndexedStore) finishPreparedWrite(
 	}
 }
 
-// dropOrphanedCollections removes every collection the backing store holds
-// no memories for.
+// dropOrphanedCollections removes every memory collection the backing
+// store holds no memories for.
 //
 // ensureIndexed reaches a collection only when its instance searches, and
 // an instance whose row has been deleted never searches again. Without this
 // its collection stays in the index directory for as long as the directory
 // does, still holding what that instance wrote.
+//
+// A memory collection is named by the bare instance id. The database also
+// holds the experience collections [ExperienceIndex] writes, under a
+// prefixed name, and those are reconciled against a different table: read
+// as instance ids they would answer with no memories, and every one of
+// them would be dropped on the next open.
 func (s *IndexedStore) dropOrphanedCollections(ctx context.Context) {
 	for name := range s.db.ListCollections() {
+		if !memoryCollectionName(name) {
+			continue
+		}
 		entries, err := s.backing.Read(ctx, domain.InstanceID(name))
 		if err != nil {
 			slog.Default().WarnContext(ctx,
@@ -581,21 +590,25 @@ func (s *IndexedStore) finishPreparedDelete(
 	}
 }
 
-// DeleteInstance removes the given instance's chromem-go vector
-// collection. It is a no-op if the instance never had a collection.
-// The backing store's memories rows for the same instance are
-// removed automatically when the instance's own row is deleted (see
+// DeleteInstance removes the given instance's chromem-go collections,
+// its memories and its experiences alike. It is a no-op for a collection
+// the instance never had.
+//
+// The backing store's memories rows for the same instance are removed
+// automatically when the instance's own row is deleted (see
 // [InstanceDeleter]'s doc comment); this only needs to clear index
-// state chromem owns independently of that row.
+// state chromem owns independently of that row. The experience
+// collection has no other reader: [IndexedStore.dropOrphanedCollections]
+// reconciles memories alone, so this is the one path that takes it.
 func (s *IndexedStore) DeleteInstance(ctx context.Context, id domain.InstanceID) error {
 	return s.inSpan(ctx, "memory.delete_instance",
 		[]attribute.KeyValue{attribute.String(observability.AttrInstanceID, string(id))},
-		func(_ context.Context, _ trace.Span) error {
+		func(ctx context.Context, _ trace.Span) error {
 			if err := s.db.DeleteCollection(string(id)); err != nil {
 				return fmt.Errorf("delete collection: %w", err)
 			}
 
-			return nil
+			return s.Experiences().DeleteInstance(ctx, id)
 		})
 }
 

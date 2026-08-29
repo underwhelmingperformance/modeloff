@@ -12,6 +12,7 @@ import (
 	"github.com/laney/modeloff/internal/api"
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/memory"
 	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
@@ -164,7 +165,7 @@ func (m *Manager) runReflection(
 	}
 
 	input, aliases := reflectionAPIInput(snapshot)
-	tools := newReflectionTools(stored, snapshot, aliases)
+	tools := newReflectionTools(stored, snapshot, aliases, m.reconciledIndex(ctx, snapshot))
 	result, err := m.reflect(ctx, generator, modelID, snapshot, input, tools)
 	finishedAt := m.now()
 	baseRun.FinishedAt = finishedAt
@@ -239,6 +240,7 @@ func (m *Manager) runReflection(
 		return
 	}
 
+	m.indexExperiences(ctx, commit.Run.InstanceID, commit.Experiences)
 	m.noticeReflectionRun(ctx, commit.Run)
 }
 
@@ -354,18 +356,7 @@ func reflectionAPIInput(
 
 	experiences := make([]api.ReflectionInputExperience, 0, len(ranked))
 	for _, experience := range ranked {
-		entry := api.ReflectionInputExperience{
-			Kind: experience.Kind, Summary: experience.Summary,
-			Confidence: experience.Confidence, OccurredAt: experience.OccurredAt,
-			Sources: make([]domain.ReflectionSequence, 0, len(experience.Sources)),
-		}
-		if experience.SubjectID != nil {
-			entry.Subject = aliases.participant(*experience.SubjectID, "")
-		}
-		for _, source := range experience.Sources {
-			entry.Sources = append(entry.Sources, source.Sequence)
-		}
-		experiences = append(experiences, entry)
+		experiences = append(experiences, reflectionInputExperience(experience, aliases))
 	}
 
 	amendments := make(
@@ -528,4 +519,103 @@ func reflectionOutcomeSummary(outcome domain.ReflectionOutcome) string {
 	}
 
 	return string(outcome)
+}
+
+// indexExperiences records an accepted run's experiences in the semantic
+// index a later reflection recalls through.
+//
+// It runs after the commit and outside it: indexing calls an embedding
+// endpoint, which has no business inside a store transaction, and the
+// index is derived state the store does not depend on. A failure is
+// logged and nothing else: the experiences are committed either way, and
+// every other path a reflection has still reaches them.
+func (m *Manager) indexExperiences(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	experiences []domain.Experience,
+) {
+	index := m.experienceIndex()
+	if index == nil || !index.Searchable() {
+		return
+	}
+
+	if err := index.Index(ctx, instanceID, experiences); err != nil {
+		slog.Default().WarnContext(ctx, "index accepted experiences",
+			"component", "modelmanager",
+			"instance_id", string(instanceID),
+			"error", err,
+		)
+	}
+}
+
+// reconciledIndex brings the instance's semantic index back into step
+// with the store and returns it, or nil when the run may not use it.
+//
+// The index drifts in both directions: retention removes experiences and
+// leaves their documents, and a reset of the vector database, which
+// changing the embedding model performs, drops documents the store still
+// holds. Doing it here is what makes `recall_like` answer from the
+// experiences the run itself was given, and the healthy path costs no
+// embedding call.
+//
+// A rebuild that fails part way leaves the collection holding some of
+// them or none, and the endpoint probe behind `Searchable` says nothing
+// about that. Withholding the index is what leaves the run its
+// structural recall, which reaches the same experiences by another
+// route.
+func (m *Manager) reconciledIndex(
+	ctx context.Context,
+	snapshot store.PendingReflectionSnapshot,
+) *memory.ExperienceIndex {
+	index := m.experienceIndex()
+	if index == nil || !index.Searchable() {
+		return nil
+	}
+
+	instanceID := snapshot.Persona.Lineage.InstanceID
+	if err := index.Reconcile(ctx, instanceID, snapshot.Persona.Experiences); err != nil {
+		slog.Default().WarnContext(ctx, "reconcile experience index",
+			"component", "modelmanager",
+			"instance_id", string(instanceID),
+			"error", err,
+		)
+
+		return nil
+	}
+
+	return index
+}
+
+// experienceIndex returns the semantic index over experiences, or nil
+// when the memory store has none. A store without one leaves a
+// reflection with its structural recall alone.
+func (m *Manager) experienceIndex() *memory.ExperienceIndex {
+	searcher, ok := m.memory.(memory.ExperienceSearcher)
+	if !ok {
+		return nil
+	}
+
+	return searcher.Experiences()
+}
+
+// reflectionInputExperience renders one experience for a request, under
+// the per-run tokens. A tool result uses the same rendering, so an
+// experience recalled mid-run reads exactly like one the request carried.
+func reflectionInputExperience(
+	experience domain.Experience,
+	aliases *reflectionAliases,
+) api.ReflectionInputExperience {
+	entry := api.ReflectionInputExperience{
+		Kind: experience.Kind, Summary: experience.Summary,
+		Confidence: experience.Confidence, OccurredAt: experience.OccurredAt,
+		Sources: make([]domain.ReflectionSequence, 0, len(experience.Sources)),
+	}
+	if experience.SubjectID != nil {
+		entry.Subject = aliases.participant(*experience.SubjectID, "")
+	}
+	for _, source := range experience.Sources {
+		entry.Sources = append(entry.Sources, source.Sequence)
+	}
+
+	return entry
 }

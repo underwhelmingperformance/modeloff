@@ -226,3 +226,43 @@ func (s *SQLiteStore) pruneTransitions(ctx context.Context) (int64, error) {
 		ctx, s.db, query, []any{personaTransitionRetentionHeadroom},
 	)
 }
+
+// ExperiencesByID reads the named experiences that belong to one
+// instance, in the order given, skipping any the instance does not own
+// or the store no longer holds.
+//
+// The semantic index over experiences is derived state: it answers with
+// ids, and this is what turns them back into experiences. Skipping
+// rather than failing is what keeps an index that has fallen behind the
+// store from failing a reflection: an id retention has removed simply
+// drops out of the answer.
+func (s *SQLiteStore) ExperiencesByID(
+	ctx context.Context,
+	instanceID domain.InstanceID,
+	ids []domain.ExperienceID,
+) ([]domain.Experience, error) {
+	if len(ids) == 0 {
+		return []domain.Experience{}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin experience read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	experiences := make([]domain.Experience, 0, len(ids))
+	for _, id := range ids {
+		found, err := personaExperiencesTx(ctx, tx, []domain.ExperienceID{id})
+		if err != nil {
+			continue
+		}
+		for _, experience := range found {
+			if experience.InstanceID == instanceID {
+				experiences = append(experiences, experience)
+			}
+		}
+	}
+
+	return experiences, nil
+}
