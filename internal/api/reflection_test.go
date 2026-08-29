@@ -98,7 +98,7 @@ func reflectionTestInput() ReflectionInput {
 		Experiences:  []ReflectionInputExperience{},
 		Amendments:   []ReflectionInputAmendment{},
 		Events: []ReflectionInputEvent{{
-			Sequence: 12, WindowKind: domain.KindChannel, Window: "#dev",
+			Sequence: 12, WindowKind: ReflectionWindowChannel, Window: "#dev",
 			Participant: "p1",
 			Message: protocol.IRCMessage{
 				Kind:   protocol.KindPrivMsg,

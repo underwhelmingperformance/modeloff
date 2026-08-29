@@ -359,7 +359,7 @@ func expectedReflectionInput(
 		message.Source = message.Source.WithoutInstanceID()
 		events = append(events, api.ReflectionInputEvent{
 			Sequence:    domain.ReflectionSequence(index + 1),
-			WindowKind:  protocol.WindowTargetKind(candidate.Source.Window),
+			WindowKind:  api.ReflectionWindowKindFor(candidate.Source.Window),
 			Window:      string(protocol.WindowKey(candidate.Source.Window)),
 			Participant: "p1",
 			Message:     message, Substantive: candidate.Substantive,

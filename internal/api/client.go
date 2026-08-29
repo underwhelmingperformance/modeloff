@@ -280,6 +280,35 @@ type ReflectionParticipant struct {
 	Nick  domain.Nick `json:"nick,omitempty"`
 }
 
+// ReflectionWindowKind is the JSON label for the conversation a
+// reflection event belongs to. It is a word because the reflection
+// request is what a model reads, and nothing in that request defines
+// [domain.ChannelKind]'s integer encoding.
+type ReflectionWindowKind string
+
+const (
+	// ReflectionWindowChannel is a named channel, and Window is its name.
+	ReflectionWindowChannel ReflectionWindowKind = "channel"
+	// ReflectionWindowDirect is a direct message, and Window is the
+	// counterpart's participant token.
+	ReflectionWindowDirect ReflectionWindowKind = "direct"
+)
+
+// ReflectionWindowKindFor labels the conversation `target` names: a
+// channel target is a channel, and anything else is a direct message.
+//
+// It takes the sealed target because [domain.ChannelKind] also holds the
+// status window, which has no label here. A nil target is the same
+// unlabelled case, and no reflection candidate carries one: the store
+// refuses a candidate with no window before it is filed.
+func ReflectionWindowKindFor(target protocol.WindowTarget) ReflectionWindowKind {
+	if _, ok := protocol.ChannelWindowName(target); ok {
+		return ReflectionWindowChannel
+	}
+
+	return ReflectionWindowDirect
+}
+
 // ReflectionInputEvent is one sequenced candidate supplied to private persona
 // reflection. Participant is the token of the client that authored the
 // message, empty for a server line or for the reflecting instance itself.
@@ -287,7 +316,7 @@ type ReflectionParticipant struct {
 // by the counterpart's token.
 type ReflectionInputEvent struct {
 	Sequence    domain.ReflectionSequence `json:"sequence"`
-	WindowKind  domain.ChannelKind        `json:"window_kind"`
+	WindowKind  ReflectionWindowKind      `json:"window_kind"`
 	Window      string                    `json:"window"`
 	Participant string                    `json:"participant,omitempty"`
 	Message     protocol.IRCMessage       `json:"message"`

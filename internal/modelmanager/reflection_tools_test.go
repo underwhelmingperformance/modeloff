@@ -278,7 +278,7 @@ func recalledEvent(
 
 	return api.ReflectionInputEvent{
 		Sequence:   sequence,
-		WindowKind: domain.KindChannel, Window: "#dev",
+		WindowKind: api.ReflectionWindowChannel, Window: "#dev",
 		Participant: "p1",
 		Message:     message, Substantive: true,
 	}

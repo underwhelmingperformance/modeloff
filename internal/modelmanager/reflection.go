@@ -13,7 +13,6 @@ import (
 	"github.com/laney/modeloff/internal/config"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/memory"
-	"github.com/laney/modeloff/internal/protocol"
 	"github.com/laney/modeloff/internal/store"
 )
 
@@ -401,7 +400,7 @@ func reflectionInputEvent(
 
 	return api.ReflectionInputEvent{
 		Sequence:    event.Sequence,
-		WindowKind:  protocol.WindowTargetKind(event.Source.Window),
+		WindowKind:  api.ReflectionWindowKindFor(event.Source.Window),
 		Window:      aliases.window(event.Source.Window),
 		Participant: participant,
 		Message:     message, Substantive: event.Substantive,
