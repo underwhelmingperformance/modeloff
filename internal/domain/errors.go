@@ -227,6 +227,27 @@ func (e MissingDMCounterpartError) Error() string {
 	return fmt.Sprintf("dm window %q: counterpart instance has no backing row", string(e.InstanceID))
 }
 
+// ErrNoPersonaTemplates reports that the persona pool holds nothing to
+// draw from. It is a sentinel because the pool being empty is the whole
+// of the fact; ADDMODEL refuses on it, since an instance given no
+// persona has no description for its lineage to start from and nothing
+// later supplies one.
+var ErrNoPersonaTemplates = errors.New("no persona templates available")
+
+// NotAChannelError refuses a command that acts on a channel when its
+// target names a direct message. `Command` carries the rejected call so
+// a renderer can name it. The target is not carried: a direct message is
+// keyed by the counterpart's `InstanceID`, which is not a name to show
+// anybody.
+type NotAChannelError struct {
+	Command string
+	At      time.Time
+}
+
+func (e NotAChannelError) Error() string {
+	return fmt.Sprintf("%s: not valid in a direct message", e.Command)
+}
+
 // UnknownChannelKindError indicates a stored row carries a
 // `ChannelKind` outside the known set (status / channel / dm).
 // This is unexpected on a healthy database — the only way to hit

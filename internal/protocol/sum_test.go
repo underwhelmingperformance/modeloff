@@ -203,31 +203,38 @@ func TestEvent_sum_does_not_expose_mutable_actor_handles(t *testing.T) {
 	})
 }
 
-func TestNotOperatorError_implements_error(t *testing.T) {
+// TestNotOperatorError_rendering pins the text each shape of the
+// refusal renders. The error is typed, so a caller branches on it with
+// `errors.As`; what this covers is what an operator reads when one is
+// shown to them.
+func TestNotOperatorError_rendering(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
+	type rendering struct {
+		Message string
+	}
+
+	type testCase struct {
 		err  protocol.NotOperatorError
-		want string
-	}{
-		{
-			name: "with command",
+		want rendering
+	}
+
+	cases := map[string]testCase{
+		"with command": {
 			err:  protocol.NotOperatorError{Command: "AddModel"},
-			want: "permission denied: AddModel requires operator privileges",
+			want: rendering{Message: "permission denied: AddModel requires operator privileges"},
 		},
-		{
-			name: "without command",
+		"without command": {
 			err:  protocol.NotOperatorError{},
-			want: "permission denied: not an operator",
+			want: rendering{Message: "permission denied: not an operator"},
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			require.EqualError(t, tc.err, tc.want)
+			require.Equal(t, tc.want, rendering{Message: tc.err.Error()})
 		})
 	}
 }

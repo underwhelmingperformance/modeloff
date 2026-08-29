@@ -273,19 +273,40 @@ func TestPersistableEvent_partition(t *testing.T) {
 // [domain.ErrUnknownEventType] sentinel, so the channel-log read path
 // can skip it rather than failing the whole batch.
 func TestUnmarshalPersistableEvent_unknown_type(t *testing.T) {
-	tests := map[string]string{
-		"legacy help":       `{"type":"help","data":{"channel":"#general","at":"2026-04-06T12:00:00Z"}}`,
-		"legacy usage hint": `{"type":"usage_hint","data":{"channel":"#general","command":"invite"}}`,
-		"legacy list end":   `{"type":"list_end","data":{"at":"2026-04-06T12:00:00Z"}}`,
-		"never known":       `{"type":"made_up","data":{}}`,
+	type testCase struct {
+		row  string
+		want domain.UnknownEventTypeError
 	}
 
-	for name, row := range tests {
+	tests := map[string]testCase{
+		"legacy help": {
+			row:  `{"type":"help","data":{"channel":"#general","at":"2026-04-06T12:00:00Z"}}`,
+			want: domain.UnknownEventTypeError{Type: "help"},
+		},
+		"legacy usage hint": {
+			row:  `{"type":"usage_hint","data":{"channel":"#general","command":"invite"}}`,
+			want: domain.UnknownEventTypeError{Type: "usage_hint"},
+		},
+		"legacy list end": {
+			row:  `{"type":"list_end","data":{"at":"2026-04-06T12:00:00Z"}}`,
+			want: domain.UnknownEventTypeError{Type: "list_end"},
+		},
+		"never known": {
+			row:  `{"type":"made_up","data":{}}`,
+			want: domain.UnknownEventTypeError{Type: "made_up"},
+		},
+	}
+
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := domain.UnmarshalPersistableEvent([]byte(row))
+			got, err := domain.UnmarshalPersistableEvent([]byte(tc.row))
 
 			require.Nil(t, got)
 			require.ErrorIs(t, err, domain.ErrUnknownEventType)
+
+			var unknown domain.UnknownEventTypeError
+			require.ErrorAs(t, err, &unknown)
+			require.Equal(t, tc.want, unknown)
 		})
 	}
 }
@@ -368,12 +389,6 @@ func TestMessage_RoutingKey(t *testing.T) {
 			require.Equal(t, tt.wantKey, gotKey, tt.whatItIs)
 		})
 	}
-}
-
-func TestUnmarshalChannelEvent_unknown_type(t *testing.T) {
-	_, err := domain.UnmarshalPersistableEvent([]byte(`{"type":"unknown","data":{}}`))
-	require.Error(t, err)
-	require.EqualError(t, err, `unknown channel event type: "unknown"`)
 }
 
 func TestUnmarshalChannelEvent_invalid_json(t *testing.T) {

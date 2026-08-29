@@ -336,7 +336,7 @@ func TestManager_RandomPersonaTemplate_empty_pool(t *testing.T) {
 	})
 
 	_, err := fx.mgr.RandomPersonaTemplate(t.Context())
-	require.EqualError(t, err, "no persona templates available")
+	require.ErrorIs(t, err, domain.ErrNoPersonaTemplates)
 }
 
 func TestManager_RegeneratePersonaTemplates_preserves_user_defined(t *testing.T) {

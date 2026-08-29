@@ -1167,7 +1167,8 @@ func (s *Session) setTopicAs(ctx context.Context, actor *domain.Instance, ch dom
 		span.SetAttributes(attribute.String(observability.AttrInstanceID, string(actor.ID())))
 
 		if domain.InferChannelKind(ch) != domain.KindChannel {
-			return observability.ErrWithKind(fmt.Errorf("cannot set topic on a direct message"), observability.ErrorKindValidation)
+			return observability.ErrWithKind(
+				domain.NotAChannelError{Command: "TOPIC", At: s.now()}, observability.ErrorKindValidation)
 		}
 
 		now := s.now()
@@ -1232,7 +1233,8 @@ func (s *Session) kickAs(ctx context.Context, actor, target *domain.Instance, ch
 		attribute.String(observability.AttrNick, string(targetNick)),
 	}, func(ctx context.Context, span trace.Span) error {
 		if domain.InferChannelKind(ch) != domain.KindChannel {
-			return observability.ErrWithKind(fmt.Errorf("cannot kick from a direct message"), observability.ErrorKindValidation)
+			return observability.ErrWithKind(
+				domain.NotAChannelError{Command: "KICK", At: s.now()}, observability.ErrorKindValidation)
 		}
 
 		window, err := s.loadChannelWindow(ctx, ch)

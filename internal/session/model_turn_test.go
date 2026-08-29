@@ -1314,19 +1314,24 @@ func TestSession_model_turn_refuses_a_guard_it_did_not_issue(t *testing.T) {
 
 	entries, entriesErr := sqliteStore.ModelTurnEntries(ctx, 1)
 
+	var beginForeign ForeignWindowGuardError
+	require.ErrorAs(t, beginErr, &beginForeign)
+
 	type assertionSnapshot struct {
 		RecorderPresent bool
-		BeginError      string
+		BeginError      ForeignWindowGuardError
 		Entries         []storemod.ModelTurnEntry
 		EntriesError    error
 	}
 
 	require.Equal(t, assertionSnapshot{
-		BeginError: "begin model turn: window guard session.foreignWindowGuard " +
-			"was not issued by this session",
+		BeginError: ForeignWindowGuardError{
+			Operation: "begin model turn",
+			Guard:     "session.foreignWindowGuard",
+		},
 	}, assertionSnapshot{
 		RecorderPresent: recorder != nil,
-		BeginError:      beginErr.Error(),
+		BeginError:      beginForeign,
 		Entries:         entries,
 		EntriesError:    entriesErr,
 	})

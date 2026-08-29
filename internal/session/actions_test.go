@@ -1034,7 +1034,10 @@ func TestSetTopicAs_rejects_DM(t *testing.T) {
 	})
 
 	err := userSetTopic(ctx, t, sess, domain.ChannelName(botty.ID()), "some topic")
-	require.EqualError(t, err, "cannot set topic on a direct message")
+
+	var notAChannel domain.NotAChannelError
+	require.ErrorAs(t, err, &notAChannel)
+	require.Equal(t, domain.NotAChannelError{Command: "TOPIC", At: fixedTime}, notAChannel)
 }
 
 func TestKickAs_rejects_DM(t *testing.T) {
@@ -1047,7 +1050,10 @@ func TestKickAs_rejects_DM(t *testing.T) {
 	})
 
 	err := kickViaWire(ctx, t, sess, domain.ChannelName(botty.ID()), "botty")
-	require.EqualError(t, err, "cannot kick from a direct message")
+
+	var notAChannel domain.NotAChannelError
+	require.ErrorAs(t, err, &notAChannel)
+	require.Equal(t, domain.NotAChannelError{Command: "KICK", At: fixedTime}, notAChannel)
 }
 
 // TestSendMessageAs_model_to_model_dispatches verifies that the

@@ -575,11 +575,24 @@ func MarshalPersistableEvent(e PersistableEvent) ([]byte, error) {
 }
 
 // ErrUnknownEventType reports that a stored event row carries a type
-// discriminator this build no longer recognises. An older database may
-// hold rows for event kinds that have since left the persistable
-// hierarchy; the channel-log read path skips such rows rather than
-// failing the whole batch. Callers test for it with `errors.Is`.
+// discriminator this build does not recognise. A database written by an
+// older build may hold rows for event kinds that have since left the
+// persistable hierarchy; the channel-log read path skips such rows and
+// keeps the rest of the batch. Callers test for it with `errors.Is`.
 var ErrUnknownEventType = errors.New("unknown channel event type")
+
+// UnknownEventTypeError names the discriminator [ErrUnknownEventType]
+// was raised for, so a caller logging a skipped row can say which kind
+// it held.
+type UnknownEventTypeError struct {
+	Type string
+}
+
+func (e UnknownEventTypeError) Error() string {
+	return fmt.Sprintf("%s: %q", ErrUnknownEventType, e.Type)
+}
+
+func (e UnknownEventTypeError) Unwrap() error { return ErrUnknownEventType }
 
 // UnmarshalPersistableEvent decodes a channel event from JSON, using the
 // type discriminator to select the concrete type. A discriminator this
@@ -648,7 +661,7 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		var e PersonaTemplatesList
 		return e, unmarshal(&e)
 	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnknownEventType, env.Type)
+		return nil, UnknownEventTypeError{Type: string(env.Type)}
 	}
 }
 
@@ -813,7 +826,7 @@ func unmarshalPersistableEventV2(eventType string, data json.RawMessage) (Persis
 		var e PersonaTemplatesList
 		return e, unmarshal(&e)
 	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnknownEventType, eventType)
+		return nil, UnknownEventTypeError{Type: string(eventType)}
 	}
 }
 

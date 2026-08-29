@@ -183,24 +183,32 @@ func TestSession_context_summaries_refuse_a_guard_the_session_did_not_issue(t *t
 
 	type assertionSnapshot struct {
 		Summaries   []storemod.ContextSummary
-		ReadError   string
+		ReadError   ForeignWindowGuardError
 		Committed   storemod.ContextSummary
-		CommitError string
+		CommitError ForeignWindowGuardError
 		Stored      []storemod.ContextSummary
 		StoredError error
 	}
 
+	var readForeign, commitForeign ForeignWindowGuardError
+	require.ErrorAs(t, readErr, &readForeign)
+	require.ErrorAs(t, commitErr, &commitForeign)
+
 	require.Equal(t, assertionSnapshot{
-		ReadError: "read context summaries: window guard session.foreignWindowGuard " +
-			"was not issued by this session",
-		CommitError: "commit context summary: window guard session.foreignWindowGuard " +
-			"was not issued by this session",
+		ReadError: ForeignWindowGuardError{
+			Operation: "read context summaries",
+			Guard:     "session.foreignWindowGuard",
+		},
+		CommitError: ForeignWindowGuardError{
+			Operation: "commit context summary",
+			Guard:     "session.foreignWindowGuard",
+		},
 		Stored: []storemod.ContextSummary{},
 	}, assertionSnapshot{
 		Summaries:   summaries,
-		ReadError:   readErr.Error(),
+		ReadError:   readForeign,
 		Committed:   committed,
-		CommitError: commitErr.Error(),
+		CommitError: commitForeign,
 		Stored:      stored,
 		StoredError: storedErr,
 	})

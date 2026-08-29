@@ -39,14 +39,27 @@ type sessionGuard interface {
 	) (store.ContextSummary, error)
 }
 
+// ForeignWindowGuardError refuses a window guard this session did not
+// issue. `Operation` names the refused call, and `Guard` the concrete
+// type that was offered, which is what a reader needs to find where it
+// came from.
+type ForeignWindowGuardError struct {
+	Operation string
+	Guard     string
+}
+
+func (e ForeignWindowGuardError) Error() string {
+	return fmt.Sprintf("%s: window guard %s was not issued by this session", e.Operation, e.Guard)
+}
+
 // issuedGuard recovers the session-side authority behind `guard`.
 // The public actor-bound methods take a [protocol.WindowGuard]
 // because that is what a client holds; a value this session did not
-// issue grants nothing and is refused here.
+// issue grants nothing and is refused with [ForeignWindowGuardError].
 func issuedGuard(guard protocol.WindowGuard, operation string) (sessionGuard, error) {
 	issued, ok := guard.(sessionGuard)
 	if !ok {
-		return nil, fmt.Errorf("%s: window guard %T was not issued by this session", operation, guard)
+		return nil, ForeignWindowGuardError{Operation: operation, Guard: fmt.Sprintf("%T", guard)}
 	}
 
 	return issued, nil

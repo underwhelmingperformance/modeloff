@@ -60,7 +60,7 @@ func (m *Manager) RandomPersonaTemplate(ctx context.Context) (domain.PersonaTemp
 		}
 
 		if len(templates) == 0 {
-			return fmt.Errorf("no persona templates available")
+			return domain.ErrNoPersonaTemplates
 		}
 
 		held, err := m.heldPersonaDescriptions(ctx)
