@@ -163,17 +163,24 @@ type Manager struct {
 	now              func() time.Time
 	tracer           trace.TracerProvider
 	pacer            *modelclient.Pacer
-	reflections      *reflectionScheduler
 
-	mu              sync.RWMutex
-	notices         operatorNoticeSink
-	api             api.Client
-	apiKey          string
-	smallModel      domain.ModelID
-	reflectionModel domain.ModelID
-	reflectionMode  ReflectionMode
-	reflectionRunID func() domain.ReflectionRunID
-	factory         func(apiKey, baseURL string) (api.Client, error)
+	mu      sync.RWMutex
+	notices operatorNoticeSink
+	// reflections is the scheduler reflection currently runs on, and is
+	// nil while reflection is disabled. retiringReflections holds every
+	// scheduler that has been stopped but still has workers to join: a
+	// stop whose wait timed out leaves cancelled runs in flight, and
+	// instance deletion consults both fields so it can join such a run
+	// before removing the state the run could still write.
+	reflections         *reflectionScheduler
+	retiringReflections map[*reflectionScheduler]struct{}
+	api                 api.Client
+	apiKey              string
+	smallModel          domain.ModelID
+	reflectionModel     domain.ModelID
+	reflectionMode      ReflectionMode
+	reflectionRunID     func() domain.ReflectionRunID
+	factory             func(apiKey, baseURL string) (api.Client, error)
 
 	cacheMu              sync.Mutex
 	supportedModels      map[domain.ModelID]api.ModelInfo
@@ -306,6 +313,7 @@ func New(cfg Config) *Manager {
 		attaching:            make(map[protocol.ClientID]*clientAttachment),
 		draining:             make(map[protocol.ClientID]*drainingClient),
 		pendingMemoryDeletes: make(map[protocol.ClientID]struct{}),
+		retiringReflections:  make(map[*reflectionScheduler]struct{}),
 		notices:              discardedNotices{},
 	}
 	if manager.reflectionRunID == nil {
@@ -1136,11 +1144,8 @@ func (m *Manager) InstanceDeleted(id protocol.ClientID) {
 	}
 	m.clientsMu.Unlock()
 
-	m.mu.RLock()
-	reflections := m.reflections
-	m.mu.RUnlock()
-	if reflections != nil {
-		reflections.forget(domain.InstanceID(id))
+	for _, scheduler := range m.reflectionSchedulers() {
+		scheduler.forget(domain.InstanceID(id))
 	}
 
 	if deleteNow {
@@ -1243,16 +1248,16 @@ func (m *Manager) Forget(id protocol.ClientID) {
 	// own derived state, the semantic index among it, from a snapshot
 	// read before the row went. Waiting here and not at the deletion is
 	// what keeps that off the command a person is waiting on.
-	m.mu.RLock()
-	reflections := m.reflections
-	m.mu.RUnlock()
-	if reflections != nil {
+	schedulers := m.reflectionSchedulers()
+	for _, scheduler := range schedulers {
 		// Cancelling here as well as at the deletion is what makes this
 		// safe for a caller that reaches it without one, which
 		// `DetachAndForget` does. A worker already forgotten is left
 		// alone and its finish signal is still waited for.
-		reflections.forget(domain.InstanceID(id))
-		reflections.awaitForgotten(ctx, domain.InstanceID(id))
+		scheduler.forget(domain.InstanceID(id))
+	}
+	for _, scheduler := range schedulers {
+		scheduler.awaitForgotten(ctx, domain.InstanceID(id))
 	}
 
 	if err := m.finishMemoryDeletion(ctx, domain.InstanceID(id)); err != nil {
@@ -1324,14 +1329,9 @@ func (m *Manager) DetachAll(ctx context.Context) error {
 	}
 
 	m.mu.Lock()
-	reflections := m.reflections
-	m.reflections = nil
 	m.reflectionMode = ReflectionDisabled
 	m.mu.Unlock()
-	var reflectionErr error
-	if reflections != nil {
-		reflectionErr = reflections.stop(ctx)
-	}
+	reflectionErr := m.stopReflections(ctx)
 
 	pending := make(map[protocol.ClientID]struct{}, len(clients))
 	joined := make(chan protocol.ClientID, len(clients))

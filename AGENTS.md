@@ -1532,6 +1532,18 @@ accepted proposal. The mode is read at the start of a run and again after
 validation, so turning reflection off mid-flight discards the
 proposal.
 
+Disabling reflection and draining the manager stop the scheduler under
+the caller's context, and the stop can time out while a run is still
+inside an upstream call. A stopped scheduler stays discoverable until
+every worker has returned: the manager holds it in a retiring set
+beside any scheduler a later re-enable creates, and a later stop
+resumes the wait a timed-out one gave up on. Deleting an instance
+cancels that instance's workers in every scheduler and waits for them,
+off the command a person is waiting on, before it removes the
+instance's memories and index; a cancelled run holds a snapshot read
+before the deletion, and a write from it must not land after the
+cleanup that removes what it would recreate.
+
 Every terminal outcome writes a `reflection_runs` row: `accepted`,
 `no_change`, `rejected`, `stale`, `failed`, `shadow` or `discarded`.
 The write runs under a short timeout on a context detached from the

@@ -100,6 +100,13 @@ type reflectionScheduler struct {
 	forgotten map[domain.InstanceID]chan struct{}
 	stopping  bool
 	wg        sync.WaitGroup
+
+	// drained closes once stop has been called and every worker
+	// goroutine has returned. drainedOnce guards the goroutine that
+	// closes it, so stop can be called again after a timed-out wait and
+	// resume the same join.
+	drained     chan struct{}
+	drainedOnce sync.Once
 }
 
 func newReflectionScheduler(
@@ -114,6 +121,7 @@ func newReflectionScheduler(
 		ctx: ctx, cancel: cancel, store: stored, clock: clock, run: run,
 		workers:   make(map[domain.InstanceID]*reflectionWorker),
 		forgotten: make(map[domain.InstanceID]chan struct{}),
+		drained:   make(chan struct{}),
 	}
 }
 
@@ -285,14 +293,15 @@ func (s *reflectionScheduler) stop(ctx context.Context) error {
 	s.mu.Unlock()
 	s.cancel()
 
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
+	s.drainedOnce.Do(func() {
+		go func() {
+			s.wg.Wait()
+			close(s.drained)
+		}()
+	})
 
 	select {
-	case <-done:
+	case <-s.drained:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

@@ -41,33 +41,88 @@ func ParseReflectionMode(value string) (ReflectionMode, error) {
 func (m *Manager) SetReflectionMode(ctx context.Context, mode ReflectionMode) error {
 	mode = mode.Resolved()
 
-	m.mu.Lock()
-	previous := m.reflections
 	if mode == ReflectionDisabled {
-		m.reflections = nil
-	} else if m.reflections == nil {
+		m.mu.Lock()
+		m.reflectionMode = mode
+		m.mu.Unlock()
+
+		return m.stopReflections(ctx)
+	}
+
+	m.mu.Lock()
+	scheduler := m.reflections
+	if scheduler == nil {
 		stored, ok := m.store.(reflectionStateStore)
 		if !ok {
 			m.mu.Unlock()
 			return errors.New("persona reflection store is unavailable")
 		}
-		m.reflections = newReflectionScheduler(
+		scheduler = newReflectionScheduler(
 			m.lifecycleContext, stored, systemReflectionClock{}, m.runReflection,
 		)
+		m.reflections = scheduler
 	}
 	m.reflectionMode = mode
-	scheduler := m.reflections
 	m.mu.Unlock()
 
-	if mode == ReflectionDisabled {
-		if previous != nil {
-			return previous.stop(ctx)
-		}
+	return m.wakeStoredInstances(ctx, scheduler)
+}
 
-		return nil
+// reflectionSchedulers returns the scheduler reflection runs on and
+// every scheduler still winding down from an earlier stop. A worker
+// keeps running until its cancelled run returns, whichever scheduler
+// started it, so joining an instance's reflection work means consulting
+// them all.
+func (m *Manager) reflectionSchedulers() []*reflectionScheduler {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	schedulers := make([]*reflectionScheduler, 0, len(m.retiringReflections)+1)
+	if m.reflections != nil {
+		schedulers = append(schedulers, m.reflections)
+	}
+	for scheduler := range m.retiringReflections {
+		schedulers = append(schedulers, scheduler)
 	}
 
-	return m.wakeStoredInstances(ctx, scheduler)
+	return schedulers
+}
+
+// stopReflections stops the current scheduler and every scheduler still
+// winding down, and waits for their workers under ctx. A scheduler
+// whose workers outlive ctx stays in the retiring set, where instance
+// deletion can still find them; a later call resumes the wait.
+func (m *Manager) stopReflections(ctx context.Context) error {
+	m.mu.Lock()
+	current := m.reflections
+	m.reflections = nil
+	if current != nil {
+		m.retiringReflections[current] = struct{}{}
+	}
+	schedulers := make([]*reflectionScheduler, 0, len(m.retiringReflections))
+	for scheduler := range m.retiringReflections {
+		schedulers = append(schedulers, scheduler)
+	}
+	m.mu.Unlock()
+
+	if current != nil {
+		// A timed-out stop leaves workers running, and instance
+		// deletion still has to find them here, so the scheduler leaves
+		// the retiring set only once every worker has returned.
+		go func() {
+			<-current.drained
+			m.mu.Lock()
+			delete(m.retiringReflections, current)
+			m.mu.Unlock()
+		}()
+	}
+
+	var errs []error
+	for _, scheduler := range schedulers {
+		errs = append(errs, scheduler.stop(ctx))
+	}
+
+	return errors.Join(errs...)
 }
 
 // wakeStoredInstances starts a worker for every model instance the store
