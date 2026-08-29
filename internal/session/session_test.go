@@ -2504,10 +2504,23 @@ func TestSession_Dispatch_sends_whitespace_reply_body(t *testing.T) {
 	})
 }
 
+// dispatchIsolationEffect records the reported failure sources and the
+// channel messages.
+type dispatchIsolationEffect struct {
+	Failed   []domain.Source
+	Messages []domain.Message
+}
+
 // TestSession_Dispatch_api_error_does_not_stop_the_other_instance
 // pins the isolation each model-client's own dispatch goroutine
 // gives it: bot-a's upstream failure is reported to the operator as
 // a `ModelUnavailableError` and bot-b's turn runs regardless.
+//
+// The failure sources are deduplicated. bot-a is triggered twice, by the
+// user's line and by bot-b's reply, and the dispatch loop puts both in
+// one batch when both are queued before it builds that batch. Both
+// schedules satisfy the isolation contract, so the number of notices is
+// not a fact about it.
 func TestSession_Dispatch_api_error_does_not_stop_the_other_instance(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
@@ -2536,16 +2549,26 @@ func TestSession_Dispatch_api_error_does_not_stop_the_other_instance(t *testing.
 
 		dispatchUserMessage(ctx, t, sess, "#general", "hello world")
 
-		require.Equal(t, []domain.ModelUnavailableError{
-			{Source: domain.ClientSource(testMemberID("bot-a"), "bot-a"), At: fixedTime},
-			{Source: domain.ClientSource(testMemberID("bot-a"), "bot-a"), At: fixedTime},
-		}, eventsOfType[domain.ModelUnavailableError](collectEmittedEvents(t, sess)))
+		var failed []domain.Source
+		for _, failure := range eventsOfType[domain.ModelUnavailableError](
+			collectEmittedEvents(t, sess),
+		) {
+			if !slices.Contains(failed, failure.Source) {
+				failed = append(failed, failure.Source)
+			}
+		}
 
-		msgs := channelMessages(t, s, "#general")
-		require.Equal(t, []domain.Message{
-			{Target: "#general", Source: domain.ClientSource(domain.InstanceID(""), domain.Nick("testuser")), Body: "hello world", At: fixedTime},
-			{Target: "#general", Source: domain.ClientSource(testMemberID("bot-b"), domain.Nick("bot-b")), Body: "reply from bot-b", At: fixedTime},
-		}, msgs)
+		require.Equal(t, dispatchIsolationEffect{
+			Failed: []domain.Source{
+				domain.ClientSource(testMemberID("bot-a"), "bot-a"),
+			},
+			Messages: []domain.Message{
+				{Target: "#general", Source: domain.ClientSource(domain.InstanceID(""), domain.Nick("testuser")), Body: "hello world", At: fixedTime},
+				{Target: "#general", Source: domain.ClientSource(testMemberID("bot-b"), domain.Nick("bot-b")), Body: "reply from bot-b", At: fixedTime},
+			},
+		}, dispatchIsolationEffect{
+			Failed: failed, Messages: channelMessages(t, s, "#general"),
+		})
 	})
 }
 
