@@ -108,9 +108,7 @@ func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
 	w.Visits++
 	w.Revision++
 
-	s, completerCmd := s.rebindCompleter()
-
-	cmds := []tea.Cmd{reviewCmd, completerCmd, s.markReadCmd(w)}
+	cmds := []tea.Cmd{reviewCmd, s.rebindCompleter(), s.markReadCmd(w)}
 	if leaving != nil && leaving != w {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}
@@ -127,9 +125,7 @@ func (s ChatScreen) clearFocus() (ChatScreen, tea.Cmd) {
 	s.active = nil
 	s.visible.window = nil
 
-	s, completerCmd := s.rebindCompleter()
-
-	cmds := []tea.Cmd{reviewCmd, completerCmd}
+	cmds := []tea.Cmd{reviewCmd, s.rebindCompleter()}
 	if leaving != nil {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}
@@ -238,19 +234,28 @@ func (s ChatScreen) handleChannelFocus(msg chatcmd.ChannelFocusMsg) (ChatScreen,
 		s.focusAt = msg.At
 	}
 
-	cmds := []tea.Cmd{currentRead, rebind}
-	cmds = append(cmds, msgCmd(components.SetPlaceholderMsg{}))
-	cmds = append(cmds, s.setChannelCmd())
-
-	cmds = append(cmds, msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}))
-	cmds = append(cmds, s.persistLastWindow(s.active))
-	cmds = append(cmds, msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}))
 	var nickListUpdated tea.Cmd
 	s, nickListUpdated = s.nickListUpdatedCmd()
-	cmds = append(cmds, nickListUpdated)
-	cmds = append(cmds, msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}))
 
-	return s, tea.Batch(cmds...)
+	// These describe one window switch, and each component applies
+	// them as they arrive, so they go out in order. `currentRead`
+	// records the leaving window's read position and `SetChannelMsg`
+	// moves the content closure to the destination, so the first has
+	// to be delivered before the second runs.
+	switched := tea.Sequence(
+		currentRead,
+		rebind,
+		msgCmd(components.SetPlaceholderMsg{}),
+		s.setChannelCmd(),
+		msgCmd(components.ChannelActiveMsg{Channel: msg.Channel}),
+		msgCmd(components.ChannelUnreadMsg{Channel: msg.Channel, Count: 0}),
+		nickListUpdated,
+		msgCmd(components.NickListThinkingMsg{Nicks: s.thinkingNicks()}),
+	)
+
+	// The read cursor write waits on the store, and nothing in the
+	// switch depends on it, so it runs alongside.
+	return s, tea.Batch(switched, s.persistLastWindow(s.active))
 }
 
 func (s ChatScreen) nickListMembers() domain.MemberList {

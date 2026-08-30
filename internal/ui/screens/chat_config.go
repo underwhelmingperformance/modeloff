@@ -305,24 +305,24 @@ func (s ChatScreen) handleAPIKeySet(
 
 	s.checklist.hasAPIKey = !msg.Reset
 
-	var rebind tea.Cmd
-	s, rebind = s.setLiveModels(nil, command.SuggestionStateReady)
+	s, rebind := s.setLiveModels(nil, command.SuggestionStateReady)
+
+	// Clearing the cached models publishes a completer, and so does the
+	// load, when its upstream call comes back. The popover keeps
+	// whichever reaches it last, so the cleared one has to be delivered
+	// before the load starts.
+	refresh := tea.Sequence(rebind, s.loadLiveModels())
 
 	if s.realChannelCount() == 0 {
 		return s, tea.Batch(
-			rebind,
-			s.loadLiveModels(),
+			refresh,
 			msgCmd(components.SetPlaceholderMsg{
 				Text: s.checklist.text(),
 			}),
 		)
 	}
 
-	return s, tea.Batch(
-		rebind,
-		s.notice(issuingWindow, text),
-		s.loadLiveModels(),
-	)
+	return s, tea.Batch(refresh, s.notice(issuingWindow, text))
 }
 
 // handleHighlightWordsSet caches the new highlight set on the screen,

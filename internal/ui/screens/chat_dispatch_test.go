@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -20,8 +21,13 @@ import (
 	"github.com/laney/modeloff/internal/ui/uitest"
 )
 
-// collectMsgs executes a tea.Cmd and flattens any BatchMsg into a
-// slice of concrete messages.
+// collectMsgs executes a tea.Cmd and flattens the groups Bubble Tea's
+// runtime flattens, returning the concrete messages in the order the
+// commands are written.
+//
+// [tea.Batch] and [tea.Sequence] both produce a message whose type is
+// a slice of commands, and the type [tea.Sequence] uses is unexported,
+// so both are recognised by that shape.
 func collectMsgs(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
 		return nil
@@ -29,18 +35,40 @@ func collectMsgs(cmd tea.Cmd) []tea.Msg {
 
 	msg := cmd()
 
-	batch, ok := msg.(tea.BatchMsg)
+	group, ok := commandGroup(msg)
 	if !ok {
 		return []tea.Msg{msg}
 	}
 
 	var msgs []tea.Msg
 
-	for _, c := range batch {
+	for _, c := range group {
 		msgs = append(msgs, collectMsgs(c)...)
 	}
 
 	return msgs
+}
+
+// commandGroup reports the commands a [tea.Batch] or [tea.Sequence]
+// message holds.
+func commandGroup(msg tea.Msg) ([]tea.Cmd, bool) {
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return batch, true
+	}
+
+	value := reflect.ValueOf(msg)
+	if !value.IsValid() ||
+		value.Kind() != reflect.Slice ||
+		value.Type().Elem() != reflect.TypeFor[tea.Cmd]() {
+		return nil, false
+	}
+
+	cmds := make([]tea.Cmd, value.Len())
+	for i := range cmds {
+		cmds[i], _ = value.Index(i).Interface().(tea.Cmd)
+	}
+
+	return cmds, true
 }
 
 func containsMsg[T any](msgs []tea.Msg) (T, bool) {
