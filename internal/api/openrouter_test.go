@@ -905,9 +905,9 @@ func TestOpenRouterClient_SummarizeContext_preserves_rendered_request_and_respon
 	require.NoError(t, err)
 
 	type responseSchema struct {
-		Name   string         `json:"name"`
-		Strict bool           `json:"strict"`
-		Schema map[string]any `json:"schema"`
+		Name   string          `json:"name"`
+		Strict bool            `json:"strict"`
+		Schema json.RawMessage `json:"schema"`
 	}
 	type responseFormat struct {
 		Type       string         `json:"type"`
@@ -2587,4 +2587,178 @@ func TestBuildMessages_marks_only_the_system_prefix_without_history(t *testing.T
 		testSystemMessage("system prompt"),
 		openai.UserMessage(ircJSON(t, events[0])),
 	}, buildMessages(testSystemPrompt("system prompt"), "", TurnHistory{}, events))
+}
+
+// schemaPropertyOrder walks the document's tokens and returns the names
+// under `properties` in the order they appear there. Go's map type has
+// no order, so decoding the document would lose that order.
+func schemaPropertyOrder(t *testing.T, schema json.RawMessage) []string {
+	t.Helper()
+
+	decoder := json.NewDecoder(bytes.NewReader(schema))
+
+	var (
+		names []string
+		depth int
+		under bool
+	)
+
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return names
+		}
+
+		require.NoError(t, err)
+
+		switch token := token.(type) {
+		case json.Delim:
+			switch token {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if under && depth == 1 {
+					under = false
+				}
+			}
+
+		case string:
+			switch {
+			case under && depth == 2:
+				names = append(names, token)
+				require.NoError(t, decoder.Decode(&json.RawMessage{}))
+			case depth == 1 && token == "properties":
+				under = true
+			}
+		}
+	}
+}
+
+func TestOpenRouterClient_GeneratePersona(t *testing.T) {
+	const smallModel = domain.ModelID("anthropic/claude-haiku-4.5")
+
+	// personaResponse is what the server answers with. Only the
+	// description is read back; the fields before it are what the model
+	// commits to first and none of them is stored.
+	personaResponse := func(description string) map[string]any {
+		return map[string]any{
+			"id": "chatcmpl_persona",
+			"choices": []map[string]any{
+				{
+					"message": map[string]any{
+						"role": "assistant",
+						"content": fmt.Sprintf(
+							`{"cares_about":"c","bothered_by":"b","seeks_out":"s","avoids":"a","tension":"t","anchor":"k","description":%q}`,
+							description),
+					},
+					"finish_reason": "stop",
+					"index":         0,
+				},
+			},
+		}
+	}
+
+	t.Run("one request holds the prompt and asks for a strict schema", func(t *testing.T) {
+		var requestBody map[string]any
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&requestBody))
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(personaResponse("keeps a boat and will tell you about it"))
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		got, err := client.GeneratePersona(t.Context(), smallModel, PersonaRequest{})
+
+		require.NoError(t, err)
+		require.Equal(t, "keeps a boat and will tell you about it", got)
+
+		require.Equal(t, []any{
+			map[string]any{"role": "user", "content": personaGenerationPrompt},
+		}, requestBody["messages"])
+
+		format := requestBody["response_format"].(map[string]any)
+		require.Equal(t, "json_schema", format["type"])
+
+		schema := format["json_schema"].(map[string]any)
+		require.Equal(t, true, schema["strict"])
+		require.Equal(t, false, schema["schema"].(map[string]any)["additionalProperties"])
+	})
+
+	// The description is asked for last because it is written from the
+	// six fields before it. Sorting the properties would put it fifth,
+	// with `seeks_out` and `tension` after it.
+	t.Run("the schema asks for the description last", func(t *testing.T) {
+		require.Equal(t, []string{
+			"cares_about", "bothered_by", "seeks_out",
+			"avoids", "tension", "anchor", "description",
+		}, schemaPropertyOrder(t, personaSchema))
+	})
+
+	// TestOpenRouterClient_GeneratePersona/a rejected description comes
+	// back with its reason pins the retry shape. The model is shown what
+	// it said and told why that was turned down, so an operator's
+	// adjustment and a validator's refusal reach it the same way.
+	t.Run("a rejected description comes back with its reason", func(t *testing.T) {
+		var requestBody map[string]any
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&requestBody))
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(personaResponse("second try"))
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		got, err := client.GeneratePersona(t.Context(), smallModel, PersonaRequest{
+			Present: []string{"already here", "also here"},
+			Rejected: []RejectedPersona{
+				{Description: "first try", Reason: "too much of a role"},
+			},
+		})
+
+		require.NoError(t, err)
+		require.Equal(t, "second try", got)
+
+		require.Equal(t, []any{
+			map[string]any{"role": "user", "content": personaGenerationPrompt},
+			map[string]any{
+				"role":    "user",
+				"content": fmt.Sprintf(personaPresentPrompt, "already here\nalso here"),
+			},
+			map[string]any{"role": "assistant", "content": `{"description":"first try"}`},
+			map[string]any{"role": "user", "content": "too much of a role"},
+		}, requestBody["messages"])
+	})
+
+	t.Run("a response that will not parse is refused", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "chatcmpl_persona",
+				"choices": []map[string]any{
+					{
+						"message":       map[string]any{"role": "assistant", "content": "not json"},
+						"finish_reason": "stop",
+						"index":         0,
+					},
+				},
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		client := NewOpenRouterClient("test-key", srv.URL, srv.Client())
+
+		_, err := client.GeneratePersona(t.Context(), smallModel, PersonaRequest{})
+
+		var parseErr *CompletionParseError
+		require.ErrorAs(t, err, &parseErr)
+		require.Equal(t, "persona", parseErr.Target)
+	})
 }

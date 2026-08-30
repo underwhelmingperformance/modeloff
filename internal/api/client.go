@@ -516,6 +516,13 @@ type Client interface {
 	// templates for the pool. Each carries Origin
 	// domain.PersonaGenerated.
 	GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
+
+	// GeneratePersona asks a model to invent one character for an
+	// instance being added, and returns its description. The request
+	// shows it the description of each character already connected, and
+	// each description already turned down with the reason given for
+	// it.
+	GeneratePersona(ctx context.Context, smallModel domain.ModelID, req PersonaRequest) (string, error)
 }
 
 // SetSpanAttributes records usage and request metadata on a span.

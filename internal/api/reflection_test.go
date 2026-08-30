@@ -20,9 +20,9 @@ type reflectionWireMessage struct {
 }
 
 type reflectionWireSchema struct {
-	Name   string         `json:"name"`
-	Strict bool           `json:"strict"`
-	Schema map[string]any `json:"schema"`
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 type reflectionWireFormat struct {

@@ -395,6 +395,7 @@ type FakeAPI struct {
 	SendEventsFn               func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
 	GenerateNickFn             func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
 	GeneratePersonaTemplatesFn func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error)
+	GeneratePersonaFn          func(context.Context, domain.ModelID, api.PersonaRequest) (string, error)
 }
 
 // ListModels delegates to ListModelsFn or returns nil.
@@ -502,6 +503,21 @@ func (f *FakeAPI) GeneratePersonaTemplates(ctx context.Context, smallModel domai
 		Description: "a terse reviewer",
 		Origin:      domain.PersonaGenerated,
 	}}, nil
+}
+
+// GeneratePersona delegates to GeneratePersonaFn or returns a fixed
+// description. Adding a model refuses without a persona, so a fake
+// returning an empty description would fail every test that puts a
+// model in a channel.
+func (f *FakeAPI) GeneratePersona(ctx context.Context, smallModel domain.ModelID, req api.PersonaRequest) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.GeneratePersonaFn != nil {
+		return f.GeneratePersonaFn(ctx, smallModel, req)
+	}
+
+	return "a terse reviewer", nil
 }
 
 // AddModel attaches a model instance to a channel through the

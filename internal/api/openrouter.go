@@ -177,23 +177,26 @@ func (e *CompletionParseError) Unwrap() error {
 	return e.Err
 }
 
-// generateSchema reflects a Go type into a JSON Schema map suitable
-// for the OpenAI API. It uses invopop/jsonschema with inlining enabled
-// so that all definitions are expanded in place.
-func generateSchema[T any]() map[string]any {
+// generateSchema reflects a Go type into a JSON Schema for the OpenAI
+// API. Definitions are inlined, and a strict schema must also say that
+// no other key is allowed, which is what both reflector settings are
+// for.
+//
+// The result is the encoded document, so `properties` reaches the
+// provider in the order the Go type declares its fields in.
+// [personaProposal] depends on that order.
+func generateSchema[T any]() json.RawMessage {
 	reflector := jsonschema.Reflector{
-		DoNotReference: true,
+		DoNotReference:            true,
+		AllowAdditionalProperties: false,
 	}
 
 	var v T
 	schema := reflector.Reflect(v)
 
-	data, _ := json.Marshal(schema)
+	encoded, _ := json.Marshal(schema)
 
-	var result map[string]any
-	_ = json.Unmarshal(data, &result)
-
-	return result
+	return encoded
 }
 
 func toolParams(definitions []ToolDefinition) []openai.ChatCompletionToolUnionParam {

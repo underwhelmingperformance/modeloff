@@ -365,6 +365,10 @@ func (toolTestAPI) GenerateNick(context.Context, domain.ModelID, string, []domai
 	return api.NicknameResult{Nick: "testbot"}, nil
 }
 
+func (toolTestAPI) GeneratePersona(context.Context, domain.ModelID, api.PersonaRequest) (string, error) {
+	return "a terse reviewer", nil
+}
+
 func (toolTestAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 	return []domain.PersonaTemplate{{
 		ID:          "fake-persona",

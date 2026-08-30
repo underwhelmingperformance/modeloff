@@ -65,6 +65,7 @@ type Fake struct {
 	) (api.ReflectionResult, error)
 	GenerateNickFn             func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
 	GeneratePersonaTemplatesFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
+	GeneratePersonaFn          func(ctx context.Context, smallModel domain.ModelID, req api.PersonaRequest) (string, error)
 }
 
 var _ api.Client = (*Fake)(nil)
@@ -259,6 +260,17 @@ func (f *Fake) GeneratePersonaTemplates(ctx context.Context, smallModel domain.M
 	}
 
 	return nil, nil
+}
+
+// GeneratePersona delegates to [Fake.GeneratePersonaFn], or returns a
+// fixed description naming the small model, so a test that does not
+// care what the persona says still gets one that passes validation.
+func (f *Fake) GeneratePersona(ctx context.Context, smallModel domain.ModelID, req api.PersonaRequest) (string, error) {
+	if f.GeneratePersonaFn != nil {
+		return f.GeneratePersonaFn(ctx, smallModel, req)
+	}
+
+	return "a persona generated for " + string(smallModel), nil
 }
 
 // ReasonAware wraps [Fake] and additionally implements

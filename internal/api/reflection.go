@@ -89,20 +89,8 @@ const reflectionProposalPrompt = `Now give your proposal. Reply with JSON matchi
 
 var (
 	reflectionSchema     = generateSchema[ReflectionProposal]()
-	reflectionSchemaJSON = marshalReflectionSchema(reflectionSchema)
+	reflectionSchemaJSON = string(reflectionSchema)
 )
-
-// marshalReflectionSchema renders the schema once for the prompt
-// transport. [generateSchema] produced the value from a Go struct with
-// no unmarshallable member, so the encoding cannot fail.
-func marshalReflectionSchema(schema map[string]any) string {
-	encoded, err := json.Marshal(schema)
-	if err != nil {
-		panic(fmt.Sprintf("marshal reflection schema: %v", err))
-	}
-
-	return string(encoded)
-}
 
 // StructuredOutputSupport records whether the model catalogue advertises
 // strict JSON-schema structured output for the model a reflection runs

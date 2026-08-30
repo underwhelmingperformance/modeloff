@@ -492,6 +492,10 @@ func (f *integrationAPI) GenerateNick(ctx context.Context, smallModel domain.Mod
 	return api.NicknameResult{Nick: "botty"}, nil
 }
 
+func (f *integrationAPI) GeneratePersona(context.Context, domain.ModelID, api.PersonaRequest) (string, error) {
+	return "a terse reviewer", nil
+}
+
 func (f *integrationAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
 	return []domain.PersonaTemplate{{
 		ID:          "fake-persona",
