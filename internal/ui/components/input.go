@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 
-	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -65,12 +64,11 @@ type nickCompletion struct {
 }
 
 // InputBar wraps the rich composer with command completion, nick
-// completion, and input history. It owns the command popover.
+// completion, and input history.
 type InputBar struct {
 	input    RichTextarea
 	keyMap   InputBarKeyMap
 	userNick domain.Nick
-	popover  Popover
 	bounds   uv.Rectangle
 
 	history         []string
@@ -99,7 +97,6 @@ type InputBar struct {
 
 type inputBarLayout struct {
 	palette uv.Rectangle
-	popover uv.Rectangle
 	note    uv.Rectangle
 	input   uv.Rectangle
 	editor  uv.Rectangle
@@ -118,7 +115,6 @@ func NewInputBar(nick ...domain.Nick) InputBar {
 	b := InputBar{
 		input:   editor,
 		keyMap:  DefaultInputBarKeyMap,
-		popover: NewPopover(),
 		histPos: -1,
 	}
 
@@ -154,25 +150,12 @@ func (b InputBar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		b.nicks = slices.Collect(msg.Members.Nicks())
 		return b, nil
 
-	case CompleterMsg:
-		b, cmd := b.refreshPopover(PopoverApplyMsg{
-			Completer: msg.Completer,
-			Raw:       b.input.Value(),
-			Cursor:    b.input.Cursor(),
-		})
-		return b, cmd
-
 	case SecretCheckerMsg:
 		b.secretChecker = msg.Checker
 		return b, nil
 
 	case PopoverAcceptMsg:
-		b = b.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement)
-		b, cmd := b.refreshPopover(PopoverRefreshMsg{
-			Raw:    b.input.Value(),
-			Cursor: b.input.Cursor(),
-		})
-		return b, cmd
+		return b.ReplaceRange(msg.ReplaceStart, msg.ReplaceEnd, msg.Replacement), nil
 
 	case ui.BoundsMsg:
 		b.bounds = msg.Rect
@@ -194,12 +177,7 @@ func (b InputBar) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		updated, cmd := b.input.Update(msg)
 		b.input = updated.(RichTextarea)
 
-		b, popCmd := b.refreshPopover(PopoverRefreshMsg{
-			Raw:    b.input.Value(),
-			Cursor: b.input.Cursor(),
-		})
-
-		return b, tea.Batch(cmd, popCmd)
+		return b, cmd
 
 	case tea.KeyPressMsg:
 		if b.locked {
@@ -225,16 +203,6 @@ func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Component, tea.Cmd) {
 	// the most recent input event.
 	b.pasteFlattened = false
 
-	// When the popover is visible, give it first shot at keys.
-	if b.popover.IsVisible() {
-		updated, cmd := b.popover.Update(msg)
-		b.popover = updated.(Popover)
-
-		if b.popover.Handled() {
-			return b, cmd
-		}
-	}
-
 	// When the colour palette is open, the rich textarea owns
 	// Esc/Tab/Left/Right/Enter and digit jumps. Forward the key
 	// straight through so the input bar's Submit, history, and
@@ -254,24 +222,10 @@ func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Component, tea.Cmd) {
 		return b, clipboard.CopyCmd(b.input.SelectedText())
 
 	case ui.Matches(msg, b.keyMap.HistoryUp):
-		if !b.popover.BlocksHistory() {
-			b = b.historyUp()
-			b, cmd := b.refreshPopover(PopoverRefreshMsg{
-				Raw:    b.input.Value(),
-				Cursor: b.input.Cursor(),
-			})
-			return b, cmd
-		}
+		return b.historyUp(), nil
 
 	case ui.Matches(msg, b.keyMap.HistoryDn):
-		if !b.popover.BlocksHistory() {
-			b = b.historyDown()
-			b, cmd := b.refreshPopover(PopoverRefreshMsg{
-				Raw:    b.input.Value(),
-				Cursor: b.input.Cursor(),
-			})
-			return b, cmd
-		}
+		return b.historyDown(), nil
 
 	case ui.Matches(msg, b.keyMap.KillLineStart):
 		return b.killToLineStart(), nil
@@ -297,12 +251,7 @@ func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Component, tea.Cmd) {
 	b.input = updated.(RichTextarea)
 	b.input = b.input.SetAllowFormatting(!strings.HasPrefix(b.input.Value(), "/"))
 
-	b, popCmd := b.refreshPopover(PopoverRefreshMsg{
-		Raw:    b.input.Value(),
-		Cursor: b.input.Cursor(),
-	})
-
-	return b, tea.Batch(cmd, popCmd)
+	return b, cmd
 }
 
 // killToLineStart deletes from the cursor back to the start of the
@@ -367,20 +316,6 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 		}
 	}
 
-	if contains(layout.popover, mouse.X, mouse.Y) {
-		updated, cmd := b.popover.Update(msg)
-		b.popover = updated.(Popover)
-
-		return b, true, cmd
-	}
-
-	var dismissCmd tea.Cmd
-	dismissed := false
-	if _, clicked := msg.(tea.MouseClickMsg); b.popover.IsVisible() && clicked && mouse.Button == tea.MouseLeft {
-		b, dismissCmd = b.refreshPopover(PopoverDismissMsg{Raw: b.input.Value()})
-		dismissed = true
-	}
-
 	if contains(layout.input, mouse.X, mouse.Y) {
 		switch msg.(type) {
 		case tea.MouseClickMsg:
@@ -388,12 +323,8 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 				inputMsg := mouseAt(msg, max(mouse.X, layout.editor.Min.X), mouse.Y)
 				updated, inputCmd := b.input.Update(inputMsg)
 				b.input = updated.(RichTextarea)
-				b, popCmd := b.refreshPopover(PopoverRefreshMsg{
-					Raw:    b.input.Value(),
-					Cursor: b.input.Cursor(),
-				})
 
-				return b, true, tea.Batch(dismissCmd, inputCmd, popCmd)
+				return b, true, inputCmd
 			}
 		case tea.MouseMotionMsg:
 			if b.input.mouseSelecting {
@@ -401,14 +332,14 @@ func (b InputBar) handleMouse(msg tea.MouseMsg) (InputBar, bool, tea.Cmd) {
 				updated, cmd := b.input.Update(inputMsg)
 				b.input = updated.(RichTextarea)
 
-				return b, true, tea.Batch(dismissCmd, cmd)
+				return b, true, cmd
 			}
 
-			return b, true, dismissCmd
+			return b, true, nil
 		}
 	}
 
-	return b, dismissed, dismissCmd
+	return b, false, nil
 }
 
 func (b InputBar) submit() (ui.Component, tea.Cmd) {
@@ -427,20 +358,15 @@ func (b InputBar) submit() (ui.Component, tea.Cmd) {
 	b.histPos = -1
 	b.histDraft = ""
 
-	b, popCmd := b.refreshPopover(PopoverRefreshMsg{
-		Raw:    b.input.Value(),
-		Cursor: b.input.Cursor(),
-	})
-
 	if strings.HasPrefix(text, "/") {
-		return b, tea.Batch(popCmd, func() tea.Msg {
+		return b, func() tea.Msg {
 			return CommandSubmitMsg{Raw: text}
-		})
+		}
 	}
 
-	return b, tea.Batch(popCmd, func() tea.Msg {
+	return b, func() tea.Msg {
 		return MessageSubmitMsg{Text: raw}
-	})
+	}
 }
 
 // pushHistory appends text to the history ring, unless it repeats the
@@ -636,30 +562,6 @@ func (b InputBar) SetCursorFromCell(x int) InputBar {
 
 // KeyBindings implements ui.Keybinding.
 func (b InputBar) KeyBindings() []ui.KeyBinding {
-	if b.popover.IsVisible() {
-		return []ui.KeyBinding{
-			b.keyMap.Submit,
-			ui.WithBindingEnabled(
-				ui.Bind(key.NewBinding(
-					key.WithKeys("tab"),
-					key.WithHelp("Tab", "accept"),
-				)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
-				b.popover.HasSuggestions(),
-			),
-			ui.WithBindingEnabled(
-				ui.Bind(key.NewBinding(
-					key.WithKeys("up", "down", "shift+tab"),
-					key.WithHelp("↑↓", "navigate"),
-				)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
-				b.popover.HasSuggestions(),
-			),
-			ui.Bind(key.NewBinding(
-				key.WithKeys("esc"),
-				key.WithHelp("Esc", "dismiss"),
-			)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintEssential),
-		}
-	}
-
 	if b.input.PaletteVisible() {
 		return b.input.paletteKeyMap.Bindings()
 	}
@@ -748,14 +650,6 @@ func (b InputBar) fmtBinding(binding ui.KeyBinding, active bool) ui.KeyBinding {
 	return ui.WithBindingActive(binding, active)
 }
 
-func (b InputBar) refreshPopover(msg tea.Msg) (InputBar, tea.Cmd) {
-	updated, cmd := b.popover.Update(msg)
-	b.popover = updated.(Popover)
-	resized, boundsCmd := b.updateChildBounds()
-
-	return resized.(InputBar), tea.Batch(cmd, boundsCmd)
-}
-
 func clampInputIndex(index, length int) int {
 	if index < 0 {
 		return 0
@@ -775,19 +669,15 @@ func (b InputBar) prefixWidth() int {
 }
 
 // bandRows returns the rows the input bar's three bands want, from the
-// top down: the colour palette, the completion popover or the paste
-// note in the one band they share, and the input row itself. Height and
-// layout both read it, so the rows the bar asks its parent for are the
-// rows it sets out to place.
+// top down: the colour palette, the paste note, and the input row
+// itself. Height and layout both read it, so the rows the bar asks its
+// parent for are the rows it sets out to place.
 func (b InputBar) bandRows() (palette, aux, input int) {
 	if b.input.PaletteVisible() {
 		palette = 1
 	}
 
-	switch {
-	case b.popover.height() > 0:
-		aux = b.popover.height()
-	case b.pasteFlattened:
+	if b.pasteFlattened {
 		aux = 1
 	}
 
@@ -796,10 +686,10 @@ func (b InputBar) bandRows() (palette, aux, input int) {
 
 // bandRowsWithin returns the rows the bands take in an area of the
 // given height. An area too short for all three keeps the input row
-// first, then the popover or note, and gives up the palette soonest:
-// the input row is where the operator is typing, and a bar that painted
-// a colour swatch in place of the prompt would leave them typing into
-// nothing.
+// first, then the paste note, and drops the palette soonest: the input
+// row is where the operator is typing, and a bar that painted a colour
+// swatch over that row would take the prompt and the text off the
+// screen.
 func (b InputBar) bandRowsWithin(height int) (palette, aux, input int) {
 	palette, aux, input = b.bandRows()
 
@@ -863,26 +753,21 @@ func (b InputBar) layout(area uv.Rectangle) inputBarLayout {
 		uvlayout.Fill(1),
 	).Split(input).Assign(&prefix, &editor)
 
-	layout := inputBarLayout{input: input, editor: editor, palette: palette}
-	if b.popover.height() > 0 {
-		layout.popover = aux
-	} else {
-		layout.note = aux
+	return inputBarLayout{
+		input:   input,
+		editor:  editor,
+		palette: palette,
+		note:    aux,
 	}
-
-	return layout
 }
 
 func (b InputBar) updateChildBounds() (ui.Component, tea.Cmd) {
 	layout := b.layout(b.bounds)
 
-	updatedPopover, popoverCmd := b.popover.Update(ui.BoundsMsg{Rect: layout.popover})
-	b.popover = updatedPopover.(Popover)
-
 	updatedInput, inputCmd := b.input.Update(ui.BoundsMsg{Rect: layout.editor})
 	b.input = updatedInput.(RichTextarea)
 
-	return b, tea.Batch(popoverCmd, inputCmd)
+	return b, inputCmd
 }
 
 // ActiveFormats returns the formatting state at the current cursor

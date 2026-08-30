@@ -230,6 +230,45 @@ var DefaultRichTextareaKeyMap = RichTextareaKeyMap{
 	)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNone),
 }
 
+// PopoverKeyMap binds the keys the completion popover handles.
+//
+// AcceptWithEnter is the input bar's own send key, which the popover
+// takes when accepting the highlighted suggestion would replace the
+// typed prefix. It is bound here as well so that what takes the key
+// and what describes it stay the same thing.
+type PopoverKeyMap struct {
+	Accept          ui.KeyBinding
+	AcceptWithEnter ui.KeyBinding
+	Navigate        ui.KeyBinding
+	Dismiss         ui.KeyBinding
+}
+
+// DefaultPopoverKeyMap is the default set of completion-popover
+// keybindings.
+var DefaultPopoverKeyMap = PopoverKeyMap{
+	Accept: ui.Bind(key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("Tab", "accept"),
+	)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
+	AcceptWithEnter: ui.Bind(key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("↵", "accept"),
+	)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
+	Navigate: ui.Bind(key.NewBinding(
+		key.WithKeys("up", "down", "shift+tab"),
+		key.WithHelp("↑↓", "navigate"),
+	)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintHigh),
+	Dismiss: ui.Bind(key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("Esc", "dismiss"),
+	)).WithHelpMetadata(ui.KeyHelpCompletion, ui.KeyHintEssential),
+}
+
+// Bindings returns every binding in the map, in declaration order.
+func (m PopoverKeyMap) Bindings() []ui.KeyBinding {
+	return []ui.KeyBinding{m.Accept, m.AcceptWithEnter, m.Navigate, m.Dismiss}
+}
+
 // ColourPaletteKeyMap binds the keys the editor handles while its
 // colour palette is open. The palette takes these before the editing
 // keys are consulted, so an open palette is a mode of its own and not

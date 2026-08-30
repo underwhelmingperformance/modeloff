@@ -12,7 +12,6 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/stretchr/testify/require"
 
-	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -25,10 +24,74 @@ func typeText(t *testing.T, m ui.Component, text string) ui.Component {
 	t.Helper()
 
 	for _, r := range text {
-		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = deliver(t, updated, cmd)
 	}
 
 	return m
+}
+
+// deliverDepth bounds how far deliver follows a chain of commands. A
+// component whose update of a message returns a command producing that
+// same message is a bug. A test that followed the chain without a
+// bound would hang, and a hung test reports nothing at all; stopping
+// here fails it at the call that started the chain.
+const deliverDepth = 16
+
+// deliver runs a command and feeds the messages it produced back into
+// the component, following the commands those produce in turn. A
+// component whose state depends on a message of its own reaches that
+// state only once the message has arrived.
+//
+// A batch is delivered in the order it was built, which is one order
+// the runtime may pick and not the only one: it runs a batch's commands
+// concurrently. A test that depended on this order would be pinning
+// something the application does not promise.
+func deliver(t *testing.T, m ui.Component, cmd tea.Cmd) ui.Component {
+	t.Helper()
+
+	return deliverWithin(t, m, cmd, deliverDepth)
+}
+
+func deliverWithin(t *testing.T, m ui.Component, cmd tea.Cmd, depth int) ui.Component {
+	t.Helper()
+
+	if cmd == nil {
+		return m
+	}
+
+	require.Positive(t, depth, "a command chain ran past deliverDepth")
+
+	for _, msg := range msgsOf(cmd) {
+		updated, next := m.Update(msg)
+		m = deliverWithin(t, updated, next, depth-1)
+	}
+
+	return m
+}
+
+// msgsOf runs a command and returns the messages it produced, unpacking
+// a batch into its members.
+func msgsOf(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+
+	switch msg := cmd().(type) {
+	case nil:
+		return nil
+
+	case tea.BatchMsg:
+		var msgs []tea.Msg
+		for _, inner := range msg {
+			msgs = append(msgs, msgsOf(inner)...)
+		}
+
+		return msgs
+
+	default:
+		return []tea.Msg{msg}
+	}
 }
 
 func enter(t *testing.T, m ui.Component) (ui.Component, tea.Cmd) {
@@ -1063,214 +1126,6 @@ func TestInputBar_NickListUpdatedMsg_ignores_an_older_revision(t *testing.T) {
 	m, _ = m.Update(tabKey())
 
 	require.Equal(t, "alice: ", inputValue(t, m))
-}
-
-// inputBarKind is a minimal KindProvider for InputBar popover tests.
-type inputBarKind domain.ChannelKind
-
-func (k inputBarKind) ChannelKind() domain.ChannelKind { return domain.ChannelKind(k) }
-
-const inputBarKindChannel = inputBarKind(domain.KindChannel)
-
-func inputBarWithPopover(nodes []*command.Node[inputBarKind]) ui.Component {
-	var m ui.Component = components.NewInputBar("testuser")
-
-	m, _ = m.Update(components.CompleterMsg{
-		Completer: command.CompletionSet[inputBarKind]{Set: command.Set[inputBarKind]{Commands: nodes}, Ctx: inputBarKindChannel},
-	})
-	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 60, 24)})
-
-	return m
-}
-
-func TestInputBar_popover_shows_completions(t *testing.T) {
-	nodes := []*command.Node[inputBarKind]{
-		{Name: "join", Help: "Join a channel"},
-		{Name: "part", Help: "Leave a channel"},
-	}
-	m := inputBarWithPopover(nodes)
-
-	m = typeText(t, m, "/")
-
-	require.Equal(t, []string{
-		"/join  Join a channel",
-		"/part  Leave a channel",
-		"testuser > /",
-	}, visibleLines(renderToBuffer(m, 60, 3)))
-}
-
-func TestInputBar_popover_tab_accepts(t *testing.T) {
-	nodes := []*command.Node[inputBarKind]{
-		{Name: "join", Help: "Join a channel"},
-	}
-	m := inputBarWithPopover(nodes)
-
-	m = typeText(t, m, "/jo")
-
-	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-
-	require.NotNil(t, cmd, "Tab should produce a cmd")
-	m, _ = m.Update(cmd())
-
-	m = typeText(t, m, "#general")
-	_, cmd = enter(t, m)
-
-	require.NotNil(t, cmd)
-	sub := cmd().(components.CommandSubmitMsg)
-	require.Equal(t, "/join #general", sub.Raw)
-}
-
-func TestInputBar_enter_submits_with_optional_continuation_suggested(t *testing.T) {
-	const modelID = "anthropic/claude-3-haiku"
-
-	nodes := []*command.Node[inputBarKind]{
-		{
-			Name: "add-model",
-			Positionals: []command.Positional[inputBarKind]{
-				{
-					Name: "model",
-					Source: command.LiteralSource[inputBarKind](
-						command.Suggestion{Value: modelID, Label: modelID},
-					),
-				},
-			},
-			Flags: []command.Flag[inputBarKind]{
-				{Name: "--persona", Optional: true, Help: "Persona ID or literal text"},
-			},
-		},
-	}
-	m := inputBarWithPopover(nodes)
-	m = typeText(t, m, "/add-model anth")
-
-	m, cmd := enter(t, m)
-	require.NotNil(t, cmd)
-	m, _ = m.Update(cmd())
-
-	require.Contains(t, visibleLines(renderToBuffer(m, 60, 2)), "--persona  Persona ID or literal text")
-
-	_, cmd = enter(t, m)
-	require.NotNil(t, cmd)
-	require.Equal(t, components.CommandSubmitMsg{Raw: "/add-model " + modelID}, cmd())
-}
-
-func TestInputBar_enter_accepts_value_after_tab_accepts_optional_flag(t *testing.T) {
-	const modelID = "anthropic/claude-3-haiku"
-
-	nodes := []*command.Node[inputBarKind]{
-		{
-			Name:        "add-model",
-			Positionals: []command.Positional[inputBarKind]{{Name: "model"}},
-			Flags: []command.Flag[inputBarKind]{
-				{
-					Name:     "--persona",
-					Optional: true,
-					Variadic: true,
-					Source: command.LiteralSource[inputBarKind](
-						command.Suggestion{Value: "bard", Label: "bard"},
-						command.Suggestion{Value: "sage", Label: "sage"},
-					),
-				},
-			},
-		},
-	}
-	m := inputBarWithPopover(nodes)
-	m = typeText(t, m, "/add-model "+modelID+" ")
-
-	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	require.NotNil(t, cmd)
-	m, _ = m.Update(cmd())
-
-	m, cmd = enter(t, m)
-	require.NotNil(t, cmd)
-	require.Equal(t, components.PopoverAcceptMsg{
-		ReplaceStart: len("/add-model " + modelID + " --persona "),
-		ReplaceEnd:   len("/add-model " + modelID + " --persona "),
-		Replacement:  "bard ",
-	}, cmd())
-
-	m, _ = m.Update(cmd())
-	_, cmd = enter(t, m)
-	require.NotNil(t, cmd)
-	require.Equal(t, components.CommandSubmitMsg{
-		Raw: "/add-model " + modelID + " --persona bard",
-	}, cmd())
-}
-
-func TestInputBar_popover_tab_preserves_typed_alias(t *testing.T) {
-	tests := []struct {
-		name    string
-		typed   string
-		wantRaw string
-	}{
-		{name: "alias-exact preserves typed alias", typed: "/j", wantRaw: "/j #general"},
-		{name: "value-exact preserves typed canonical", typed: "/join", wantRaw: "/join #general"},
-		{name: "ambiguous prefix expands to canonical", typed: "/jo", wantRaw: "/join #general"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			nodes := []*command.Node[inputBarKind]{
-				{Name: "join", Help: "Join a channel", Aliases: []string{"j"}},
-			}
-			m := inputBarWithPopover(nodes)
-
-			m = typeText(t, m, tt.typed)
-
-			var cmd tea.Cmd
-			m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-			require.NotNil(t, cmd, "Tab should produce a cmd")
-			m, _ = m.Update(cmd())
-
-			m = typeText(t, m, "#general")
-			_, cmd = enter(t, m)
-			require.NotNil(t, cmd)
-
-			sub := cmd().(components.CommandSubmitMsg)
-			require.Equal(t, tt.wantRaw, sub.Raw)
-		})
-	}
-}
-
-func TestInputBar_popover_dismiss_on_esc(t *testing.T) {
-	nodes := []*command.Node[inputBarKind]{
-		{Name: "join", Help: "Join a channel"},
-		{Name: "part", Help: "Leave a channel"},
-	}
-	m := inputBarWithPopover(nodes)
-
-	m = typeText(t, m, "/")
-
-	// Popover should be showing completions.
-	require.Equal(t, []string{
-		"/join  Join a channel",
-		"/part  Leave a channel",
-		"testuser > /",
-	}, visibleLines(renderToBuffer(m, 60, 3)))
-
-	// Esc should dismiss the popover.
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-
-	require.Equal(t, []string{"testuser > /"}, visibleLines(renderToBuffer(m, 60, 3)))
-}
-
-func TestInputBar_keybindings_include_popover_when_visible(t *testing.T) {
-	nodes := []*command.Node[inputBarKind]{
-		{Name: "join", Help: "Join a channel"},
-	}
-	m := inputBarWithPopover(nodes)
-
-	m = typeText(t, m, "/")
-
-	bar := m.(components.InputBar)
-	bindings := bar.KeyBindings()
-
-	var helpTexts []string
-	for _, b := range bindings {
-		helpTexts = append(helpTexts, b.Help().Desc)
-	}
-
-	require.Equal(t, []string{"send", "accept", "navigate", "dismiss"}, helpTexts)
 }
 
 func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) {

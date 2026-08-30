@@ -1,6 +1,8 @@
 package components
 
 import (
+	"image"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -55,7 +57,8 @@ type TopicUpdatedMsg struct {
 	Topic string
 }
 
-// CompleterMsg sets the completer used by the input bar's popover.
+// CompleterMsg sets the completer the window's completion popover
+// consults.
 type CompleterMsg struct {
 	Completer command.Completable
 }
@@ -98,12 +101,25 @@ type ChatView[C command.KindProvider] struct {
 	input    InputBar
 	keyMap   ChatViewKeyMap
 
+	// layers holds the command-completion popover, which is drawn over
+	// the transcript. The stack is the only place it is kept, so
+	// drawing it, offering it a key and routing a message to it all
+	// read the same value.
+	layers ui.LayerStack
+
 	bounds uv.Rectangle
 }
+
+// popoverLayerID names the completion popover on the window's stack.
+const popoverLayerID ui.LayerID = "completion-popover"
 
 type chatViewLayout struct {
 	InputRect   uv.Rectangle
 	MessageRect uv.Rectangle
+
+	// PopoverRect is where the completions float, over the transcript,
+	// so it takes no rows from MessageRect.
+	PopoverRect uv.Rectangle
 }
 
 // NewChatView creates a chat view for the given channel. The
@@ -145,6 +161,12 @@ func (c ChatView[C]) Init() tea.Cmd {
 
 // KeyBindings implements ui.Keybinding.
 func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
+	// A locked window takes no keys at all, so it has none to name.
+	// Root's own keys are still described, and they still work.
+	if c.input.locked {
+		return nil
+	}
+
 	scrollable := c.messages.Len() > 0
 
 	var bindings []ui.KeyBinding
@@ -152,7 +174,22 @@ func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
 		bindings = append(bindings, ui.WithBindingEnabled(binding, scrollable))
 	}
 
-	bindings = append(bindings, ui.CollectKeyBindings(c.input)...)
+	// The popover is in front of the input bar and takes a key before
+	// it, so its keys are named first and the bar's only when the
+	// popover leaves them reachable. Up and Down are the example:
+	// while there are suggestions to cycle, they do not reach input
+	// history, and naming history there would offer the operator
+	// something the key will not do.
+	popover := c.popover()
+	claimed := popover.claimedKeys()
+
+	bindings = append(bindings, popover.KeyBindings()...)
+
+	for _, binding := range ui.CollectKeyBindings(c.input) {
+		if !shadowed(binding, claimed) {
+			bindings = append(bindings, binding)
+		}
+	}
 
 	return bindings
 }
@@ -207,16 +244,20 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CompleterMsg:
-		c, inputCmd := c.updateInput(msg)
-		c, syncCmd := c.syncChildBounds()
-
-		return c, tea.Batch(inputCmd, syncCmd)
+		return c.updatePopover(PopoverApplyMsg{
+			Completer: msg.Completer,
+			Raw:       c.input.Value(),
+			Cursor:    c.input.Cursor(),
+		})
 
 	case SecretCheckerMsg:
 		c, inputCmd := c.updateInput(msg)
 		c, syncCmd := c.syncChildBounds()
 
 		return c, tea.Batch(inputCmd, syncCmd)
+
+	case PopoverRefreshMsg, PopoverDismissMsg:
+		return c.updatePopover(msg)
 
 	case tea.MouseMsg:
 		if updated, handled, cmd := c.handleMouse(msg); handled {
@@ -225,6 +266,25 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		}
 
 		return c, nil
+
+	case tea.KeyPressMsg:
+		// A locked bar ignores keys while the client shuts down, and
+		// the completions in front of it have to ignore them too: a
+		// layer offered the key first would go on accepting suggestions
+		// into a line nothing will send.
+		if c.input.locked {
+			return c, nil
+		}
+
+		// The layers are offered the key before this window's own
+		// children, and pass on what they do not want.
+		layers, handled, cmd := c.layers.HandleKey(msg)
+		c.layers = layers
+		if handled {
+			c, syncCmd := c.syncChildBounds()
+
+			return c, tea.Batch(cmd, syncCmd)
+		}
 	}
 
 	// Forward to message list for viewport navigation, then input bar.
@@ -251,15 +311,32 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 	layout := c.layoutRects()
 	mouse := msg.Mouse()
 
+	// The popover is in front of the transcript, so it is offered a
+	// pointer event before the window's own children.
+	if layer, ok := c.layers.MouseLayer(image.Pt(mouse.X, mouse.Y), c.bounds); ok {
+		layers, cmd := c.layers.UpdateID(layer.ID(), msg)
+		c.layers = layers
+
+		return c, true, cmd
+	}
+
+	// The mouse event missed the popover, so a left click closes the
+	// suggestion list. A click that lands in the input moves the
+	// cursor, and the refresh that follows computes the suggestions for
+	// the cursor's new position: the operator is still composing that
+	// line, and the list opens again on the next keystroke.
+	var dismissCmd tea.Cmd
+
+	_, dismissed := msg.(tea.MouseClickMsg)
+	dismissed = dismissed && mouse.Button == tea.MouseLeft
+	if dismissed {
+		c, dismissCmd = c.updatePopover(PopoverDismissMsg{Raw: c.input.Value()})
+	}
+
 	if contains(layout.InputRect, mouse.X, mouse.Y) {
-		updated, cmd := c.input.Update(msg)
-		c.input = updated.(InputBar)
+		c, inputCmd := c.updateInput(msg)
 
-		if cmd != nil {
-			return c, true, cmd
-		}
-
-		return c, true, nil
+		return c, true, tea.Batch(dismissCmd, inputCmd)
 	}
 
 	if _, ok := msg.(tea.MouseWheelMsg); ok && contains(layout.MessageRect, mouse.X, mouse.Y) {
@@ -272,11 +349,11 @@ func (c ChatView[C]) handleMouse(msg tea.MouseMsg) (ChatView[C], bool, tea.Cmd) 
 		}
 	}
 
-	if _, clicked := msg.(tea.MouseClickMsg); clicked && mouse.Button == tea.MouseLeft {
+	if dismissed {
 		updated, cmd := c.input.Update(msg)
 		c.input = updated.(InputBar)
 
-		return c, true, cmd
+		return c, true, tea.Batch(dismissCmd, cmd)
 	}
 
 	return c, false, nil
@@ -318,7 +395,10 @@ func (c ChatView[C]) layoutRectsFor(bounds uv.Rectangle) chatViewLayout {
 		uvlayout.Len(inputRows),
 	).Split(bounds).Assign(&header, &message, &input)
 
+	popover := c.popoverRect(message, input)
+
 	return chatViewLayout{
+		PopoverRect: popover,
 		InputRect:   input,
 		MessageRect: message,
 	}
@@ -340,14 +420,102 @@ func (c ChatView[C]) syncChildBounds() (ChatView[C], tea.Cmd) {
 	updated, cmd := c.messages.Update(ui.BoundsMsg{Rect: layout.MessageRect})
 	c.messages = updated.(MessageList[C])
 
-	return c, tea.Batch(inputCmd, cmd)
+	c, layerCmd := c.syncPopoverLayer(layout)
+
+	return c, tea.Batch(inputCmd, cmd, layerCmd)
 }
 
+// popoverRect is where the completions float: the rows immediately
+// above the input, taken from the transcript's area without shrinking
+// it. A popover taller than the transcript is cut at the top, which is
+// the end furthest from the input it belongs to.
+func (c ChatView[C]) popoverRect(message, input uv.Rectangle) uv.Rectangle {
+	rows := min(c.popover().height(), message.Dy())
+	if rows <= 0 {
+		return uv.Rectangle{}
+	}
+
+	return uv.Rect(message.Min.X, input.Min.Y-rows, message.Dx(), rows)
+}
+
+// popover returns the popover on the window's stack, or a fresh empty
+// one until the window has laid out and pushed the layer.
+func (c ChatView[C]) popover() Popover {
+	layer, ok := c.layers.Get(popoverLayerID)
+	if !ok {
+		return NewPopover()
+	}
+
+	popover, _ := layer.Content().(Popover)
+
+	return popover
+}
+
+// syncPopoverLayer moves the popover's layer to where the layout says
+// it goes, and creates it on the first call.
+//
+// A layer with nothing to show keeps its place with an empty
+// rectangle. Removing it would discard the popover on it, and the
+// next call would push a fresh one without the completer the window
+// was given or the closed state a dismissal left.
+func (c ChatView[C]) syncPopoverLayer(layout chatViewLayout) (ChatView[C], tea.Cmd) {
+	if _, ok := c.layers.Get(popoverLayerID); !ok {
+		layers, cmd := c.layers.Push(
+			ui.NewKeyLayer(popoverLayerID, NewPopover(), layout.PopoverRect).WithOpaque(),
+		)
+		c.layers = layers
+
+		return c, cmd
+	}
+
+	layers, cmd := c.layers.Move(popoverLayerID, layout.PopoverRect)
+	c.layers = layers
+
+	return c, cmd
+}
+
+// refreshPopover recomputes the completions for what is now typed.
+// Recompute here and not through a returned command: a message
+// travelling out to the runtime and back would leave the completions a
+// frame behind the line they describe.
+func (c ChatView[C]) refreshPopover() (ChatView[C], tea.Cmd) {
+	return c.updatePopover(PopoverRefreshMsg{
+		Raw:    c.input.Value(),
+		Cursor: c.input.Cursor(),
+	})
+}
+
+// updatePopover routes a message to the popover on the stack, then
+// lays out again: the suggestions it holds afterwards decide how many
+// rows its rectangle needs.
+func (c ChatView[C]) updatePopover(msg tea.Msg) (ChatView[C], tea.Cmd) {
+	c, ensureCmd := c.syncPopoverLayer(c.layoutRects())
+
+	layers, cmd := c.layers.UpdateID(popoverLayerID, msg)
+	c.layers = layers
+
+	c, syncCmd := c.syncChildBounds()
+
+	return c, tea.Batch(ensureCmd, cmd, syncCmd)
+}
+
+// updateInput forwards a message to the input bar and recomputes the
+// completions when that message changed the text or the cursor
+// position. The cursor counts as well as the text: what a completion
+// offers depends on where in the line it is being asked about.
 func (c ChatView[C]) updateInput(msg tea.Msg) (ChatView[C], tea.Cmd) {
+	before, at := c.input.Value(), c.input.Cursor()
+
 	updated, cmd := c.input.Update(msg)
 	c.input = updated.(InputBar)
 
-	return c, cmd
+	if c.input.Value() == before && c.input.Cursor() == at {
+		return c, cmd
+	}
+
+	c, refreshCmd := c.refreshPopover()
+
+	return c, tea.Batch(cmd, refreshCmd)
 }
 
 // headerText names the window in view: the channel name plus its

@@ -444,8 +444,9 @@ func TestChatView_typing_goes_to_input(t *testing.T) {
 
 	require.NotNil(t, cmd)
 
-	msg := cmd()
-	require.Equal(t, components.MessageSubmitMsg{Text: "test message"}, msg)
+	require.Equal(t,
+		[]tea.Msg{components.MessageSubmitMsg{Text: "test message"}},
+		msgsOf(cmd))
 
 	_ = m
 }
@@ -1279,14 +1280,15 @@ func TestChatView_command_popover_renders_and_completes(t *testing.T) {
 	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 
 	require.NotNil(t, cmd, "Tab should produce a cmd")
-	m, _ = m.Update(cmd())
+	m = deliver(t, m, cmd)
 
 	m = typeText(t, m, "#random")
 	_, cmd = enter(t, m)
 
 	require.NotNil(t, cmd)
-	sub := cmd().(components.CommandSubmitMsg)
-	require.Equal(t, "/join #random", sub.Raw)
+	require.Equal(t,
+		[]tea.Msg{components.CommandSubmitMsg{Raw: "/join #random"}},
+		msgsOf(cmd))
 }
 
 func TestChatView_popover_arrow_keys_do_not_fall_through(t *testing.T) {
@@ -2129,4 +2131,273 @@ func TestRenderLine_preserves_irc_formatting_in_plain_output(t *testing.T) {
 		"alice"), Target: "#test", Body: "hello \x02bold\x02 \x1funder\x1f \x1estrike\x1e", At: time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC)})
 
 	require.Equal(t, []string{"2026-04-12 11:00 <alice> hello bold under strike"}, chatSegments(rendered))
+}
+
+// chatViewWithPopover builds a window whose completions come from the
+// given grammar. The popover belongs to the window, so these tests
+// drive it from there.
+func chatViewWithPopover(nodes []*command.Node[testKind]) ui.Component {
+	var m ui.Component = components.NewChatView[testKind](
+		nilContent("#general"), "#general", domain.KindChannel, "testuser", "",
+	)
+
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: nodes})
+	m, _ = m.Update(components.CompleterMsg{
+		Completer: command.CompletionSet[testKind]{
+			Set: command.Set[testKind]{Commands: nodes},
+			Ctx: testKindChannel,
+		},
+	})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 60, 24)})
+
+	return m
+}
+
+func TestChatView_enter_submits_with_optional_continuation_suggested(t *testing.T) {
+	const modelID = "anthropic/claude-3-haiku"
+
+	nodes := []*command.Node[testKind]{
+		{
+			Name: "add-model",
+			Positionals: []command.Positional[testKind]{
+				{
+					Name: "model",
+					Source: command.LiteralSource[testKind](
+						command.Suggestion{Value: modelID, Label: modelID},
+					),
+				},
+			},
+			Flags: []command.Flag[testKind]{
+				{Name: "--persona", Optional: true, Help: "Persona ID or literal text"},
+			},
+		},
+	}
+	m := chatViewWithPopover(nodes)
+	m = typeText(t, m, "/add-model anth")
+
+	m, cmd := enter(t, m)
+	require.NotNil(t, cmd)
+	m = deliver(t, m, cmd)
+
+	require.Equal(t,
+		[]string{"--persona  Persona ID or literal text"},
+		popoverLines(renderToBuffer(m, 60, 24)))
+
+	_, cmd = enter(t, m)
+
+	require.Equal(t,
+		[]tea.Msg{components.CommandSubmitMsg{Raw: "/add-model " + modelID}},
+		msgsOf(cmd))
+}
+
+func TestChatView_enter_accepts_value_after_tab_accepts_optional_flag(t *testing.T) {
+	const modelID = "anthropic/claude-3-haiku"
+
+	nodes := []*command.Node[testKind]{
+		{
+			Name:        "add-model",
+			Positionals: []command.Positional[testKind]{{Name: "model"}},
+			Flags: []command.Flag[testKind]{
+				{
+					Name:     "--persona",
+					Optional: true,
+					Variadic: true,
+					Source: command.LiteralSource[testKind](
+						command.Suggestion{Value: "bard", Label: "bard"},
+						command.Suggestion{Value: "sage", Label: "sage"},
+					),
+				},
+			},
+		},
+	}
+	m := chatViewWithPopover(nodes)
+	m = typeText(t, m, "/add-model "+modelID+" ")
+
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	require.NotNil(t, cmd)
+	m = deliver(t, m, cmd)
+
+	m, cmd = enter(t, m)
+
+	accepted := components.PopoverAcceptMsg{
+		ReplaceStart: len("/add-model " + modelID + " --persona "),
+		ReplaceEnd:   len("/add-model " + modelID + " --persona "),
+		Replacement:  "bard ",
+	}
+	require.Equal(t, []tea.Msg{accepted}, msgsOf(cmd))
+
+	m = deliver(t, m, cmd)
+	_, cmd = enter(t, m)
+
+	require.Equal(t,
+		[]tea.Msg{components.CommandSubmitMsg{
+			Raw: "/add-model " + modelID + " --persona bard",
+		}},
+		msgsOf(cmd))
+}
+
+func TestChatView_popover_tab_preserves_typed_alias(t *testing.T) {
+	tests := []struct {
+		name    string
+		typed   string
+		wantRaw string
+	}{
+		{name: "alias-exact preserves typed alias", typed: "/j", wantRaw: "/j #general"},
+		{name: "value-exact preserves typed canonical", typed: "/join", wantRaw: "/join #general"},
+		{name: "ambiguous prefix expands to canonical", typed: "/jo", wantRaw: "/join #general"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodes := []*command.Node[testKind]{
+				{Name: "join", Help: "Join a channel", Aliases: []string{"j"}},
+			}
+			m := chatViewWithPopover(nodes)
+
+			m = typeText(t, m, tt.typed)
+
+			var cmd tea.Cmd
+			m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			require.NotNil(t, cmd, "Tab should produce a cmd")
+			m = deliver(t, m, cmd)
+
+			m = typeText(t, m, "#general")
+			_, cmd = enter(t, m)
+
+			require.Equal(t,
+				[]tea.Msg{components.CommandSubmitMsg{Raw: tt.wantRaw}},
+				msgsOf(cmd))
+		})
+	}
+}
+
+func TestChatView_popover_dismiss_on_esc(t *testing.T) {
+	nodes := []*command.Node[testKind]{
+		{Name: "join", Help: "Join a channel"},
+		{Name: "part", Help: "Leave a channel"},
+	}
+	m := chatViewWithPopover(nodes)
+
+	m = typeText(t, m, "/")
+
+	require.Equal(t, []string{
+		"/join  Join a channel",
+		"/part  Leave a channel",
+	}, popoverLines(renderToBuffer(m, 60, 24)))
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+
+	require.Empty(t, popoverLines(renderToBuffer(m, 60, 24)))
+}
+
+// TestChatView_keybindings_lead_with_the_popover pins that the window
+// names the completion keys while the popover is showing, and names
+// them ahead of the input bar's, which is the order the keys are
+// offered in.
+//
+// Enter is among them here: two suggestions are on offer and accepting
+// one would change the typed line, so the popover takes the key the
+// bar would otherwise send on.
+func TestChatView_keybindings_lead_with_the_popover(t *testing.T) {
+	nodes := []*command.Node[testKind]{
+		{Name: "join", Help: "Join a channel"},
+		{Name: "part", Help: "Leave a channel"},
+	}
+	m := chatViewWithPopover(nodes)
+	m = typeText(t, m, "/")
+
+	var completion [][2]string
+	for _, binding := range m.(components.ChatView[testKind]).KeyBindings() {
+		if binding.HelpGroup == ui.KeyHelpCompletion {
+			completion = append(completion, [2]string{binding.Help().Key, binding.Help().Desc})
+		}
+	}
+
+	require.Equal(t, [][2]string{
+		{"Tab", "accept"},
+		{"↑↓", "navigate"},
+		{"Esc", "dismiss"},
+		{"↵", "accept"},
+	}, completion)
+}
+
+// TestChatView_keybindings_drop_what_the_popover_takes pins that the
+// window stops naming a key of the bar's while the popover is taking
+// it. Up and Down browse input history, and while there are
+// suggestions to cycle through they never reach it. Enter sends the
+// line, but when accepting a suggestion would change what is typed,
+// the popover takes Enter and nothing is sent.
+func TestChatView_keybindings_drop_what_the_popover_takes(t *testing.T) {
+	nodes := []*command.Node[testKind]{
+		{Name: "join", Help: "Join a channel"},
+		{Name: "part", Help: "Leave a channel"},
+	}
+	m := chatViewWithPopover(nodes)
+
+	// A line in the history, so the bar has something to offer Up and
+	// Down for.
+	m = typeText(t, m, "hello")
+	m, _ = enter(t, m)
+
+	described := func(m ui.Component, desc string) []string {
+		t.Helper()
+
+		var found []string
+		for _, binding := range m.(components.ChatView[testKind]).KeyBindings() {
+			if binding.Help().Desc == desc {
+				found = append(found, binding.Help().Key)
+			}
+		}
+
+		return found
+	}
+
+	require.Equal(t, []string{"↑", "↓"}, described(m, "history"),
+		"with no completions showing, the arrows browse history")
+	require.Equal(t, []string{"↵"}, described(m, "send"),
+		"with no completions showing, Enter sends the line")
+
+	m = typeText(t, m, "/")
+
+	require.Empty(t, described(m, "history"),
+		"the popover is cycling suggestions and history was offered anyway")
+	require.Empty(t, described(m, "send"),
+		"the popover is taking Enter and the bar still offered to send")
+}
+
+// TestChatView_locked_input_ignores_the_popover pins that the lock
+// reaches the completions. The bar ignores keys while the client is
+// shutting down, and the popover in front of it would otherwise go on
+// accepting suggestions into a line nothing will send.
+func TestChatView_locked_input_ignores_the_popover(t *testing.T) {
+	nodes := []*command.Node[testKind]{{Name: "join", Help: "Join a channel"}}
+	m := chatViewWithPopover(nodes)
+
+	m = typeText(t, m, "/jo")
+	require.Equal(t, []string{"/join  Join a channel"}, popoverLines(renderToBuffer(m, 60, 24)))
+
+	m, _ = m.Update(components.InputLockedMsg{Locked: true})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = deliver(t, m, cmd)
+
+	require.Equal(t,
+		[]string{"testuser", "(locked)", ">", "/jo"},
+		chatInputTokens(renderToBuffer(m, 60, 24)))
+}
+
+// TestChatView_locked_window_names_no_keys pins that the window stops
+// advertising while it is locked. It takes no keys in that state, and
+// a status bar still offering to accept a completion would describe
+// something that cannot happen.
+func TestChatView_locked_window_names_no_keys(t *testing.T) {
+	nodes := []*command.Node[testKind]{{Name: "join", Help: "Join a channel"}}
+	m := chatViewWithPopover(nodes)
+	m = typeText(t, m, "/jo")
+
+	require.NotEmpty(t, m.(components.ChatView[testKind]).KeyBindings(),
+		"an unlocked window names the keys it takes")
+
+	m, _ = m.Update(components.InputLockedMsg{Locked: true})
+
+	require.Empty(t, m.(components.ChatView[testKind]).KeyBindings())
 }

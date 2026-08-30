@@ -101,6 +101,11 @@ func (l Layer) WithOpaque() Layer {
 	return l
 }
 
+// Content returns the component the layer draws.
+func (l Layer) Content() Component {
+	return l.content
+}
+
 // ID returns the layer's identifier.
 func (l Layer) ID() LayerID {
 	return l.id

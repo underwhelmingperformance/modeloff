@@ -253,6 +253,9 @@ func TestLayerStack_tells_a_layer_where_it_has_been_put(t *testing.T) {
 // arriving part way through a session is attached the same way a
 // component in the tree is at startup, and one whose Init returns a
 // command to start a timer or a load would otherwise never run it.
+// The batch's order is not asserted: Init's command and the command the
+// layer returned from its BoundsMsg come back together, and the runtime
+// runs a batch's commands concurrently.
 func TestLayerStack_attaches_a_layer_it_is_given(t *testing.T) {
 	type startedMsg struct{}
 
@@ -263,11 +266,18 @@ func TestLayerStack_attaches_a_layer_it_is_given(t *testing.T) {
 
 	_, cmd := LayerStack{}.Push(layer)
 
-	require.NotNil(t, cmd)
-	require.ElementsMatch(t,
-		[]tea.Msg{startedMsg{}, BoundsMsg{Rect: rect}},
-		batchedMsgs(t, cmd),
-		"a pushed layer must be told where it is and have its Init run")
+	require.Equal(t, []uv.Rectangle{rect}, told,
+		"a pushed layer must be told where it is")
+
+	var started []tea.Msg
+	for _, msg := range batchedMsgs(t, cmd) {
+		if _, ok := msg.(startedMsg); ok {
+			started = append(started, msg)
+		}
+	}
+
+	require.Equal(t, []tea.Msg{startedMsg{}}, started,
+		"a pushed layer must have its Init run")
 }
 
 // batchedMsgs runs a command and returns the messages it produced,
@@ -296,8 +306,7 @@ func batchedMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
 func requireBoundsCmd(t *testing.T, cmd tea.Cmd, rect uv.Rectangle) {
 	t.Helper()
 
-	require.NotNil(t, cmd, "the placement produced no command")
-	require.Contains(t, batchedMsgs(t, cmd), BoundsMsg{Rect: rect})
+	require.Equal(t, []tea.Msg{BoundsMsg{Rect: rect}}, batchedMsgs(t, cmd))
 }
 
 // boundsLayer records every rectangle it was told it occupies. Its

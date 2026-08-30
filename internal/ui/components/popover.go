@@ -52,7 +52,7 @@ type Popover struct {
 	selected   int
 	offset     int
 	closed     bool
-	handled    bool
+	keyMap     PopoverKeyMap
 
 	bounds      uv.Rectangle
 	boundsKnown bool
@@ -65,7 +65,7 @@ type popoverLayout struct {
 
 // NewPopover creates an empty popover.
 func NewPopover() Popover {
-	return Popover{}
+	return Popover{keyMap: DefaultPopoverKeyMap}
 }
 
 // IsVisible returns whether the popover is currently showing.
@@ -101,17 +101,24 @@ func (p Popover) Init() tea.Cmd {
 	return nil
 }
 
-// Handled reports whether the most recent Update consumed its message.
-// ChatView checks this to avoid forwarding consumed keys to siblings.
-func (p Popover) Handled() bool {
-	return p.handled
+// HandleKey implements ui.KeyHandler. The popover is a layer over the
+// window, so it is offered each key before the window's own children
+// and declines the ones it has no use for: Up and Down with a single
+// suggestion go back to the input bar, where they browse history.
+func (p Popover) HandleKey(msg tea.KeyPressMsg) (ui.KeyHandler, bool, tea.Cmd) {
+	return p.handleKey(msg)
 }
 
-// Update implements ui.Component. It handles keyboard navigation
-// (Tab/Up/Down/Esc), mouse interactions, and popover state messages.
-func (p Popover) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
-	p.handled = false
+// UpdateKeys implements ui.KeyHandler.
+func (p Popover) UpdateKeys(msg tea.Msg) (ui.KeyHandler, tea.Cmd) {
+	updated, cmd := p.Update(msg)
 
+	return updated.(Popover), cmd
+}
+
+// Update implements ui.Component. It handles mouse interactions and
+// popover state messages; keys arrive through HandleKey.
+func (p Popover) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ui.BoundsMsg:
 		p.bounds = msg.Rect
@@ -134,15 +141,8 @@ func (p Popover) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		p = p.refresh(msg.Raw, 0)
 		return p, nil
 
-	case tea.KeyPressMsg:
-		if updated, handled, cmd := p.handleKey(msg); handled {
-			updated.handled = true
-			return updated, cmd
-		}
-
 	case tea.MouseMsg:
 		if updated, handled, cmd := p.handleMouse(msg); handled {
-			updated.handled = true
 			return updated, cmd
 		}
 	}
@@ -187,53 +187,108 @@ func (p Popover) render(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func (p Popover) handleKey(msg tea.KeyPressMsg) (Popover, bool, tea.Cmd) {
+// navigationStep returns the direction a navigation key moves the
+// selection. Down moves forward; Up and Shift+Tab move back.
+func (p Popover) navigationStep(msg tea.KeyPressMsg) int {
+	if msg.Code == tea.KeyDown {
+		return 1
+	}
+
+	return -1
+}
+
+// KeyBindings returns the keys the popover takes while it is showing,
+// and none while it is not.
+//
+// Enter is among them exactly when acceptsEnter says the popover will
+// take it. It is the input bar's send key, and the operator would
+// otherwise be told it sends the line.
+func (p Popover) KeyBindings() []ui.KeyBinding {
+	if !p.IsVisible() {
+		return nil
+	}
+
+	bindings := []ui.KeyBinding{
+		ui.WithBindingEnabled(p.keyMap.Accept, p.HasSuggestions()),
+		ui.WithBindingEnabled(p.keyMap.Navigate, len(p.completion.Suggestions) > 1),
+		p.keyMap.Dismiss,
+	}
+
+	if p.acceptsEnter() {
+		bindings = append(bindings, p.keyMap.AcceptWithEnter)
+	}
+
+	return bindings
+}
+
+// acceptsEnter reports whether the popover will take the input bar's
+// send key to accept the highlighted suggestion. It does so when the
+// replacement that suggestion produces differs from what is already
+// typed, and never when the completion sets EnterSubmits. A completion
+// that only appends a trailing space leaves the typed prefix
+// unchanged, so Enter sends the line.
+func (p Popover) acceptsEnter() bool {
+	if !p.IsVisible() || !p.HasSuggestions() || p.completion.EnterSubmits {
+		return false
+	}
+
+	suggestion := p.completion.Suggestions[p.selected]
+
+	return acceptedReplacement(p.completion.TypedPrefix, suggestion) != p.completion.TypedPrefix
+}
+
+// claimedKeys returns every key the popover takes while it is showing.
+// The window reads it to leave one of the input bar's bindings
+// unadvertised while the popover is in front of it and taking that
+// key.
+func (p Popover) claimedKeys() map[string]bool {
+	claimed := map[string]bool{}
+	for _, binding := range p.KeyBindings() {
+		if !binding.Enabled() {
+			continue
+		}
+
+		for _, k := range binding.Keys() {
+			claimed[k] = true
+		}
+	}
+
+	return claimed
+}
+
+func (p Popover) handleKey(msg tea.KeyPressMsg) (ui.KeyHandler, bool, tea.Cmd) {
 	if !p.IsVisible() {
 		return p, false, nil
 	}
 
 	switch {
-	case msg.Code == tea.KeyTab && !msg.Mod.Contains(tea.ModShift):
+	case ui.Matches(msg, p.keyMap.Accept) && !msg.Mod.Contains(tea.ModShift):
 		if p.HasSuggestions() {
 			return p, true, p.acceptCmd(p.selected)
 		}
-	case msg.Code == tea.KeyEnter:
+	case ui.Matches(msg, p.keyMap.AcceptWithEnter):
 		// Accept the highlighted suggestion first when doing so would
 		// change the typed text, matching Tab. An optional continuation
 		// leaves Enter to the input bar because the command is already
 		// complete; Tab can still accept the suggestion.
-		if p.HasSuggestions() && !p.completion.EnterSubmits {
-			suggestion := p.completion.Suggestions[p.selected]
-			if acceptedReplacement(p.completion.TypedPrefix, suggestion) != p.completion.TypedPrefix {
-				return p, true, p.acceptCmd(p.selected)
-			}
+		if p.acceptsEnter() {
+			return p, true, p.acceptCmd(p.selected)
 		}
-	case msg.Code == tea.KeyUp || msg.Code == tea.KeyTab && msg.Mod.Contains(tea.ModShift):
+	case ui.Matches(msg, p.keyMap.Navigate):
 		// Only claim the key when there's more than one suggestion to
 		// cycle between; otherwise let it fall through to input
 		// history, which the caller would otherwise never reach while
 		// composing a command.
 		if len(p.completion.Suggestions) > 1 {
-			return p.moveSelection(-1), true, nil
+			return p.moveSelection(p.navigationStep(msg)), true, nil
 		}
-	case msg.Code == tea.KeyDown:
-		if len(p.completion.Suggestions) > 1 {
-			return p.moveSelection(1), true, nil
-		}
-	case msg.Code == tea.KeyEsc:
+	case ui.Matches(msg, p.keyMap.Dismiss):
 		p.completion = command.Completion{}
 		p.closed = true
 		return p, true, nil
 	}
 
 	return p, false, nil
-}
-
-// BlocksHistory reports whether the popover currently claims Up/Down
-// for suggestion cycling. The input bar consults this before letting
-// those keys browse input history instead.
-func (p Popover) BlocksHistory() bool {
-	return p.IsVisible() && len(p.completion.Suggestions) > 1
 }
 
 func (p Popover) handleMouse(msg tea.MouseMsg) (Popover, bool, tea.Cmd) {

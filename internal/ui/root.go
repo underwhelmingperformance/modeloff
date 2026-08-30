@@ -139,6 +139,21 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r, tea.Batch(layerCmd, screenCmd)
 
 	case tea.KeyPressMsg:
+		// A modal takes every key the stack offers it, so matching Quit
+		// here is what keeps Ctrl-C working while a modal is open.
+		if Matches(msg, r.keyMap.Quit) {
+			if r.quitArmed() {
+				return r, func() tea.Msg {
+					return QuitRequestedMsg{Message: "client exited"}
+				}
+			}
+
+			r.quitArmedAt = r.now()
+
+			r, boundsCmd := r.applyScreenBounds()
+			return r, tea.Batch(boundsCmd, r.quitConfirmationExpiryCmd())
+		}
+
 		hadModal := r.layers.HasModal()
 
 		layers, handled, cmd := r.layers.HandleKey(msg)
@@ -155,19 +170,6 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if Matches(msg, r.keyMap.ShowHelp) {
 			return r.openHelp()
-		}
-
-		if Matches(msg, r.keyMap.Quit) {
-			if r.quitArmed() {
-				return r, func() tea.Msg {
-					return QuitRequestedMsg{Message: "client exited"}
-				}
-			}
-
-			r.quitArmedAt = r.now()
-
-			r, boundsCmd := r.applyScreenBounds()
-			return r, tea.Batch(boundsCmd, r.quitConfirmationExpiryCmd())
 		}
 
 		if Matches(msg, r.keyMap.ToggleMouse) {

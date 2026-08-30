@@ -257,18 +257,21 @@ func TestRoot_delivers_a_layer_command_result_to_that_layer(t *testing.T) {
 	r := NewRoot(stubScreen{label: "test"})
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 40, Height: 10})
 
-	layers, cmd := r.layers.Push(NewKeyLayer(
+	layers, _ := r.layers.Push(NewKeyLayer(
 		"probe",
-		recordingLayer{seen: &seen, initial: startedMsg{}},
+		recordingLayer{seen: &seen},
 		r.bounds(),
 	))
 	r.layers = layers
 
-	require.NotNil(t, cmd)
+	require.Equal(t, []tea.Msg{BoundsMsg{Rect: r.bounds()}}, seen,
+		"a pushed layer must be told where it was put")
 
-	r = updateRoot(t, r, startedMsg{})
+	seen = nil
 
-	require.Contains(t, seen, tea.Msg(startedMsg{}),
+	updateRoot(t, r, startedMsg{})
+
+	require.Equal(t, []tea.Msg{startedMsg{}}, seen,
 		"the layer's own message went somewhere else")
 }
 
@@ -323,20 +326,12 @@ func TestRoot_gives_an_unclaimed_mouse_event_to_the_screen_only(t *testing.T) {
 	require.Empty(t, layerSaw, "the pointer was outside the layer and it was given the event anyway")
 }
 
-// recordingLayer keeps the messages it was given, and returns a
-// command from Init that produces initial.
+// recordingLayer keeps the messages it was given.
 type recordingLayer struct {
-	seen    *[]tea.Msg
-	initial tea.Msg
+	seen *[]tea.Msg
 }
 
-func (l recordingLayer) Init() tea.Cmd {
-	if l.initial == nil {
-		return nil
-	}
-
-	return func() tea.Msg { return l.initial }
-}
+func (recordingLayer) Init() tea.Cmd { return nil }
 
 func (l recordingLayer) Update(msg tea.Msg) (Component, tea.Cmd) {
 	*l.seen = append(*l.seen, msg)
@@ -373,7 +368,6 @@ func TestRoot_keyboard_help_keeps_keys_and_mice_from_the_screen(t *testing.T) {
 	seen = nil
 
 	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'x', Text: "x"})
-	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	r = updateRoot(t, r, tea.MouseClickMsg{Button: tea.MouseLeft})
 
 	require.Empty(t, seen, "a modal layer is open and the screen was given something anyway")
@@ -387,6 +381,27 @@ func TestRoot_keyboard_help_keeps_keys_and_mice_from_the_screen(t *testing.T) {
 	updateRoot(t, r, tea.KeyPressMsg{Code: 'x', Text: "x"})
 
 	require.Equal(t, []tea.Msg{tea.KeyPressMsg{Code: 'x', Text: "x"}}, seen)
+}
+
+// TestRoot_quit_reaches_the_application_through_a_modal pins the one
+// key Root acts on before offering it to the stack. A modal takes every
+// key it is offered, so an operator who could not quit from behind one
+// would have no way out of the application at all.
+func TestRoot_quit_reaches_the_application_through_a_modal(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+
+	r := newRootWithClock(stubScreen{label: "test"}, clock)
+	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: tea.KeyF1})
+
+	require.True(t, r.layers.HasModal())
+
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	_, cmd := r.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	require.NotNil(t, cmd)
+	require.Equal(t, QuitRequestedMsg{Message: "client exited"}, cmd())
 }
 
 func TestRoot_keyboard_help_takes_focus_from_the_screen(t *testing.T) {

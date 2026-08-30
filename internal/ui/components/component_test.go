@@ -19,6 +19,28 @@ import (
 	"github.com/laney/modeloff/internal/ui"
 )
 
+// seedPopover puts a visible popover with the given suggestions on the
+// window's layer stack, which is where the popover lives.
+func seedPopover[C command.KindProvider](
+	t *testing.T,
+	view ChatView[C],
+	suggestions ...command.Suggestion,
+) ChatView[C] {
+	t.Helper()
+
+	popover := NewPopover()
+	popover.completion = command.Completion{Visible: true, Suggestions: suggestions}
+
+	layers, _ := view.layers.Push(
+		ui.NewKeyLayer(popoverLayerID, popover, uv.Rectangle{}).WithOpaque(),
+	)
+	view.layers = layers
+
+	updated, _ := view.syncChildBounds()
+
+	return updated
+}
+
 func renderToBuffer(component ui.Component, width, height int) string {
 	screen := uv.NewScreenBuffer(width, height)
 	component.Draw(screen, screen.Bounds())
@@ -35,13 +57,19 @@ func TestChatViewDrawDoesNotWriteOutsideAssignedRectangle(t *testing.T) {
 		"",
 	)
 	view.input.input.palette.open = true
-	view.input.popover.completion = command.Completion{
-		Visible: true,
-		Suggestions: []command.Suggestion{
-			{Value: "/join", Label: "/join"},
-			{Value: "/part", Label: "/part"},
-		},
-	}
+
+	// The window is laid out somewhere generous first, so the popover
+	// takes a rectangle of its own, and is then drawn into a much
+	// smaller area. A layer placed for one area and drawn in another is
+	// the case where an overlay reaches outside its parent.
+	laidOut, _ := view.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 8)})
+	view = seedPopover(t, laidOut.(ChatView[testKind]),
+		command.Suggestion{Value: "/join", Label: "/join"},
+		command.Suggestion{Value: "/part", Label: "/part"},
+	)
+
+	require.NotEmpty(t, view.layoutRects().PopoverRect,
+		"the popover must have a rectangle for this test to mean anything")
 
 	screen := uv.NewScreenBuffer(20, 8)
 	uvscreen.FillArea(screen, &uv.Cell{Content: ".", Width: 1}, screen.Bounds())
@@ -61,21 +89,22 @@ func TestChatViewDrawDoesNotWriteOutsideAssignedRectangle(t *testing.T) {
 	}
 }
 
-func TestInputBarReleaseOverPopoverEndsEditorDrag(t *testing.T) {
+// TestInputBarReleaseAboveTheInputRowEndsEditorDrag pins that a drag
+// begun in the editor ends wherever the button comes up. A release
+// over another of the bar's rows is still the end of that drag.
+func TestInputBarReleaseAboveTheInputRowEndsEditorDrag(t *testing.T) {
 	bar := NewInputBar()
 	bar.bounds = uv.Rect(10, 5, 40, 4)
 	bar.input.mouseSelecting = true
-	bar.popover.completion = command.Completion{
-		Visible:     true,
-		Suggestions: []command.Suggestion{{Value: "/join", Label: "/join"}},
-	}
+	bar.pasteFlattened = true
+
 	updated, _ := bar.updateChildBounds()
 	bar = updated.(InputBar)
-	popover := bar.layout(bar.bounds).popover
+	note := bar.layout(bar.bounds).note
 
 	updated, _ = bar.Update(tea.MouseReleaseMsg{
-		X:      popover.Min.X,
-		Y:      popover.Min.Y,
+		X:      note.Min.X,
+		Y:      note.Min.Y,
 		Button: tea.MouseLeft,
 	})
 	bar = updated.(InputBar)
@@ -148,17 +177,13 @@ func TestObservabilityDrawerChildBoundsMatchDrawLayout(t *testing.T) {
 // TestInputBarKeepsTheInputRowInAShortArea is what covers it.
 func TestInputBarHeightCountsEveryRowTheLayoutPlaces(t *testing.T) {
 	cases := map[string]struct {
-		popover        bool
 		palette        bool
 		pasteFlattened bool
 	}{
-		"plain":               {},
-		"popover":             {popover: true},
-		"palette":             {palette: true},
-		"paste note":          {pasteFlattened: true},
-		"popover hides note":  {popover: true, pasteFlattened: true},
-		"palette and note":    {palette: true, pasteFlattened: true},
-		"palette and popover": {palette: true, popover: true},
+		"plain":            {},
+		"palette":          {palette: true},
+		"paste note":       {pasteFlattened: true},
+		"palette and note": {palette: true, pasteFlattened: true},
 	}
 
 	for name, tc := range cases {
@@ -166,15 +191,6 @@ func TestInputBarHeightCountsEveryRowTheLayoutPlaces(t *testing.T) {
 			bar := NewInputBar()
 			bar.input.palette.open = tc.palette
 			bar.pasteFlattened = tc.pasteFlattened
-			if tc.popover {
-				bar.popover.completion = command.Completion{
-					Visible: true,
-					Suggestions: []command.Suggestion{
-						{Value: "/join", Label: "/join"},
-						{Value: "/part", Label: "/part"},
-					},
-				}
-			}
 
 			// Lay out in far more room than the bar needs, so the
 			// layout places every row it wants and clips nothing.
@@ -186,8 +202,8 @@ func TestInputBarHeightCountsEveryRowTheLayoutPlaces(t *testing.T) {
 			// catches two bands sharing a row and a row no band covers,
 			// which a count or a span from the top row to the bottom
 			// would both accept. Where the bands are drawn is a separate
-			// question, and TestChatViewPaintsChildrenIntoTheirLayout-
-			// Rectangles is what answers it.
+			// question, answered by
+			// TestChatViewPaintsChildrenIntoTheirLayoutRectangles.
 			var want []int
 			for row := area.Max.Y - bar.Height(); row < area.Max.Y; row++ {
 				want = append(want, row)
@@ -205,7 +221,7 @@ func TestInputBarHeightCountsEveryRowTheLayoutPlaces(t *testing.T) {
 // counting it would report that row twice for every layout.
 func placedRows(layout inputBarLayout) []int {
 	var rows []int
-	for _, rect := range []uv.Rectangle{layout.palette, layout.popover, layout.note, layout.input} {
+	for _, rect := range []uv.Rectangle{layout.palette, layout.note, layout.input} {
 		for row := rect.Min.Y; row < rect.Max.Y; row++ {
 			rows = append(rows, row)
 		}
@@ -221,9 +237,11 @@ func placedRows(layout inputBarLayout) []int {
 // which fixes what the rectangles are but not which child each one is
 // given.
 //
-// The palette and the popover both sit above the input row and are
-// placed by the same pass, so the case with both open is the one where
-// handing a child its neighbour's rectangle is possible at all.
+// The palette and the popover both sit above the input row, and two
+// different components place them: the input bar places the palette
+// and the window places the popover. The case with both open is
+// therefore where two adjacent rectangles come from two sources and
+// one child could be handed the other's.
 func TestChatViewPaintsChildrenIntoTheirLayoutRectangles(t *testing.T) {
 	cases := map[string]struct {
 		popover bool
@@ -251,13 +269,10 @@ func TestChatViewPaintsChildrenIntoTheirLayoutRectangles(t *testing.T) {
 			)
 			view.input.input.palette.open = tc.palette
 			if tc.popover {
-				view.input.popover.completion = command.Completion{
-					Visible: true,
-					Suggestions: []command.Suggestion{
-						{Value: "/join", Label: "/join"},
-						{Value: "/part", Label: "/part"},
-					},
-				}
+				view = seedPopover(t, view,
+					command.Suggestion{Value: "/join", Label: "/join"},
+					command.Suggestion{Value: "/part", Label: "/part"},
+				)
 			}
 
 			// A non-zero origin, which is what Root hands down while a
@@ -283,7 +298,7 @@ func TestChatViewPaintsChildrenIntoTheirLayoutRectangles(t *testing.T) {
 
 			require.Equal(t, painted{
 				PromptRows:  rowsOf(bar.input),
-				PopoverRows: rowsOf(bar.popover),
+				PopoverRows: rowsOf(layout.PopoverRect),
 				PaletteRows: rowsOf(bar.palette),
 			}, painted{
 				PromptRows:  rowsContaining(rendered, "testuser"),
@@ -292,8 +307,16 @@ func TestChatViewPaintsChildrenIntoTheirLayoutRectangles(t *testing.T) {
 			})
 
 			// The transcript fills its rectangle, so the cells it
-			// reached bound the rectangle on every side.
-			require.Equal(t, layout.MessageRect, paintedBox(screen, rendered, "filler"))
+			// reached bound the rectangle on every side. An open
+			// popover is drawn over the bottom of that rectangle
+			// without shrinking it, so the transcript is visible above
+			// the popover and not below it.
+			visible := layout.MessageRect
+			if !layout.PopoverRect.Empty() {
+				visible.Max.Y = layout.PopoverRect.Min.Y
+			}
+
+			require.Equal(t, visible, paintedBox(screen, rendered, "filler"))
 		})
 	}
 }
@@ -386,32 +409,25 @@ func rowsOf(rect uv.Rectangle) []int {
 func TestInputBarKeepsTheInputRowInAShortArea(t *testing.T) {
 	type bands struct {
 		Palette uv.Rectangle
-		Popover uv.Rectangle
+		Note    uv.Rectangle
 		Input   uv.Rectangle
 	}
 
-	// The bar wants four rows here: a palette, a two-row popover, and
+	// The bar wants three rows here: a palette, the paste note, and
 	// the input row.
 	bar := NewInputBar()
 	bar.input.palette.open = true
-	bar.popover.completion = command.Completion{
-		Visible: true,
-		Suggestions: []command.Suggestion{
-			{Value: "/join", Label: "/join"},
-			{Value: "/part", Label: "/part"},
-		},
-	}
+	bar.pasteFlattened = true
 
-	require.Equal(t, 4, bar.Height(), "the bar under test wants four rows")
+	require.Equal(t, 3, bar.Height(), "the bar under test wants three rows")
 
 	cases := map[int]bands{
 		0: {},
 		1: {Input: uv.Rect(4, 9, 40, 1)},
-		2: {Popover: uv.Rect(4, 8, 40, 1), Input: uv.Rect(4, 9, 40, 1)},
-		3: {Popover: uv.Rect(4, 7, 40, 2), Input: uv.Rect(4, 9, 40, 1)},
-		4: {
-			Palette: uv.Rect(4, 6, 40, 1),
-			Popover: uv.Rect(4, 7, 40, 2),
+		2: {Note: uv.Rect(4, 8, 40, 1), Input: uv.Rect(4, 9, 40, 1)},
+		3: {
+			Palette: uv.Rect(4, 7, 40, 1),
+			Note:    uv.Rect(4, 8, 40, 1),
 			Input:   uv.Rect(4, 9, 40, 1),
 		},
 	}
@@ -423,7 +439,7 @@ func TestInputBarKeepsTheInputRowInAShortArea(t *testing.T) {
 
 			require.Equal(t, want, bands{
 				Palette: occupied(layout.palette),
-				Popover: occupied(layout.popover),
+				Note:    occupied(layout.note),
 				Input:   occupied(layout.input),
 			})
 		})
@@ -691,4 +707,72 @@ func TestRichTextareaAcceptsEveryEncodingOfAModifiedLetter(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestChatViewKeepsTheTranscriptWhenThePopoverOpens pins the rule an
+// overlay exists for: the completion popover is drawn over the
+// transcript and takes no rows from it, so the lines the operator was
+// reading stay where they were.
+//
+// It is the transcript's rows on the screen that are compared, not its
+// rectangle: a rectangle is what the window computed, and this is about
+// what it drew. The popover covers the rows nearest the input, which is what
+// being drawn over them means; the rows above it are the ones that must
+// not move. A window that reserved rows for the popover instead would
+// re-lay the transcript into what was left, and the oldest lines would
+// scroll away.
+func TestChatViewKeepsTheTranscriptWhenThePopoverOpens(t *testing.T) {
+	const (
+		width  = 40
+		height = 12
+	)
+
+	events := fillerMessages(height, width)
+	bounds := uv.Rect(0, 0, width, height)
+
+	newView := func(t *testing.T) ChatView[testKind] {
+		t.Helper()
+
+		view := NewChatView[testKind](
+			func() WindowContent {
+				return WindowContent{Channel: "#general", Events: events}
+			},
+			"#general",
+			domain.KindChannel,
+			"testuser",
+			"",
+		)
+
+		updated, _ := view.Update(ui.BoundsMsg{Rect: bounds})
+
+		return updated.(ChatView[testKind])
+	}
+
+	rendered := func(view ChatView[testKind]) []string {
+		t.Helper()
+
+		screen := uv.NewScreenBuffer(width, height)
+		view.Draw(screen, bounds)
+
+		return strings.Split(screen.Render(), "\n")
+	}
+
+	closed := newView(t)
+
+	opened := seedPopover(t, newView(t),
+		command.Suggestion{Value: "/join", Label: "/join"},
+		command.Suggestion{Value: "/part", Label: "/part"},
+		command.Suggestion{Value: "/list", Label: "/list"},
+	)
+
+	popover := opened.layoutRects().PopoverRect
+	require.Equal(t, 3, popover.Dy(), "the popover must cover rows for this test to mean anything")
+
+	before, after := rendered(closed), rendered(opened)
+
+	require.Equal(t, before[:popover.Min.Y], after[:popover.Min.Y],
+		"opening the popover moved the transcript above it")
+
+	require.NotEqual(t, before[popover.Min.Y:popover.Max.Y], after[popover.Min.Y:popover.Max.Y],
+		"the popover covered none of the rows it was placed over")
 }

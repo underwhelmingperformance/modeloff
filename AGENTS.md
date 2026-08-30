@@ -1762,6 +1762,11 @@ even while a channel window's stack holds a modal. Inside that area the modal
 takes every event, and a layer in front of it still takes the clicks inside its
 own rectangle. Root's F1 keyboard help is currently the only modal layer.
 
+Root matches the quit key before it offers a key to the layers, so Ctrl-C
+works while a modal is open. Every other key stops at a modal while one is
+there, and a modal that took the quit key as well would leave the operator
+pressing it with nothing happening.
+
 A modal layer takes every key it is offered, so its holder never sees the key
 that should dismiss it. `Layer.DismissedBy` names those keys on the layer, and
 the stack matches them during the front-to-back search it already runs, so the

@@ -41,6 +41,7 @@ func (c ChatView[C]) Draw(screen uv.Screen, area uv.Rectangle) {
 
 	c.messages.Draw(screen, layout.MessageRect)
 	c.input.Draw(screen, layout.InputRect)
+	c.layers.Draw(screen, area)
 }
 
 // Draw implements ui.Component.
@@ -51,9 +52,7 @@ func (b InputBar) Draw(screen uv.Screen, area uv.Rectangle) {
 		drawString(screen, layout.palette, b.input.paletteView(layout.palette.Dx()))
 	}
 
-	if !layout.popover.Empty() {
-		b.popover.Draw(screen, layout.popover)
-	} else if !layout.note.Empty() {
+	if !layout.note.Empty() {
 		drawString(screen, layout.note, theme.Dim.Render("Pasted text flattened to one line"))
 	}
 
