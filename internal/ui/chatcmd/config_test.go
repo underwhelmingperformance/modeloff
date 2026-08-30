@@ -49,18 +49,6 @@ func (f *fakeManagerAPI) SetSmallModel(_ context.Context, modelID domain.ModelID
 	f.lastSmallModel = modelID
 }
 
-func (f *fakeManagerAPI) SetPersonaTemplate(context.Context, string, string) error { return nil }
-
-func (f *fakeManagerAPI) ListPersonaTemplates(context.Context) ([]domain.PersonaTemplate, error) {
-	return nil, nil
-}
-
-func (f *fakeManagerAPI) RegeneratePersonaTemplates(context.Context) ([]domain.PersonaTemplate, error) {
-	return nil, nil
-}
-
-func (f *fakeManagerAPI) ResetPersonaTemplates(context.Context) (int, error) { return 0, nil }
-
 func (f *fakeManagerAPI) InspectPersona(
 	context.Context,
 	domain.Nick,

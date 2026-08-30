@@ -2826,158 +2826,74 @@ func TestSQLiteStore_Reset_empty_store(t *testing.T) {
 	require.NoError(t, s.Reset(t.Context()))
 }
 
-// --- Persona templates ---
-
-func TestSQLiteStore_ListPersonaTemplatesEmpty(t *testing.T) {
-	s := newTestStore(t)
-
-	got, err := s.ListPersonaTemplates(t.Context())
-	require.NoError(t, err)
-	require.Empty(t, got)
-}
-
-func TestSQLiteStore_SaveAndGetPersona(t *testing.T) {
+// TestSQLiteStore_LatestEventID_covers_a_row_the_readers_skip covers
+// a channel whose newest event was written under a discriminator this
+// build has since retired. `EventsBefore` spends its limit on that row and skips it,
+// returning an empty slice, while `CountEventsFrom` counts it, so a
+// read cursor taken from the readers stops short of it and the channel
+// stays unread until a decodable event arrives after it.
+// `LatestEventID` decodes no payload, so the cursor it supplies clears
+// the count straight away.
+func TestSQLiteStore_LatestEventID_covers_a_row_the_readers_skip(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	p := domain.PersonaTemplate{
-		ID:          "grumpy-sysadmin",
-		Description: "A grumpy sysadmin who has seen it all.",
-		Origin:      domain.PersonaGenerated,
-	}
-
-	require.NoError(t, s.SavePersonaTemplate(ctx, p))
-
-	got, err := s.GetPersonaTemplate(ctx, "grumpy-sysadmin")
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
+	_, err := s.AppendEvent(ctx, "#general", domain.Message{
+		Source: domain.ClientSource("inst-botty", "botty"),
+		Target: "#general", Body: "hello", At: testTime,
+	})
 	require.NoError(t, err)
-	require.Equal(t, p, got)
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO events (channel, type, data, at) VALUES (?, ?, ?, ?)`,
+		"#general", "a_retired_event_type",
+		`{"version":2,"type":"a_retired_event_type","data":{}}`,
+		formatTime(testTime),
+	)
+	require.NoError(t, err)
+
+	latest, found, err := s.LatestEventID(ctx, "#general")
+	require.NoError(t, err)
+
+	readable, err := s.EventsBefore(ctx, "#general", nil, 1)
+	require.NoError(t, err)
+
+	after := latest + 1
+	unread, err := s.CountEventsFrom(ctx, "#general", &after)
+	require.NoError(t, err)
+
+	require.Equal(t, struct {
+		Latest   int64
+		Found    bool
+		Readable []domain.StoredEvent
+		Unread   int
+	}{
+		Latest: 2,
+		Found:  true,
+	}, struct {
+		Latest   int64
+		Found    bool
+		Readable []domain.StoredEvent
+		Unread   int
+	}{Latest: latest, Found: found, Readable: readable, Unread: unread})
 }
 
-func TestSQLiteStore_GetPersonaNotFound(t *testing.T) {
-	s := newTestStore(t)
-
-	_, err := s.GetPersonaTemplate(t.Context(), "ghost")
-	require.Error(t, err)
-}
-
-func TestSQLiteStore_SavePersona_upsert(t *testing.T) {
+func TestSQLiteStore_LatestEventID_reports_an_empty_channel(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	original := domain.PersonaTemplate{
-		ID:          "the-optimist",
-		Description: "Always looks on the bright side.",
-		Origin:      domain.PersonaGenerated,
-	}
+	require.NoError(t, s.SaveWindow(ctx, domain.NewChannelWindow("#general", testTime)))
 
-	require.NoError(t, s.SavePersonaTemplate(ctx, original))
-
-	updated := domain.PersonaTemplate{
-		ID:          "the-optimist",
-		Description: "Relentlessly positive.",
-		Origin:      domain.PersonaUser,
-	}
-
-	require.NoError(t, s.SavePersonaTemplate(ctx, updated))
-
-	got, err := s.GetPersonaTemplate(ctx, "the-optimist")
+	latest, found, err := s.LatestEventID(ctx, "#general")
 	require.NoError(t, err)
-	require.Equal(t, updated, got)
-}
-
-func TestSQLiteStore_ListPersonaTemplates_ordered(t *testing.T) {
-	ctx := t.Context()
-	s := newTestStore(t)
-
-	templates := []domain.PersonaTemplate{
-		{ID: "alpha", Description: "First", Origin: domain.PersonaUser},
-		{ID: "beta", Description: "Second", Origin: domain.PersonaGenerated},
-		{ID: "gamma", Description: "Third", Origin: domain.PersonaGenerated},
-	}
-
-	for _, p := range templates {
-		require.NoError(t, s.SavePersonaTemplate(ctx, p))
-	}
-
-	got, err := s.ListPersonaTemplates(ctx)
-	require.NoError(t, err)
-	require.Equal(t, templates, got)
-}
-
-func TestSQLiteStore_DeletePersonaTemplatesByOrigin(t *testing.T) {
-	ctx := t.Context()
-	s := newTestStore(t)
-
-	templates := []domain.PersonaTemplate{
-		{ID: "gen-one", Description: "Generated one", Origin: domain.PersonaGenerated},
-		{ID: "gen-two", Description: "Generated two", Origin: domain.PersonaGenerated},
-		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
-	}
-
-	for _, p := range templates {
-		require.NoError(t, s.SavePersonaTemplate(ctx, p))
-	}
-
-	require.NoError(t, s.DeletePersonaTemplatesByOrigin(ctx, domain.PersonaGenerated))
-
-	got, err := s.ListPersonaTemplates(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.PersonaTemplate{
-		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
-	}, got)
-}
-
-func TestSQLiteStore_ReplaceGeneratedPersonaTemplates(t *testing.T) {
-	ctx := t.Context()
-	s := newTestStore(t)
-
-	initial := []domain.PersonaTemplate{
-		{ID: "gen-one", Description: "Generated one", Origin: domain.PersonaGenerated},
-		{ID: "gen-two", Description: "Generated two", Origin: domain.PersonaGenerated},
-		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
-	}
-
-	for _, p := range initial {
-		require.NoError(t, s.SavePersonaTemplate(ctx, p))
-	}
-
-	replacements := []domain.PersonaTemplate{
-		{ID: "new-a", Description: "New A", Origin: domain.PersonaGenerated},
-		{ID: "new-b", Description: "New B", Origin: domain.PersonaGenerated},
-		{ID: "new-c", Description: "New C", Origin: domain.PersonaGenerated},
-	}
-
-	require.NoError(t, s.ReplaceGeneratedPersonaTemplates(ctx, replacements))
-
-	got, err := s.ListPersonaTemplates(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []domain.PersonaTemplate{
-		{ID: "custom", Description: "User custom", Origin: domain.PersonaUser},
-		{ID: "new-a", Description: "New A", Origin: domain.PersonaGenerated},
-		{ID: "new-b", Description: "New B", Origin: domain.PersonaGenerated},
-		{ID: "new-c", Description: "New C", Origin: domain.PersonaGenerated},
-	}, got)
-}
-
-func TestSQLiteStore_DeletePersonaTemplatesByOrigin_noop_when_none(t *testing.T) {
-	s := newTestStore(t)
-
-	require.NoError(t, s.DeletePersonaTemplatesByOrigin(t.Context(), domain.PersonaGenerated))
-}
-
-func TestSQLiteStore_Reset_includes_persona_templates(t *testing.T) {
-	ctx := t.Context()
-	s := newTestStore(t)
-
-	require.NoError(t, s.SavePersonaTemplate(ctx, domain.PersonaTemplate{
-		ID: "test", Description: "Test persona", Origin: domain.PersonaUser,
-	}))
-
-	require.NoError(t, s.Reset(ctx))
-
-	got, err := s.ListPersonaTemplates(ctx)
-	require.NoError(t, err)
-	require.Empty(t, got)
+	require.Equal(t, struct {
+		Latest int64
+		Found  bool
+	}{}, struct {
+		Latest int64
+		Found  bool
+	}{Latest: latest, Found: found})
 }
 
 func TestSQLiteStore_model_turn_journal_preserves_entry_order(t *testing.T) {
@@ -3169,11 +3085,6 @@ func TestSQLiteStore_Reset_rollback_on_partial_failure(t *testing.T) {
 	))
 	require.NoError(t, s.SetLastWindow(ctx, domain.WindowKey("#general")))
 	require.NoError(t, s.SetLastRead(ctx, "#general", eventID))
-	require.NoError(t, s.SavePersonaTemplate(ctx, domain.PersonaTemplate{
-		ID:          "grumpy-sysadmin",
-		Description: "A grumpy sysadmin who has seen it all.",
-		Origin:      domain.PersonaGenerated,
-	}))
 	require.NoError(t, s.SetAutojoinChannels(ctx, []domain.ChannelName{"#general"}))
 	_, err = s.AppendInstanceReply(ctx, "inst-botty", protocol.ChannelWindowTarget("#general"), domain.Whois{At: testTime})
 	require.NoError(t, err)
@@ -3246,7 +3157,6 @@ func snapshotPersistentTables(t *testing.T, db *sql.DB) map[string][]string {
 		"pending_memory_deletions": `SELECT * FROM pending_memory_deletions`,
 		"instances":                `SELECT * FROM instances`,
 		"memories":                 `SELECT * FROM memories`,
-		"persona_templates":        `SELECT * FROM persona_templates`,
 		"state":                    `SELECT * FROM state`,
 		"autojoin":                 `SELECT * FROM autojoin`,
 	}

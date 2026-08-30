@@ -15,15 +15,14 @@ import (
 // session, for commands whose target is any model (/invite, /msg,
 // /whois, /add-model reuse).
 type CompletionContext struct {
-	Channels         func() iter.Seq[domain.Window]
-	Instances        func() iter.Seq[domain.InstanceDirectoryEntry]
-	ActiveMembers    func() iter.Seq[domain.Nick]
-	ActiveChannel    func() domain.ChannelName
-	UserNick         func() domain.Nick
-	LiveModels       func() iter.Seq[ModelOption]
-	LiveModelsState  func() command.SuggestionState
-	PersonaTemplates func() iter.Seq[domain.PersonaTemplate]
-	Kind             func() domain.ChannelKind
+	Channels        func() iter.Seq[domain.Window]
+	Instances       func() iter.Seq[domain.InstanceDirectoryEntry]
+	ActiveMembers   func() iter.Seq[domain.Nick]
+	ActiveChannel   func() domain.ChannelName
+	UserNick        func() domain.Nick
+	LiveModels      func() iter.Seq[ModelOption]
+	LiveModelsState func() command.SuggestionState
+	Kind            func() domain.ChannelKind
 
 	// Directory iterates every channel the session knows of, joined
 	// or not, the same set `/list` answers with. `channelsSource`
@@ -107,21 +106,6 @@ func instancesSource(ctx CompletionContext, _ command.InvocationState[Completion
 			Value:  string(inst.Nick),
 			Label:  string(inst.Nick),
 			Detail: string(inst.ModelID),
-		})
-	}
-
-	return command.SuggestionResult{Suggestions: suggestions}
-}
-
-// templatesSource suggests the id of every persona template in the pool.
-func templatesSource(ctx CompletionContext, _ command.InvocationState[CompletionContext]) command.SuggestionResult {
-	var suggestions []command.Suggestion
-
-	for p := range ctx.PersonaTemplates() {
-		suggestions = append(suggestions, command.Suggestion{
-			Value:  p.ID,
-			Label:  p.ID,
-			Detail: p.Description,
 		})
 	}
 

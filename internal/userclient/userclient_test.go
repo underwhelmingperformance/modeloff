@@ -1345,12 +1345,12 @@ func (s *recordingStore) ClearSessionActive(context.Context) error {
 	return nil
 }
 
-func (s *recordingStore) EventsBefore(_ context.Context, _ domain.ChannelName, _ *int64, _ int) ([]domain.StoredEvent, error) {
-	return []domain.StoredEvent{{ID: s.channelHead, Event: domain.Message{}}}, nil
+func (s *recordingStore) LatestEventID(_ context.Context, _ domain.ChannelName) (int64, bool, error) {
+	return s.channelHead, true, nil
 }
 
-func (s *recordingStore) DMEventsBefore(_ context.Context, _, _ domain.InstanceID, _ *int64, _ int) ([]domain.StoredEvent, error) {
-	return []domain.StoredEvent{{ID: s.threadHead, Event: domain.Message{}}}, nil
+func (s *recordingStore) LatestDMEventID(_ context.Context, _, _ domain.InstanceID) (int64, bool, error) {
+	return s.threadHead, true, nil
 }
 
 func (s *recordingStore) SetLastRead(_ context.Context, ch domain.ChannelName, eventID int64) error {

@@ -63,9 +63,8 @@ type Fake struct {
 		results []api.ToolResult,
 		support api.StructuredOutputSupport,
 	) (api.ReflectionResult, error)
-	GenerateNickFn             func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
-	GeneratePersonaTemplatesFn func(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
-	GeneratePersonaFn          func(ctx context.Context, smallModel domain.ModelID, req api.PersonaRequest) (string, error)
+	GenerateNickFn    func(ctx context.Context, smallModel domain.ModelID, persona string, exclude []domain.Nick) (domain.Nick, error)
+	GeneratePersonaFn func(ctx context.Context, smallModel domain.ModelID, req api.PersonaRequest) (string, error)
 }
 
 var _ api.Client = (*Fake)(nil)
@@ -250,16 +249,6 @@ func (f *Fake) GenerateNick(ctx context.Context, smallModel domain.ModelID, pers
 	}
 
 	return api.NicknameResult{Nick: nick}, nil
-}
-
-// GeneratePersonaTemplates answers through
-// [Fake.GeneratePersonaTemplatesFn], or with no templates.
-func (f *Fake) GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
-	if f.GeneratePersonaTemplatesFn != nil {
-		return f.GeneratePersonaTemplatesFn(ctx, smallModel)
-	}
-
-	return nil, nil
 }
 
 // GeneratePersona delegates to [Fake.GeneratePersonaFn], or returns a

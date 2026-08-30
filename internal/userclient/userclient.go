@@ -77,14 +77,21 @@ type Store interface {
 	SaveInstance(ctx context.Context, inst *domain.Instance) error
 	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 
-	EventsBefore(ctx context.Context, ch domain.ChannelName, before *int64, n int) ([]domain.StoredEvent, error)
+	// LatestEventID returns the id of the newest event in a channel,
+	// reporting false when the channel holds none. Marking a window
+	// read needs the id alone, and must consider the same rows the
+	// unread count does, so this decodes no payload: the event readers
+	// skip a row this build cannot decode while `CountEventsFrom`
+	// counts it, and a cursor that stopped short of such a row would
+	// leave the window unread for as long as it stayed the newest one.
+	LatestEventID(ctx context.Context, ch domain.ChannelName) (int64, bool, error)
 
-	// DMEventsBefore reads the DM thread between `self` and `peer`,
-	// both directions together. Marking a DM read needs it: the two
-	// directions are logged under their recipients, so the newest
-	// event in the conversation is not always under the window's own
-	// key.
-	DMEventsBefore(ctx context.Context, self, peer domain.InstanceID, before *int64, n int) ([]domain.StoredEvent, error)
+	// LatestDMEventID returns the id of the newest event across both
+	// directions of the DM thread between `self` and `peer`, and reads
+	// the rows the same way. Each direction is logged under
+	// its recipient, so the newest event in the conversation is not
+	// always under the window's own key.
+	LatestDMEventID(ctx context.Context, self, peer domain.InstanceID) (int64, bool, error)
 
 	SetLastRead(ctx context.Context, ch domain.ChannelName, eventID int64) error
 
@@ -845,35 +852,29 @@ func (uc *UserClient) JoinAutojoinChannels(ctx context.Context) (retErr error) {
 // of the most recent event in the window. No-op when the window has
 // no events.
 func (uc *UserClient) MarkRead(ctx context.Context, ch domain.ChannelName) error {
-	events, err := uc.latestEvent(ctx, ch)
+	if domain.InferChannelKind(ch) == domain.KindDM {
+		peer := domain.InstanceID(ch)
+
+		id, found, err := uc.store.LatestDMEventID(ctx, domain.InstanceID(uc.Identity()), peer)
+		if err != nil {
+			return fmt.Errorf("get latest event: %w", err)
+		}
+		if !found {
+			return nil
+		}
+
+		return uc.store.SetDMLastRead(ctx, peer, id)
+	}
+
+	id, found, err := uc.store.LatestEventID(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("get latest event: %w", err)
 	}
-
-	if len(events) == 0 {
+	if !found {
 		return nil
 	}
 
-	if domain.InferChannelKind(ch) == domain.KindDM {
-		return uc.store.SetDMLastRead(ctx, domain.InstanceID(ch), events[0].ID)
-	}
-
-	return uc.store.SetLastRead(ctx, ch, events[0].ID)
-}
-
-// latestEvent reads the most recent event of a window, as a slice
-// that is empty when the window has none.
-//
-// A DM reads the whole thread. Each direction is logged under its
-// recipient, so a cursor taken from the window's own key would stop
-// at the last line the user sent and leave everything the counterpart
-// said since counted as unread.
-func (uc *UserClient) latestEvent(ctx context.Context, ch domain.ChannelName) ([]domain.StoredEvent, error) {
-	if domain.InferChannelKind(ch) == domain.KindDM {
-		return uc.store.DMEventsBefore(ctx, domain.InstanceID(uc.Identity()), domain.InstanceID(ch), nil, 1)
-	}
-
-	return uc.store.EventsBefore(ctx, ch, nil, 1)
+	return uc.store.SetLastRead(ctx, ch, id)
 }
 
 // DMWindows returns the counterparts of the DM windows the user had

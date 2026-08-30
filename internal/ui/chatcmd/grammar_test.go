@@ -32,21 +32,15 @@ func testContext(kind domain.ChannelKind) CompletionContext {
 		{ID: "anthropic/haiku", Name: "Haiku"},
 		{ID: "anthropic/sonnet", Name: "Sonnet"},
 	}
-	templates := []domain.PersonaTemplate{
-		{ID: "bard", Description: "A travelling storyteller"},
-		{ID: "sage", Description: "A wise advisor"},
-	}
-
 	return CompletionContext{
-		Channels:         func() iter.Seq[domain.Window] { return slices.Values(channels) },
-		Instances:        func() iter.Seq[domain.InstanceDirectoryEntry] { return slices.Values(instances) },
-		ActiveMembers:    func() iter.Seq[domain.Nick] { return slices.Values(members) },
-		ActiveChannel:    func() domain.ChannelName { return "#general" },
-		UserNick:         func() domain.Nick { return "testuser" },
-		LiveModels:       func() iter.Seq[ModelOption] { return slices.Values(models) },
-		LiveModelsState:  func() command.SuggestionState { return command.SuggestionStateReady },
-		PersonaTemplates: func() iter.Seq[domain.PersonaTemplate] { return slices.Values(templates) },
-		Kind:             func() domain.ChannelKind { return kind },
+		Channels:        func() iter.Seq[domain.Window] { return slices.Values(channels) },
+		Instances:       func() iter.Seq[domain.InstanceDirectoryEntry] { return slices.Values(instances) },
+		ActiveMembers:   func() iter.Seq[domain.Nick] { return slices.Values(members) },
+		ActiveChannel:   func() domain.ChannelName { return "#general" },
+		UserNick:        func() domain.Nick { return "testuser" },
+		LiveModels:      func() iter.Seq[ModelOption] { return slices.Values(models) },
+		LiveModelsState: func() command.SuggestionState { return command.SuggestionStateReady },
+		Kind:            func() domain.ChannelKind { return kind },
 	}
 }
 
@@ -103,7 +97,7 @@ func TestComplete_dm_excludes_channel_only_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "kill",
 		"msg", "query", "close", "nick", "me", "whois", "config",
-		"templates", "persona", "regenerate-templates",
+		"persona",
 		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
@@ -114,7 +108,7 @@ func TestComplete_channel_includes_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "close", "nick", "topic", "mode", "me", "whois", "config",
-		"templates", "persona", "regenerate-templates",
+		"persona",
 		"help", "clear", "poke", "quit",
 	}, suggestionValues(c))
 }
@@ -130,7 +124,7 @@ func TestNewParser_produces_all_commands(t *testing.T) {
 	require.Equal(t, []string{
 		"join", "part", "list", "add-model", "invite", "kick", "kill",
 		"msg", "query", "close", "nick", "topic", "mode", "me", "whois", "config",
-		"templates", "persona", "regenerate-templates",
+		"persona",
 		"help", "clear", "poke", "quit", "pass",
 	}, names)
 
@@ -307,11 +301,6 @@ func TestNewParser_maps_free_text_remainders_once(t *testing.T) {
 			name: "timestamp format",
 			raw:  "/config timestamp-format 15:04 MST",
 			want: TimestampFormatConfig{Format: CommandText("15:04 MST")},
-		},
-		{
-			name: "persona description",
-			raw:  "/config persona bard A travelling storyteller",
-			want: PersonaConfig{ID: "bard", Description: CommandText("A travelling storyteller")},
 		},
 	}
 
@@ -639,13 +628,6 @@ func TestComplete_add_model_suggests_only_live_models(t *testing.T) {
 	require.Equal(t, []string{"anthropic/haiku", "anthropic/sonnet"}, suggestionValues(c))
 }
 
-func TestComplete_add_model_persona_suggests_templates(t *testing.T) {
-	c := complete(t, "/add-model somemodel --persona ")
-
-	require.True(t, c.Visible)
-	require.Equal(t, []string{"bard", "sage"}, suggestionValues(c))
-}
-
 func TestParse_add_model_persona_requires_value(t *testing.T) {
 	_, err := testParser.Parse("/add-model somemodel --persona")
 
@@ -691,7 +673,7 @@ func TestComplete_config_suggests_subcommands(t *testing.T) {
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval", "drain-timeout",
 		"small-model", "embedding-model", "reflection-mode", "reflection-model",
-		"highlight", "default-modes", "timestamp-format", "persona", "--reset",
+		"highlight", "default-modes", "timestamp-format", "--reset",
 	}, suggestionValues(c))
 }
 
@@ -716,7 +698,7 @@ func TestComplete_config_reset_before_subcommand(t *testing.T) {
 	require.Equal(t, []string{
 		"api-key", "base-url", "poke-interval", "drain-timeout",
 		"small-model", "embedding-model", "reflection-mode", "reflection-model",
-		"highlight", "default-modes", "timestamp-format", "persona",
+		"highlight", "default-modes", "timestamp-format",
 	}, suggestionValues(c))
 }
 
@@ -732,18 +714,6 @@ func TestComplete_config_reset_after_subcommand_does_not_expect_value(t *testing
 
 	require.True(t, c.Visible)
 	require.Equal(t, []command.Suggestion(nil), c.Suggestions)
-}
-
-func TestParse_templates_command(t *testing.T) {
-	cmd, err := testParser.Parse("/templates")
-	require.NoError(t, err)
-	require.IsType(t, PersonaTemplatesCommand{}, cmd)
-}
-
-func TestParse_regenerate_templates_command(t *testing.T) {
-	cmd, err := testParser.Parse("/regenerate-templates")
-	require.NoError(t, err)
-	require.IsType(t, RegeneratePersonaTemplatesCommand{}, cmd)
 }
 
 func TestParse_clear_command(t *testing.T) {
@@ -770,19 +740,6 @@ func TestPokeCommand_Run_returns_PokeRequested(t *testing.T) {
 	c := cmd.Run(t.Context(), Context{})
 	msg := c()
 	require.Equal(t, PokeRequested{}, msg)
-}
-
-func TestParse_config_persona_command(t *testing.T) {
-	cmd, err := testParser.Parse("/config persona bard A travelling storyteller")
-	require.NoError(t, err)
-	require.Equal(t, PersonaConfig{ID: "bard", Description: CommandText("A travelling storyteller")}, cmd)
-}
-
-func TestComplete_config_persona_no_value_suggestions(t *testing.T) {
-	c := complete(t, "/config persona ")
-
-	require.True(t, c.Visible)
-	require.Equal(t, []command.Suggestion(nil), c.Suggestions)
 }
 
 func TestComplete_live_data_reflects_changes(t *testing.T) {

@@ -119,7 +119,7 @@ type Store interface {
 	ListInstances(ctx context.Context) ([]*domain.Instance, error)
 	GetInstanceByID(ctx context.Context, id domain.InstanceID) (*domain.Instance, error)
 	SaveInstance(ctx context.Context, inst *domain.Instance) error
-	SaveModelInstance(ctx context.Context, inst *domain.Instance, foundation store.PersonaFoundation) error
+	SaveModelInstance(ctx context.Context, inst *domain.Instance, createdAt time.Time) error
 	DeleteInstanceByID(ctx context.Context, id domain.InstanceID) error
 	MarkInstancePendingDeletion(ctx context.Context, id domain.InstanceID) error
 
@@ -1154,22 +1154,18 @@ type PreparedInstance struct {
 	// the loop and a rename may have taken it since.
 	Nick domain.Nick
 
-	// Persona is the copied persona text the instance carries: a
-	// matched template's description, unmatched literal text from the
-	// requester, or one drawn from the pool.
+	// Persona is the description ADDMODEL writes into revision zero:
+	// the text the requester supplied, or one generated for this
+	// instance.
 	Persona string
 
-	// PersonaTemplate identifies the template copied into Persona. It is nil
-	// when the operator supplied literal text or no persona was available.
-	PersonaTemplate *domain.PersonaTemplateProvenance
-
-	// Warnings describes, for the operator, each part of the
-	// preparation that fell short without failing the command. A
-	// persona the pool could not supply is the case that exists
-	// today: the model joins and behaves differently for the rest of
-	// its life, and the person who issued the `ADDMODEL` is the one
-	// who can do something about it. `handleAddModel` answers each
-	// warning with a [domain.SystemNotice] on the command's reply.
+	// Warnings holds one line for each fallback the preparation took
+	// without failing the command; the only one is a nick derived from
+	// the model id after the small model could not supply a usable one.
+	// `handleAddModel` turns each warning into a
+	// [domain.SystemNotice] on the command's reply, so the operator
+	// who issued the `ADDMODEL` learns which fallback was taken and
+	// why.
 	Warnings []string
 }
 

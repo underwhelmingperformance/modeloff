@@ -29,13 +29,11 @@ func nickGeneratingClient(modelID domain.ModelID) *apitest.Fake {
 	}
 }
 
-// TestPrepareInstance_refuses_without_a_persona covers a pool that can
-// supply nothing: it is empty and there is no API client to generate
-// one, which is the state a fresh install with no key is in. The
-// persona becomes revision zero of the instance's lineage and nothing
-// after ADDMODEL supplies one, so the command is refused and no
-// instance is prepared. Both the generation failure and the empty pool
-// it left behind stay recoverable from the returned error.
+// TestPrepareInstance_refuses_without_a_persona covers a fresh install
+// with no API key: the requester supplied no persona and there is no
+// client to write one. The persona becomes revision zero of the
+// instance's lineage and nothing after ADDMODEL writes revision zero,
+// so the command is refused and no instance is prepared.
 func TestPrepareInstance_refuses_without_a_persona(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
@@ -44,25 +42,22 @@ func TestPrepareInstance_refuses_without_a_persona(t *testing.T) {
 
 	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
 
-	require.ErrorIs(t, err, domain.ErrNoPersonaTemplates)
 	require.ErrorIs(t, err, api.ErrClientNotConfigured)
 	require.Equal(t, session.PreparedInstance{}, prepared)
 }
 
-// TestPrepareInstance_assigns_a_pool_persona is the same call with a
-// persona to draw: the instance takes it, its provenance records which
-// pool row it came from, and nothing is reported to the operator.
-func TestPrepareInstance_assigns_a_pool_persona(t *testing.T) {
+// TestPrepareInstance_generates_a_persona is the same call with an
+// upstream configured. The manager calls `GeneratePersona`, returns the
+// description it produced, and leaves `Warnings` empty.
+func TestPrepareInstance_generates_a_persona(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
-	fx := newTestManager(t, modelmanager.Config{APIClient: nickGeneratingClient(modelID)})
+	client := nickGeneratingClient(modelID)
+	client.GeneratePersonaFn = func(context.Context, domain.ModelID, api.PersonaRequest) (string, error) {
+		return "a terse reviewer", nil
+	}
 
-	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
-		ID:          "p1",
-		Description: "a terse reviewer",
-		Origin:      domain.PersonaGenerated,
-	}))
-
+	fx := newTestManager(t, modelmanager.Config{APIClient: client})
 	sess := newTestSession(t, fx)
 
 	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
@@ -71,30 +66,151 @@ func TestPrepareInstance_assigns_a_pool_persona(t *testing.T) {
 	require.Equal(t, session.PreparedInstance{
 		Nick:    "reviewer",
 		Persona: "a terse reviewer",
-		PersonaTemplate: &domain.PersonaTemplateProvenance{
-			ID: "p1", Origin: domain.PersonaGenerated,
-			DescriptionHash: "a5d1a15a189842e2e80250db9a52d0ec8d3cbf35a10fd28ae78e7cd494582e36",
-		},
 	}, prepared)
 }
 
+// TestPrepareInstance_retries_a_refused_description covers a
+// description [domain.ValidatePersona] turns down. The next request
+// sends it back with the reason it was refused, the way a rejected
+// nick is sent back to `GenerateNick`, and the instance takes the
+// description that follows.
+func TestPrepareInstance_retries_a_refused_description(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	var requests []api.PersonaRequest
+	client := nickGeneratingClient(modelID)
+	client.GeneratePersonaFn = func(_ context.Context, _ domain.ModelID, req api.PersonaRequest) (string, error) {
+		requests = append(requests, req)
+
+		if len(requests) == 1 {
+			return "helpful\nand thorough", nil
+		}
+
+		return "a terse reviewer", nil
+	}
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: client})
+	sess := newTestSession(t, fx)
+
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
+	require.NoError(t, err)
+
+	require.Equal(t, struct {
+		Prepared session.PreparedInstance
+		Requests []api.PersonaRequest
+	}{
+		Prepared: session.PreparedInstance{Nick: "reviewer", Persona: "a terse reviewer"},
+		Requests: []api.PersonaRequest{
+			{},
+			{Rejected: []api.RejectedPersona{{
+				Description: "helpful\nand thorough",
+				Reason: "That description was refused: " +
+					domain.PersonaControlCharacter.String() + ". Write a different one.",
+			}}},
+		},
+	}, struct {
+		Prepared session.PreparedInstance
+		Requests []api.PersonaRequest
+	}{Prepared: prepared, Requests: requests})
+}
+
+// TestPrepareInstance_retries_an_empty_description covers a
+// description [domain.ValidatePersona] accepts and preparation does
+// not. Whitespace alone is empty once trimmed, and an empty persona is
+// how `PrepareInstance` recognises that the requester supplied none, so
+// accepting one here would admit an instance holding an empty revision
+// zero and an empty reset baseline. The description and the reason it
+// was refused reach the next request like any other refusal.
+func TestPrepareInstance_retries_an_empty_description(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	var requests []api.PersonaRequest
+	client := nickGeneratingClient(modelID)
+	client.GeneratePersonaFn = func(_ context.Context, _ domain.ModelID, req api.PersonaRequest) (string, error) {
+		requests = append(requests, req)
+
+		if len(requests) == 1 {
+			return "   ", nil
+		}
+
+		return "a terse reviewer", nil
+	}
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: client})
+	sess := newTestSession(t, fx)
+
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
+	require.NoError(t, err)
+
+	require.Equal(t, struct {
+		Prepared session.PreparedInstance
+		Requests []api.PersonaRequest
+	}{
+		Prepared: session.PreparedInstance{Nick: "reviewer", Persona: "a terse reviewer"},
+		Requests: []api.PersonaRequest{
+			{},
+			{Rejected: []api.RejectedPersona{{
+				Reason: "That description was empty. Write one.",
+			}}},
+		},
+	}, struct {
+		Prepared session.PreparedInstance
+		Requests []api.PersonaRequest
+	}{Prepared: prepared, Requests: requests})
+}
+
+// TestPrepareInstance_refuses_a_persistently_refused_description caps
+// the retry loop. Every attempt is turned down, so the add fails and
+// no instance is prepared.
+func TestPrepareInstance_refuses_a_persistently_refused_description(t *testing.T) {
+	const modelID = domain.ModelID("openai/gpt-5.4-mini")
+
+	attempts := 0
+	client := nickGeneratingClient(modelID)
+	client.GeneratePersonaFn = func(context.Context, domain.ModelID, api.PersonaRequest) (string, error) {
+		attempts++
+
+		return strings.Repeat("x", domain.PersonaMaxLen+1), nil
+	}
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: client})
+	sess := newTestSession(t, fx)
+
+	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
+
+	require.Error(t, err)
+	require.Equal(t, struct {
+		Prepared session.PreparedInstance
+		Attempts int
+	}{Attempts: 3}, struct {
+		Prepared session.PreparedInstance
+		Attempts int
+	}{Prepared: prepared, Attempts: attempts})
+}
+
 // TestPrepareInstance_reports_a_derived_nick covers the one part of
-// preparation that degrades where the persona fails outright. With no
-// upstream to ask, the deterministic fallback supplies a nick and the
-// warning names the nick the instance took and what stopped it being
-// generated, so the fall-back reaches the operator and not only the
-// log. `handleAddModel` turns the warning into a server notice.
+// preparation that degrades. A failed persona ends the command; a
+// failed nick does not. The upstream here returns a persona and fails
+// every nick request, so the deterministic fallback supplies one and
+// the warning names the nick the instance took and what stopped it
+// being generated. `handleAddModel` turns the warning into a server
+// notice.
 func TestPrepareInstance_reports_a_derived_nick(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
-	fx := newTestManager(t, modelmanager.Config{APIClient: nil})
+	client := &apitest.Fake{
+		ListModelsFn: func(context.Context) ([]api.ModelInfo, error) {
+			return toolsCatalogue(modelID), nil
+		},
+		GenerateNickFn: func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error) {
+			return "", api.ErrClientNotConfigured
+		},
+		GeneratePersonaFn: func(context.Context, domain.ModelID, api.PersonaRequest) (string, error) {
+			return "a terse reviewer", nil
+		},
+	}
 
-	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
-		ID:          "p1",
-		Description: "a terse reviewer",
-		Origin:      domain.PersonaGenerated,
-	}))
-
+	fx := newTestManager(t, modelmanager.Config{APIClient: client})
 	sess := newTestSession(t, fx)
 
 	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "")
@@ -103,10 +219,6 @@ func TestPrepareInstance_reports_a_derived_nick(t *testing.T) {
 	require.Equal(t, session.PreparedInstance{
 		Nick:    "gpt-5-4",
 		Persona: "a terse reviewer",
-		PersonaTemplate: &domain.PersonaTemplateProvenance{
-			ID: "p1", Origin: domain.PersonaGenerated,
-			DescriptionHash: "a5d1a15a189842e2e80250db9a52d0ec8d3cbf35a10fd28ae78e7cd494582e36",
-		},
 		Warnings: []string{
 			"could not generate a nick for openai/gpt-5.4-mini: generate nick: " +
 				"api client not configured. It joins as gpt-5-4, derived from its model id.",
@@ -115,98 +227,40 @@ func TestPrepareInstance_reports_a_derived_nick(t *testing.T) {
 }
 
 // TestPrepareInstance_keeps_the_requested_persona pins that a persona
-// the requester supplied is never redrawn, so the pool is not consulted
-// and there is nothing to report. Surrounding whitespace is dropped: it
-// would otherwise reach the top of every prompt this instance ever
-// renders.
+// the requester supplied comes back as the text they wrote, trimmed,
+// and that `GeneratePersona` is not called at all. That returned value
+// is what ADDMODEL records as revision zero, and the whitespace would
+// otherwise be stored with the description and rendered at the top of
+// the instance's prompt.
 func TestPrepareInstance_keeps_the_requested_persona(t *testing.T) {
 	const modelID = domain.ModelID("openai/gpt-5.4-mini")
 
-	fx := newTestManager(t, modelmanager.Config{APIClient: nickGeneratingClient(modelID)})
+	generated := 0
+	client := nickGeneratingClient(modelID)
+	client.GeneratePersonaFn = func(context.Context, domain.ModelID, api.PersonaRequest) (string, error) {
+		generated++
+
+		return "a terse reviewer", nil
+	}
+
+	fx := newTestManager(t, modelmanager.Config{APIClient: client})
 	sess := newTestSession(t, fx)
 
 	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "  sceptical about everything  ")
 	require.NoError(t, err)
 
-	require.Equal(t, session.PreparedInstance{
-		Nick:    "reviewer",
-		Persona: "sceptical about everything",
-	}, prepared)
-}
-
-func TestPrepareInstance_copies_a_requested_persona_template(t *testing.T) {
-	const modelID = domain.ModelID("openai/gpt-5.4-mini")
-
-	fx := newTestManager(t, modelmanager.Config{APIClient: nickGeneratingClient(modelID)})
-	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
-		ID:          "careful-reader",
-		Description: "checks the source before reaching a conclusion",
-		Origin:      domain.PersonaUser,
-	}))
-
-	sess := newTestSession(t, fx)
-	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "careful-reader")
-	require.NoError(t, err)
-
-	require.Equal(t, session.PreparedInstance{
-		Nick:    "reviewer",
-		Persona: "checks the source before reaching a conclusion",
-		PersonaTemplate: &domain.PersonaTemplateProvenance{
-			ID: "careful-reader", Origin: domain.PersonaUser,
-			DescriptionHash: "da042dab335afd71b1dbd0c857aa0dd5f87028ba80412154adcc180729697204",
+	require.Equal(t, struct {
+		Prepared  session.PreparedInstance
+		Generated int
+	}{
+		Prepared: session.PreparedInstance{
+			Nick:    "reviewer",
+			Persona: "sceptical about everything",
 		},
-	}, prepared)
-}
-
-// TestPrepareInstance_resolves_a_padded_persona_template_id covers a
-// template id arriving with whitespace around it, which the add-model
-// tool produces whenever a model puts it there. The id names a template
-// and resolves to one, so the instance takes the character it asked for
-// and not the id as its own description.
-func TestPrepareInstance_resolves_a_padded_persona_template_id(t *testing.T) {
-	const modelID = domain.ModelID("openai/gpt-5.4-mini")
-
-	fx := newTestManager(t, modelmanager.Config{APIClient: nickGeneratingClient(modelID)})
-	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
-		ID:          "careful-reader",
-		Description: "checks the source before reaching a conclusion",
-		Origin:      domain.PersonaUser,
-	}))
-
-	sess := newTestSession(t, fx)
-	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, " careful-reader ")
-	require.NoError(t, err)
-
-	require.Equal(t, session.PreparedInstance{
-		Nick:    "reviewer",
-		Persona: "checks the source before reaching a conclusion",
-		PersonaTemplate: &domain.PersonaTemplateProvenance{
-			ID: "careful-reader", Origin: domain.PersonaUser,
-			DescriptionHash: "da042dab335afd71b1dbd0c857aa0dd5f87028ba80412154adcc180729697204",
-		},
-	}, prepared)
-}
-
-func TestPrepareInstance_copies_an_empty_persona_template(t *testing.T) {
-	const modelID = domain.ModelID("openai/gpt-5.4-mini")
-
-	fx := newTestManager(t, modelmanager.Config{APIClient: nickGeneratingClient(modelID)})
-	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
-		ID:     "blank-slate",
-		Origin: domain.PersonaUser,
-	}))
-
-	sess := newTestSession(t, fx)
-	prepared, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "blank-slate")
-	require.NoError(t, err)
-
-	require.Equal(t, session.PreparedInstance{
-		Nick: "reviewer",
-		PersonaTemplate: &domain.PersonaTemplateProvenance{
-			ID: "blank-slate", Origin: domain.PersonaUser,
-			DescriptionHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		},
-	}, prepared)
+	}, struct {
+		Prepared  session.PreparedInstance
+		Generated int
+	}{Prepared: prepared, Generated: generated})
 }
 
 // TestPrepareInstance_rejects_control_characters_at_the_persona_boundary
@@ -249,22 +303,4 @@ func TestPrepareInstance_rejects_control_characters_at_the_persona_boundary(t *t
 		Error:   personaErr,
 		Effects: effects,
 	})
-}
-
-func TestPrepareInstance_rejects_an_invalid_persona_template(t *testing.T) {
-	const modelID = domain.ModelID("openai/gpt-5.4-mini")
-
-	fx := newTestManager(t, modelmanager.Config{APIClient: nickGeneratingClient(modelID)})
-	require.NoError(t, fx.store.SavePersonaTemplate(t.Context(), domain.PersonaTemplate{
-		ID:          "too-much",
-		Description: strings.Repeat("x", domain.PersonaMaxLen+1),
-		Origin:      domain.PersonaUser,
-	}))
-
-	sess := newTestSession(t, fx)
-	_, err := fx.mgr.PrepareInstance(t.Context(), sess, modelID, "too-much")
-
-	var personaErr domain.ErroneousPersonaError
-	require.ErrorAs(t, err, &personaErr)
-	require.Equal(t, domain.PersonaTooLong, personaErr.Reason)
 }

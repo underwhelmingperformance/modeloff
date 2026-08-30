@@ -12,10 +12,9 @@ import (
 
 // TestAddModel_answers_a_preparation_warning_with_a_notice covers
 // what the operator is told when preparing an instance falls short
-// without failing. The persona pool is the case that exists: the
-// model joins and behaves for the rest of its life without the
-// character it was meant to have, and until this reply carried the
-// warning the only record was a log line the user never sees.
+// without failing. Nick generation is the case that exists: the model
+// joins under a name derived from its model id, and without this
+// reply the only record is a log line the user never sees.
 //
 // The notice rides the `ADDMODEL` reply, which is the same slot a
 // refused INVITE's notice uses, so the chat-screen renders it through
@@ -24,7 +23,8 @@ func TestAddModel_answers_a_preparation_warning_with_a_notice(t *testing.T) {
 	sess, s := newTestSession(t)
 	ctx := t.Context()
 
-	const warning = "no persona was assigned to test/model (pool is empty); it joins without one"
+	const warning = "could not generate a nick for test/model: upstream unreachable. " +
+		"It joins as test, derived from its model id."
 
 	factory := sess.modelClientFactory.(*testModelClientFactory)
 	factory.prepareWarnings = []string{warning}

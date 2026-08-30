@@ -3,7 +3,6 @@ package screens
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -247,7 +246,7 @@ func (s ConnectionScreen) Init() tea.Cmd {
 	cmds := []tea.Cmd{s.tickCmd()}
 
 	if s.cfg.Session != nil {
-		cmds = append(cmds, s.runConnect(), s.runLoadModels(), s.runEnsurePersonaTemplates())
+		cmds = append(cmds, s.runConnect(), s.runLoadModels())
 	}
 
 	if s.chatScreen != nil {
@@ -297,32 +296,6 @@ func (s ConnectionScreen) runLoadModels() tea.Cmd {
 		}
 
 		return loadModelsDoneMsg{models: options}
-	}
-}
-
-// runEnsurePersonaTemplates seeds the persona template pool in the background so
-// `--persona` tab completion has something to offer the first time
-// the user reaches for it. Generation is best-effort: failures are
-// logged but never surface as an animation error, since the chat
-// path can still proceed (a model added without a persona just
-// gets none, and `/regenerate-templates` remains available).
-func (s ConnectionScreen) runEnsurePersonaTemplates() tea.Cmd {
-	mgr := s.cfg.Manager
-
-	return func() tea.Msg {
-		if mgr == nil || !mgr.HasAPIKey() {
-			return nil
-		}
-
-		if err := mgr.EnsurePersonaTemplates(s.ctx()); err != nil {
-			slog.Default().WarnContext(s.ctx(), "ensure persona templates",
-				"component", "ui",
-				"screen", "connection",
-				"error", err,
-			)
-		}
-
-		return nil
 	}
 }
 

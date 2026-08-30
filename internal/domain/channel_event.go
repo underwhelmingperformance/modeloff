@@ -85,7 +85,6 @@ var (
 	_ PersistableEvent = ListReply{}
 	_ PersistableEvent = CommandError{}
 	_ PersistableEvent = SystemNotice{}
-	_ PersistableEvent = PersonaTemplatesList{}
 
 	// Render-only DTOs: renderable on the chat-screen, never
 	// persisted, so they satisfy `Event` but not `PersistableEvent`.
@@ -112,7 +111,6 @@ var (
 	_ IssuerReply = TopicInfo{}
 	_ IssuerReply = CommandError{}
 	_ IssuerReply = SystemNotice{}
-	_ IssuerReply = PersonaTemplatesList{}
 )
 
 // Message records a PRIVMSG or action sent to a channel or client.
@@ -443,17 +441,6 @@ func (SystemNotice) persistableEvent()                 {}
 func (e SystemNotice) persistableEventTime() time.Time { return e.At }
 func (SystemNotice) issuerReply()                      {}
 
-// PersonaTemplatesList carries the persona templates a `/templates`
-// reply lists.
-type PersonaTemplatesList struct {
-	Templates []PersonaTemplate `json:"templates"`
-	At        time.Time         `json:"at"`
-}
-
-func (PersonaTemplatesList) persistableEvent()                 {}
-func (e PersonaTemplatesList) persistableEventTime() time.Time { return e.At }
-func (PersonaTemplatesList) issuerReply()                      {}
-
 // EventTime returns the timestamp of a channel event.
 func EventTime(e PersistableEvent) time.Time {
 	return e.persistableEventTime()
@@ -463,9 +450,8 @@ func EventTime(e PersistableEvent) time.Time {
 // addresses. Every addressable event type carries a `Target`
 // field; the helper centralises the type-switch so consumers (the
 // UI's per-window scrollback, observers that need to route
-// events) do not duplicate it. `ChannelList` and `PersonaTemplatesList`
-// are not addressable — they carry no per-window target — and
-// return the zero value.
+// events) do not duplicate it. `Whois` and `ListReply` have no
+// per-window target, so they return the zero value.
 func EventTarget(e PersistableEvent) ChannelName {
 	switch v := e.(type) {
 	case Message:
@@ -497,8 +483,6 @@ func EventTarget(e PersistableEvent) ChannelName {
 		return v.Target
 	case SystemNotice:
 		return v.Target
-	case PersonaTemplatesList:
-		return ""
 	}
 
 	return ""
@@ -542,8 +526,6 @@ func EventType(e PersistableEvent) string {
 		return "command_error"
 	case SystemNotice:
 		return "system_notice"
-	case PersonaTemplatesList:
-		return "persona_templates_list"
 	default:
 		return ""
 	}
@@ -654,9 +636,6 @@ func UnmarshalPersistableEvent(b []byte) (PersistableEvent, error) {
 		return e, unmarshal(&e)
 	case "system_notice":
 		var e SystemNotice
-		return e, unmarshal(&e)
-	case "persona_templates_list":
-		var e PersonaTemplatesList
 		return e, unmarshal(&e)
 	default:
 		return nil, UnknownEventTypeError{Type: string(env.Type)}
@@ -820,9 +799,6 @@ func unmarshalPersistableEventV2(eventType string, data json.RawMessage) (Persis
 	case "system_notice":
 		var e SystemNotice
 		return e, unmarshal(&e)
-	case "persona_templates_list":
-		var e PersonaTemplatesList
-		return e, unmarshal(&e)
 	default:
 		return nil, UnknownEventTypeError{Type: string(eventType)}
 	}
@@ -831,24 +807,23 @@ func unmarshalPersistableEventV2(eventType string, data json.RawMessage) (Persis
 // All PersistableEvent types also implement Event so they flow through
 // the session's unified event channel.
 
-func (Message) domainEvent()              {}
-func (Join) domainEvent()                 {}
-func (Part) domainEvent()                 {}
-func (Quit) domainEvent()                 {}
-func (TopicChange) domainEvent()          {}
-func (ChannelModeChange) domainEvent()    {}
-func (UserModeChange) domainEvent()       {}
-func (Invited) domainEvent()              {}
-func (Inviting) domainEvent()             {}
-func (Kicked) domainEvent()               {}
-func (NickChange) domainEvent()           {}
-func (TopicInfo) domainEvent()            {}
-func (Help) domainEvent()                 {}
-func (Whois) domainEvent()                {}
-func (ListReply) domainEvent()            {}
-func (ListEnd) domainEvent()              {}
-func (JoinedChannel) domainEvent()        {}
-func (CommandError) domainEvent()         {}
-func (UsageHint) domainEvent()            {}
-func (SystemNotice) domainEvent()         {}
-func (PersonaTemplatesList) domainEvent() {}
+func (Message) domainEvent()           {}
+func (Join) domainEvent()              {}
+func (Part) domainEvent()              {}
+func (Quit) domainEvent()              {}
+func (TopicChange) domainEvent()       {}
+func (ChannelModeChange) domainEvent() {}
+func (UserModeChange) domainEvent()    {}
+func (Invited) domainEvent()           {}
+func (Inviting) domainEvent()          {}
+func (Kicked) domainEvent()            {}
+func (NickChange) domainEvent()        {}
+func (TopicInfo) domainEvent()         {}
+func (Help) domainEvent()              {}
+func (Whois) domainEvent()             {}
+func (ListReply) domainEvent()         {}
+func (ListEnd) domainEvent()           {}
+func (JoinedChannel) domainEvent()     {}
+func (CommandError) domainEvent()      {}
+func (UsageHint) domainEvent()         {}
+func (SystemNotice) domainEvent()      {}

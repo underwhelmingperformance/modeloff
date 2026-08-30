@@ -674,18 +674,14 @@ func personaLineageTx(
 	instanceID domain.InstanceID,
 ) (domain.PersonaLineage, error) {
 	var state domain.PersonaLineage
-	var templateID, templateOrigin, templateHash sql.NullString
 	var createdAt string
 	var reflectedAt sql.NullString
 	err := tx.QueryRowContext(ctx, `
-		SELECT instance_id, baseline, template_id, template_origin, template_hash,
-		       current_revision_id, checkpoint,
+		SELECT instance_id, baseline, current_revision_id, checkpoint,
 		       created_at, reflected_at
 		FROM persona_lineages WHERE instance_id = ?
 	`, instanceID).Scan(
-		&state.InstanceID, &state.Baseline,
-		&templateID, &templateOrigin, &templateHash,
-		&state.CurrentRevisionID,
+		&state.InstanceID, &state.Baseline, &state.CurrentRevisionID,
 		&state.Checkpoint, &createdAt, &reflectedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -693,15 +689,6 @@ func personaLineageTx(
 	}
 	if err != nil {
 		return domain.PersonaLineage{}, fmt.Errorf("read persona lineage: %w", err)
-	}
-	if templateID.Valid || templateOrigin.Valid || templateHash.Valid {
-		if !templateID.Valid || !templateOrigin.Valid || !templateHash.Valid {
-			return domain.PersonaLineage{}, errors.New("read persona lineage: incomplete template provenance")
-		}
-		state.Template = &domain.PersonaTemplateProvenance{
-			ID: templateID.String, Origin: domain.PersonaOrigin(templateOrigin.String),
-			DescriptionHash: templateHash.String,
-		}
 	}
 	state.CreatedAt, err = parseTime(createdAt)
 	if err != nil {

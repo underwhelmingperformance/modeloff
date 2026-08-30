@@ -33,7 +33,7 @@ func TestSaveModelInstance_leaves_nothing_behind_when_the_lineage_fails(t *testi
 	instance := domain.NewModelInstance(
 		"inst-botty", "botty", "test/model", "careful and curious", nil,
 	)
-	saveErr := s.SaveModelInstance(ctx, instance, PersonaFoundation{})
+	saveErr := s.SaveModelInstance(ctx, instance, testTime)
 
 	var instances, revisions int
 	require.NoError(t, s.db.QueryRowContext(ctx,

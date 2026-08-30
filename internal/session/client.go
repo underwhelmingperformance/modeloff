@@ -1436,9 +1436,8 @@ func (c *serverClient) canReceive(ev domain.ProtocolEvent, actorTargets []domain
 	// point-to-point command replies the session emits (Whois,
 	// ListReply, ListEnd) reach the issuing client through
 	// [Session.deliverToClient] or the command's `Response.Events`.
-	// Help, UsageHint, PersonaTemplatesList and CommandError are
-	// chat-screen-local control signals the session never puts on this
-	// bus.
+	// Help, UsageHint and CommandError are chat-screen-local control
+	// signals the session never puts on this bus.
 	return false
 }
 

@@ -114,10 +114,10 @@ func (m ModelInfo) SupportsTools() bool {
 // strict JSON-schema structured-output support for this model, via
 // `"structured_outputs"` in its `supported_parameters` list.
 // OpenRouter tracks this separately from `"tools"`: the two are
-// independent capabilities, not usually-correlated ones, so a model
-// can have either, both, or neither. GenerateNick and
-// GeneratePersonaTemplates set a strict `json_schema` `ResponseFormat` and
-// never set `Tools`, so this is the parameter their calls depend on.
+// independent capabilities and are not necessarily correlated, so a
+// model can have either, both, or neither. GenerateNick and GeneratePersona
+// set a strict `json_schema` `ResponseFormat` and never set `Tools`,
+// so this is the parameter their calls depend on.
 func (m ModelInfo) SupportsStructuredOutputs() bool {
 	return slices.Contains(m.SupportedParameters, "structured_outputs")
 }
@@ -511,11 +511,6 @@ type Client interface {
 	// asks for a different one. The caller's authoritative nick list
 	// is intentionally never revealed to the model.
 	GenerateNick(ctx context.Context, smallModel domain.ModelID, persona string, excludePreviousSuggestions []domain.Nick) (NicknameResult, error)
-
-	// GeneratePersonaTemplates asks a model to write a set of persona
-	// templates for the pool. Each carries Origin
-	// domain.PersonaGenerated.
-	GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error)
 
 	// GeneratePersona asks a model to invent one character for an
 	// instance being added, and returns its description. The request

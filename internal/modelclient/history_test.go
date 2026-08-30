@@ -103,7 +103,7 @@ func TestHistory_replies_follow_the_issuing_window(t *testing.T) {
 
 	devReply := domain.ListReply{Channel: "#other"}
 	otherReply := domain.ListReply{Channel: "#dev"}
-	globalReply := domain.PersonaTemplatesList{}
+	globalReply := domain.ListReply{Channel: "#global"}
 
 	h := newHistory()
 	h.seedReplies(protocol.ChannelWindowTarget("#dev"), []protocol.ReplyEntry{{Event: devReply}})

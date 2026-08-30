@@ -4601,13 +4601,13 @@ func drainEvents(t *testing.T, sess *Session, doneCount int) []domain.Event {
 	}
 }
 
-func TestSession_Invite_with_explicit_persona_skips_pool(t *testing.T) {
+func TestSession_Invite_with_explicit_persona_generates_nothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bootAt := time.Now()
 		fake := &apitest.Fake{
-			GeneratePersonaTemplatesFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
-				t.Fatal("GeneratePersonaTemplates should not be called when persona is explicit")
-				return nil, nil
+			GeneratePersonaFn: func(_ context.Context, _ domain.ModelID, _ api.PersonaRequest) (string, error) {
+				t.Fatal("a persona was requested although the operator supplied one")
+				return "", nil
 			},
 		}
 

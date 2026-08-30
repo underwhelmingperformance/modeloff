@@ -131,15 +131,12 @@ func TestApplyMigrations_fresh_database_records_current_version(t *testing.T) {
 }
 
 type personaBackfillState struct {
-	InstanceID     domain.InstanceID
-	Baseline       string
-	Description    string
-	TemplateID     *string
-	TemplateOrigin *string
-	TemplateHash   *string
-	ParentID       *int64
-	Checkpoint     int64
-	CreatedAt      string
+	InstanceID  domain.InstanceID
+	Baseline    string
+	Description string
+	ParentID    *int64
+	Checkpoint  int64
+	CreatedAt   string
 }
 
 func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.T) {
@@ -179,9 +176,7 @@ func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.
 	var got personaBackfillState
 	require.NoError(t, db.QueryRowContext(ctx, `
 		SELECT state.instance_id, state.baseline, revision.description,
-		       state.template_id, state.template_origin, state.template_hash,
-		       revision.parent_id,
-		       state.checkpoint, state.created_at
+		       revision.parent_id, state.checkpoint, state.created_at
 		FROM persona_lineages AS state
 		JOIN persona_revisions AS revision
 		  ON revision.id = state.current_revision_id
@@ -189,9 +184,6 @@ func TestApplyMigrations_backfills_revision_zero_for_model_instances(t *testing.
 		&got.InstanceID,
 		&got.Baseline,
 		&got.Description,
-		&got.TemplateID,
-		&got.TemplateOrigin,
-		&got.TemplateHash,
 		&got.ParentID,
 		&got.Checkpoint,
 		&got.CreatedAt,
@@ -1079,23 +1071,74 @@ func TestApplyMigrations_v19_to_v20_names_the_recorded_departures(t *testing.T) 
 	require.Equal(t, want, got)
 }
 
-// storedEventRow is one row of a table holding a serialised
-// [domain.PersistableEvent]: the discriminator in its own column and
-// the envelope in `data`.
-type storedEventRow struct {
-	Type string
-	Data string
+// personaPoolRemains reports what a database still holds of the
+// persona template pool: the pool table, the three lineage columns,
+// the stored `/templates` replies in each of the three event tables,
+// and the lineage baseline `/persona --reset` restores. v22 removes the
+// table and the columns and leaves the other two alone.
+type personaPoolRemains struct {
+	Tables          []string
+	LineageColumns  []string
+	StoredListRows  map[string]int
+	LineageBaseline string
 }
 
-// TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool
-// covers the three stored names the template rename left behind: the
-// pool's table, the discriminator a template list is written under, and
-// the field holding the templates inside it. A row written before the
-// migration must come back through
-// [domain.UnmarshalPersistableEvent], which knows only the new names.
-func TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool(t *testing.T) {
+func readPersonaPoolRemains(ctx context.Context, t *testing.T, tx *sql.Tx) personaPoolRemains {
+	t.Helper()
+
+	remains := personaPoolRemains{StoredListRows: map[string]int{}}
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'persona_templates'`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		remains.Tables = append(remains.Tables, name)
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+
+	columns, err := tx.QueryContext(ctx,
+		`SELECT name FROM pragma_table_info('persona_lineages')
+		  WHERE name IN ('template_id', 'template_origin', 'template_hash')
+		  ORDER BY name`)
+	require.NoError(t, err)
+	for columns.Next() {
+		var name string
+		require.NoError(t, columns.Scan(&name))
+		remains.LineageColumns = append(remains.LineageColumns, name)
+	}
+	require.NoError(t, columns.Err())
+	require.NoError(t, columns.Close())
+
+	for _, table := range []string{"events", "instance_replies", "channel_scrollback"} {
+		var count int
+		require.NoError(t, tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM `+table+
+				` WHERE type IN ('personas_list', 'persona_templates_list')`,
+		).Scan(&count))
+		remains.StoredListRows[table] = count
+	}
+
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT baseline FROM persona_lineages WHERE instance_id = 'inst-1'`,
+	).Scan(&remains.LineageBaseline))
+
+	return remains
+}
+
+// TestApplyMigrations_v20_to_v22_removes_the_persona_template_pool
+// runs a v20 database through the rename in v21 and the removal in
+// v22. The stored `/templates` replies survive: the readers of all
+// three tables skip a discriminator this build does not recognise, and
+// a `last_read` cursor references `events(id)` with no cascade, so the
+// database is opened with the production PRAGMAs, and a `last_read`
+// row points at such an event. The lineage survives too, so `/persona` still reads the
+// baseline of an instance that started from a pool row.
+func TestApplyMigrations_v20_to_v22_removes_the_persona_template_pool(t *testing.T) {
 	ctx := t.Context()
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite3", SQLitePragmaDSN(":memory:"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	db.SetMaxOpenConns(1)
@@ -1119,7 +1162,24 @@ func TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool(t *testing
 		`INSERT INTO channels (name, data) VALUES ('#dev', '{}')`)
 	require.NoError(t, err)
 
-	const listedAt = "2026-08-01T10:00:00Z"
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO instances (instance_id, nick, data)
+		 VALUES ('inst-1', 'bard', '{"ModelID":"vendor/model","Persona":"A travelling storyteller"}')`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO persona_revisions (instance_id, parent_id, description, created_at)
+		VALUES ('inst-1', NULL, 'A travelling storyteller', '2026-08-01T10:00:00Z')`)
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO persona_lineages
+			(instance_id, baseline, template_id, template_origin, template_hash,
+			 current_revision_id, checkpoint, created_at)
+		SELECT 'inst-1', 'A travelling storyteller', 'bard', 'user', 'abc123',
+		       id, 0, '2026-08-01T10:00:00Z'
+		  FROM persona_revisions WHERE instance_id = 'inst-1'`)
+	require.NoError(t, err)
 
 	const storedList = `{"version":2,"type":"personas_list","data":{"personas":` +
 		`[{"id":"bard","description":"A travelling storyteller","origin":"user"}],` +
@@ -1136,6 +1196,11 @@ func TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool(t *testing
 		require.NoError(t, err)
 	}
 
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO last_read (channel, event_id)
+		SELECT '#dev', id FROM events WHERE type = 'personas_list'`)
+	require.NoError(t, err)
+
 	for _, migration := range migrations {
 		if migration.Version != 21 {
 			continue
@@ -1143,51 +1208,32 @@ func TestApplyMigrations_v20_to_v21_renames_the_persona_template_pool(t *testing
 		require.NoError(t, migration.Apply(ctx, tx))
 	}
 
-	var template domain.PersonaTemplate
-	require.NoError(t, tx.QueryRowContext(ctx,
-		`SELECT id, description, origin FROM persona_templates`,
-	).Scan(&template.ID, &template.Description, &template.Origin))
+	before := readPersonaPoolRemains(ctx, t, tx)
 
-	rows := map[string]storedEventRow{}
-	events := map[string]domain.PersistableEvent{}
-	for _, table := range []string{"events", "instance_replies", "channel_scrollback"} {
-		var row storedEventRow
-		require.NoError(t, tx.QueryRowContext(ctx,
-			`SELECT type, data FROM `+table+` WHERE at = ?`, listedAt,
-		).Scan(&row.Type, &row.Data))
-		rows[table] = storedEventRow{Type: row.Type}
-
-		decoded, err := domain.UnmarshalPersistableEvent([]byte(row.Data))
-		require.NoError(t, err, table)
-		events[table] = decoded
+	for _, migration := range migrations {
+		if migration.Version != 22 {
+			continue
+		}
+		require.NoError(t, migration.Apply(ctx, tx))
 	}
 
-	wantList := domain.PersonaTemplatesList{
-		Templates: []domain.PersonaTemplate{
-			{ID: "bard", Description: "A travelling storyteller", Origin: domain.PersonaUser},
+	require.Equal(t, struct{ Before, After personaPoolRemains }{
+		Before: personaPoolRemains{
+			Tables:         []string{"persona_templates"},
+			LineageColumns: []string{"template_hash", "template_id", "template_origin"},
+			StoredListRows: map[string]int{
+				"events": 1, "instance_replies": 1, "channel_scrollback": 1,
+			},
+			LineageBaseline: "A travelling storyteller",
 		},
-		At: time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC),
-	}
-
-	require.Equal(t, struct {
-		Template domain.PersonaTemplate
-		Rows     map[string]storedEventRow
-		Events   map[string]domain.PersistableEvent
-	}{
-		Template: domain.PersonaTemplate{
-			ID: "bard", Description: "A travelling storyteller", Origin: domain.PersonaUser,
+		After: personaPoolRemains{
+			StoredListRows: map[string]int{
+				"events": 1, "instance_replies": 1, "channel_scrollback": 1,
+			},
+			LineageBaseline: "A travelling storyteller",
 		},
-		Rows: map[string]storedEventRow{
-			"events":             {Type: "persona_templates_list"},
-			"instance_replies":   {Type: "persona_templates_list"},
-			"channel_scrollback": {Type: "persona_templates_list"},
-		},
-		Events: map[string]domain.PersistableEvent{
-			"events": wantList, "instance_replies": wantList, "channel_scrollback": wantList,
-		},
-	}, struct {
-		Template domain.PersonaTemplate
-		Rows     map[string]storedEventRow
-		Events   map[string]domain.PersistableEvent
-	}{Template: template, Rows: rows, Events: events})
+	}, struct{ Before, After personaPoolRemains }{
+		Before: before,
+		After:  readPersonaPoolRemains(ctx, t, tx),
+	})
 }

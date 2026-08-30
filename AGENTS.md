@@ -293,7 +293,7 @@ options cannot grant capabilities.
   subscription behind it.
 
 The LLM-side state — the api client and its rebuild factory, the
-persona pool, the small-model id used for nick generation, the
+small-model id used for nick and persona generation, the
 catalogue cache, and the per-instance model-client registry —
 lives in the `internal/modelmanager` package. A `*Manager`
 satisfies `session.ModelClientFactory`: the session's `addModelAs`
@@ -782,8 +782,8 @@ outcome reaches an operator without being addressed to the members of
 a particular window.
 
 Chat-screen-local control signals — `domain.ErrorEvent` wrapping a
-backend error from a UI-issued command, and the `Help`, `UsageHint`,
-`PersonaTemplatesList` and `CommandError` events the chat-screen builds and
+backend error from a UI-issued command, and the `Help`, `UsageHint`
+and `CommandError` events the chat-screen builds and
 renders itself — flow as bare `tea.Msg` returns from the chat-screen's
 own `tea.Cmd`s and reach the Update loop directly. The session never
 puts them on the bus (`serverClient.canReceive` returns false for
@@ -915,9 +915,8 @@ have a wire counterpart: `/join`, `/part`, `/list`, `/add-model`,
 `/me`, `/whois`, and `/quit` (for example `ListCommand` returns
 `protocol.List` and `WhoisCommand` returns `protocol.Whois`). The
 remaining commands are purely UI-side, have no wire counterpart, and
-do not implement `ToCommand`: `/config`, `/query`, `/templates`,
-`/persona`, `/regenerate-templates`, `/help`, `/clear`, `/poke`, and
-the tool-only `pass`.
+do not implement `ToCommand`: `/config`, `/query`, `/persona`,
+`/help`, `/clear`, `/poke`, and the tool-only `pass`.
 
 Whether a command becomes a model-callable tool is a separate question
 from whether it has a wire counterpart, and `internal/command` answers
@@ -1423,23 +1422,27 @@ is given and not argued for. It is immutable, and it is the revision a
 reset selects. Its text is kept on the lineage as `Baseline` as well,
 so the text a reset restores can be read without walking to the root.
 
-Revision zero's description is the persona template resolved for the
-instance at ADDMODEL time, and the lineage records where that text came
-from: the template's id, its origin and a hash of its description, so an
-operator can tell which pool row an instance started from after the pool
-row itself has been edited. A lineage created before those columns
-existed carries none of it, and neither does one written from
-operator-supplied text, so an absent provenance is read as unrecorded
-and not as an absent template.
+Revision zero's description is the persona ADDMODEL resolved for the
+instance: the text the operator supplied, or, when they supplied none,
+one the small model wrote for this instance through
+`api.Client.GeneratePersona`. The request holds the current description
+of every connected model instance whose stored persona snapshot holds
+one; the prompt then asks for a character none of those descriptions
+already describes. The manager turns a
+generated description down when `domain.ValidatePersona` refuses it or
+when it is empty, and sends it back with the reason, the way a rejected
+nick goes back to `GenerateNick`. `ValidatePersona` refusing a
+description the operator supplied ends the command before any upstream
+call, and the manager writes no replacement for it.
 
-ADDMODEL refuses when no persona was given and the pool can supply
-none, reporting both the generation failure and the empty pool it left
-behind. Revision zero is the description every later revision is a
-change to and the one a reset restores, and nothing after ADDMODEL
-supplies it, so an instance admitted without one could never acquire a
-character. Nick generation is the part of preparation that degrades:
-the deterministic fallback derives a nick from the model id and the
-warning reporting it reaches the operator as a server notice.
+ADDMODEL refuses when no persona was given and none could be written.
+Revision zero is the description every later revision is a change to
+and the one a reset restores, and nothing after ADDMODEL writes it, so
+an instance created without one would hold an empty revision zero and
+an empty reset baseline. Nick
+generation is the part of preparation that degrades: the deterministic
+fallback derives a nick from the model id and the warning reporting it
+reaches the operator as a server notice.
 
 A reset, a rollback and an operator edit each move the current-revision
 pointer through the one compare-and-swap in `movePersonaRevisionTx`,
@@ -1634,12 +1637,6 @@ from a reflection in the history. `--rollback` takes a pointer so that
 `internal/command` builds the tool registry from the presence of that
 tag, so leaving it off keeps the command out of every model's tools.
 That is the write-authority split the four levels rest on.
-
-`/templates` and `/regenerate-templates` act on the persona pool. A pool
-row is a template: the text `ADDMODEL` copies into a new instance's
-revision zero. Editing one changes nothing about an instance already
-running, so the pool commands and `/persona` reach different things,
-and their names say which.
 
 Two `/config` settings control reflection. `reflection-mode` takes
 `disabled`, `shadow` or `active`, and an installation that has never

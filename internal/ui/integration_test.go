@@ -496,14 +496,6 @@ func (f *integrationAPI) GeneratePersona(context.Context, domain.ModelID, api.Pe
 	return "a terse reviewer", nil
 }
 
-func (f *integrationAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
-	return []domain.PersonaTemplate{{
-		ID:          "fake-persona",
-		Description: "a terse reviewer",
-		Origin:      domain.PersonaGenerated,
-	}}, nil
-}
-
 type integrationConfigStore struct {
 	cfg     config.Config
 	saveErr error

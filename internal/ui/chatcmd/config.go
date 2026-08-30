@@ -28,7 +28,6 @@ type ConfigCommand struct {
 	Highlight       HighlightConfig       `cmd:"" help:"Set words that trigger visual highlighting."`
 	DefaultModes    DefaultModesConfig    `cmd:"" name:"default-modes" help:"Set the modes a freshly created channel starts with."`
 	TimestampFormat TimestampFormatConfig `cmd:"" name:"timestamp-format" help:"Set or disable timestamp formatting."`
-	Persona         PersonaConfig         `cmd:"" help:"Define a custom persona."`
 }
 
 // ReflectionModeConfig represents `/config reflection-mode <mode>`.
@@ -161,8 +160,6 @@ func setReflectionModel(
 // subcommand, prints every setting's current value, following the
 // irssi `/set` convention. Each subcommand implements the same
 // behaviour for its own bare form (e.g. [APIKeyConfig.Run]).
-// [PersonaConfig] is excluded: it names a collection of templates,
-// not a single value, and `/templates` already lists them.
 func (c ConfigCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	return func() tea.Msg {
 		cfg, err := rc.Config.Load(ctx)
@@ -813,43 +810,6 @@ func (c TimestampFormatConfig) Run(ctx context.Context, rc Context) tea.Cmd {
 	}
 }
 
-// PersonaConfig represents `/config persona <id> <description...>`.
-type PersonaConfig struct {
-	ID          string      `arg:"" optional:"" help:"Persona identifier"`
-	Description CommandText `arg:"" optional:"" passthrough:"all" help:"Persona description"`
-}
-
-// Run implements Command.
-func (c PersonaConfig) Run(ctx context.Context, rc Context) tea.Cmd {
-	if rc.configResetRequested() {
-		return func() tea.Msg {
-			count, err := rc.Manager.ResetPersonaTemplates(ctx)
-			if err != nil {
-				return rc.errorEvent("config persona", err)
-			}
-
-			return PersonaTemplatesResetResult{Count: count}
-		}
-	}
-
-	if strings.TrimSpace(c.ID) == "" {
-		return usageCmd("config persona", "/config persona <id> <description...>")
-	}
-
-	desc := strings.TrimSpace(c.Description.String())
-	if desc == "" {
-		return usageCmd("config persona", "/config persona <id> <description...>")
-	}
-
-	return func() tea.Msg {
-		if err := rc.Manager.SetPersonaTemplate(ctx, c.ID, desc); err != nil {
-			return rc.errorEvent("config persona", err)
-		}
-
-		return PersonaTemplateSavedResult{ID: c.ID}
-	}
-}
-
 func normaliseTimestampFormat(parts CommandText) *string {
 	joined := strings.TrimSpace(parts.String())
 	if joined == `""` || joined == `''` {
@@ -866,10 +826,8 @@ type configSetting struct {
 	value string
 }
 
-// configSettings lists every scalar `/config` setting and its
-// current value, in the order [ConfigCommand] declares its
-// subcommands. Persona is excluded: it names a collection, not a
-// single value.
+// configSettings lists every `/config` setting and its current
+// value, in the order [ConfigCommand] declares its subcommands.
 func configSettings(cfg config.Config) []configSetting {
 	return []configSetting{
 		{"api-key", maskAPIKey(cfg.APIKey)},

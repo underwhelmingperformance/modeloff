@@ -19,20 +19,12 @@ var ErrNoPersonaLineage = errors.New("no persona lineage")
 // [ErrNoPersonaLineage] and the scheduler must not read it as one.
 var ErrNoPersonaRevision = errors.New("no persona revision")
 
-// PersonaFoundation supplies the creation-time metadata for revision zero.
-// Template is nil when the persona was literal operator input or no persona
-// was available.
-type PersonaFoundation struct {
-	Template  *domain.PersonaTemplateProvenance
-	CreatedAt time.Time
-}
-
 func ensurePersonaLineageTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	instanceID domain.InstanceID,
 	baseline string,
-	foundation *PersonaFoundation,
+	createdAt time.Time,
 ) error {
 	var exists bool
 	if err := tx.QueryRowContext(ctx,
@@ -45,16 +37,6 @@ func ensurePersonaLineageTx(
 		return nil
 	}
 
-	createdAt := time.Time{}
-	var templateID, templateOrigin, templateHash any
-	if foundation != nil {
-		createdAt = foundation.CreatedAt
-		if foundation.Template != nil {
-			templateID = foundation.Template.ID
-			templateOrigin = foundation.Template.Origin
-			templateHash = foundation.Template.DescriptionHash
-		}
-	}
 	createdAtText := formatTime(createdAt)
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO persona_revisions
@@ -70,11 +52,9 @@ func ensurePersonaLineageTx(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO persona_lineages
-			(instance_id, baseline, template_id, template_origin, template_hash,
-			 current_revision_id, checkpoint, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-	`, instanceID, baseline, templateID, templateOrigin, templateHash,
-		revisionID, createdAtText); err != nil {
+			(instance_id, baseline, current_revision_id, checkpoint, created_at)
+		VALUES (?, ?, ?, 0, ?)
+	`, instanceID, baseline, revisionID, createdAtText); err != nil {
 		return fmt.Errorf("create persona lineage: %w", err)
 	}
 

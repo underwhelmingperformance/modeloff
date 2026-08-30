@@ -23,7 +23,7 @@ import (
 // v1 onward. If `schema` carried a v2+ column or index, a fresh
 // database would receive it before the migration meant to introduce
 // it ran, and that migration would fail on an object already there.
-const SchemaVersion = 21
+const SchemaVersion = 22
 
 type schemaTooNewError struct {
 	Found     int
@@ -742,6 +742,38 @@ var migrations = []migration{
 					                '$.data.templates',
 					                json_extract(data, '$.data.personas'))
 					 WHERE type = 'personas_list'
+				`},
+			}
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+					return fmt.Errorf("%s: %w", statement.name, err)
+				}
+			}
+
+			return nil
+		},
+	},
+	{
+		Version: 22,
+		Apply: func(ctx context.Context, tx *sql.Tx) error {
+			// The stored `persona_templates_list` rows are left where
+			// they are. `queryEventRows` and `queryInstanceReplyRows`
+			// each skip a discriminator this build does not recognise,
+			// which is what lets an event type be removed without
+			// touching stored rows, and `last_read.event_id`
+			// references `events(id)` with no cascade, so deleting a
+			// row a read cursor points at would fail the whole
+			// migration.
+			statements := []migrationStatement{
+				{"drop the template pool", `DROP TABLE persona_templates`},
+				{"drop the lineage template id", `
+					ALTER TABLE persona_lineages DROP COLUMN template_id
+				`},
+				{"drop the lineage template origin", `
+					ALTER TABLE persona_lineages DROP COLUMN template_origin
+				`},
+				{"drop the lineage template hash", `
+					ALTER TABLE persona_lineages DROP COLUMN template_hash
 				`},
 			}
 			for _, statement := range statements {

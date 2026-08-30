@@ -390,12 +390,11 @@ func (a *App) CurrentView() string {
 // tool-call patterns (the model "wants to say something" via the
 // `msg`/`me`/`pass` tools).
 type FakeAPI struct {
-	mu                         sync.Mutex
-	ListModelsFn               func(context.Context) ([]api.ModelInfo, error)
-	SendEventsFn               func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
-	GenerateNickFn             func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
-	GeneratePersonaTemplatesFn func(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error)
-	GeneratePersonaFn          func(context.Context, domain.ModelID, api.PersonaRequest) (string, error)
+	mu                sync.Mutex
+	ListModelsFn      func(context.Context) ([]api.ModelInfo, error)
+	SendEventsFn      func(context.Context, domain.ModelID, string, []protocol.IRCMessage, []protocol.IRCMessage) (api.CompletionResult, error)
+	GenerateNickFn    func(context.Context, domain.ModelID, string, []domain.Nick) (domain.Nick, error)
+	GeneratePersonaFn func(context.Context, domain.ModelID, api.PersonaRequest) (string, error)
 }
 
 // ListModels delegates to ListModelsFn or returns nil.
@@ -483,26 +482,6 @@ func (f *FakeAPI) GenerateNick(ctx context.Context, smallModel domain.ModelID, p
 	}
 
 	return api.NicknameResult{Nick: "fakenick"}, nil
-}
-
-// GeneratePersonaTemplates delegates to GeneratePersonaTemplatesFn or
-// returns one template. Adding a model refuses when the pool can supply
-// no persona, so a fake answering with nothing would stop every test
-// that puts a model in a channel. A test about an empty pool sets the
-// function and returns nothing from it.
-func (f *FakeAPI) GeneratePersonaTemplates(ctx context.Context, smallModel domain.ModelID) ([]domain.PersonaTemplate, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.GeneratePersonaTemplatesFn != nil {
-		return f.GeneratePersonaTemplatesFn(ctx, smallModel)
-	}
-
-	return []domain.PersonaTemplate{{
-		ID:          "fake-persona",
-		Description: "a terse reviewer",
-		Origin:      domain.PersonaGenerated,
-	}}, nil
 }
 
 // GeneratePersona delegates to GeneratePersonaFn or returns a fixed

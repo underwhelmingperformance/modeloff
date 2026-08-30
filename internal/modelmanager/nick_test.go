@@ -30,8 +30,8 @@ func newTestSession(t *testing.T, fx *managerFixture) *session.Session {
 
 // nickTestPersona is the persona these tests prepare with. Preparation
 // refuses without one, and what a nick test is about is the nick, so
-// every case here supplies the same literal and never draws from the
-// pool.
+// every case here supplies the same literal and none of them reaches
+// `GeneratePersona`.
 const nickTestPersona = "a terse reviewer"
 
 // toolsCatalogue returns a fake ListModels response listing modelID

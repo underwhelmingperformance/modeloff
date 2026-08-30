@@ -123,27 +123,3 @@ func (s ChatScreen) loadLiveModels() tea.Cmd {
 		return liveModelsLoadedMsg{models: options}
 	}
 }
-
-// ensurePersonaTemplates seeds the persona template pool in the background so the
-// next `--persona` tab-completion has something to offer. Best-
-// effort: a failure is logged and discarded, since the persona pool
-// is not required for any user-visible flow except completion.
-func (s ChatScreen) ensurePersonaTemplates() tea.Cmd {
-	if !s.mgr.HasAPIKey() {
-		return nil
-	}
-
-	return func() tea.Msg {
-		ctx := s.baseContext()
-
-		if err := s.mgr.EnsurePersonaTemplates(ctx); err != nil {
-			slog.Default().WarnContext(ctx, "ensure persona templates",
-				"component", "ui",
-				"screen", "chat",
-				"error", err,
-			)
-		}
-
-		return nil
-	}
-}

@@ -2,21 +2,6 @@ package domain
 
 import "time"
 
-// PersonaTemplateProvenance identifies the template copied into revision
-// zero. The description hash identifies the text that was copied, so an
-// operator can tell whether the pool row has been edited since, without
-// the mutable pool becoming authoritative for an existing instance.
-//
-// A lineage carries none of this when it was created before the columns
-// existed, when the persona was operator-supplied text, or when no
-// persona was available. The three are not distinguishable, so a reader
-// must not take an absent provenance for an absent template.
-type PersonaTemplateProvenance struct {
-	ID              string
-	Origin          PersonaOrigin
-	DescriptionHash string
-}
-
 // PersonaRevisionID identifies one revision of an instance's evolving
 // personality state.
 type PersonaRevisionID int64
@@ -116,7 +101,6 @@ const (
 type PersonaLineage struct {
 	InstanceID        InstanceID
 	Baseline          string
-	Template          *PersonaTemplateProvenance
 	CurrentRevisionID PersonaRevisionID
 	Checkpoint        ReflectionSequence
 	CreatedAt         time.Time

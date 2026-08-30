@@ -25,10 +25,6 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 		Nick: "Botty",
 		Lineage: domain.PersonaLineage{
 			InstanceID: "inst-botty", Baseline: "careful and curious",
-			Template: &domain.PersonaTemplateProvenance{
-				ID: "careful-reader", Origin: domain.PersonaUser,
-				DescriptionHash: "template-hash",
-			},
 			CurrentRevisionID: 4, Checkpoint: 12,
 		},
 		Revision: domain.PersonaRevision{
@@ -103,7 +99,6 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 				"Built from experiences: 7, 8\n" +
 				"Revision 3 said: careful and curious\n" +
 				"Reset baseline: careful and curious\n" +
-				"Template: careful-reader (user; sha256 template-hash)\n" +
 				"Experiences:\n- #7 [observation/high; sources 11, 12] Alice supplied a reproduction.\n" +
 				"- #8 [assertion by Alice/medium; sources 12] Alice said the migration is safe to re-run.\n" +
 				"Tendencies:\n- #9 [relationship with Alice/medium; evidence 7] Usually asks for evidence.\n" +
@@ -140,7 +135,6 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 			Text: "Persona for Botty reset: revision 1; checkpoint 12.\n" +
 				"Persona: careful and curious\n" +
 				"Reset baseline: careful and curious\n" +
-				"Template: not recorded\n" +
 				"Experiences: none\nTendencies: none\n" +
 				"Recent reflections: none\nRevision transitions: none",
 		},
@@ -182,7 +176,6 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 				"Persona: terse, and unbothered by that\n" +
 				"Revision 3 said: careful and curious\n" +
 				"Reset baseline: careful and curious\n" +
-				"Template: not recorded\n" +
 				"Experiences: none\nTendencies: none\n" +
 				"Recent reflections: none\n" +
 				"Revision transitions:\n- operator: 3 -> 5 at 2026-08-27T15:00:00Z",
@@ -232,7 +225,6 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 			Text: "Persona for Botty: revision 4; checkpoint 0.\n" +
 				"Persona: careful and curious\n" +
 				"Reset baseline: careful and curious\n" +
-				"Template: not recorded\n" +
 				"Experiences:\n" +
 				"- #8 [relationship with departed counterpart/low; sources 12] Alice preferred a shorter answer.\n" +
 				"Tendencies:\n- #9 [relationship with departed counterpart/low; evidence 7] Keep earlier trust bounded.\n" +

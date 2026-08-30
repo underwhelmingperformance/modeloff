@@ -177,16 +177,6 @@ func TestChannelEvent_JSON_round_trip(t *testing.T) {
 				At:     ts,
 			},
 		},
-		{
-			name: "persona templates list",
-			event: domain.PersonaTemplatesList{
-				Templates: []domain.PersonaTemplate{
-					{ID: "pirate", Description: "A salty sea dog", Origin: domain.PersonaUser},
-					{ID: "wizard", Description: "A wise old mage", Origin: domain.PersonaGenerated},
-				},
-				At: ts,
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -233,22 +223,21 @@ func TestPersistableEvent_partition(t *testing.T) {
 	}
 
 	persistable := map[string]domain.PersistableEvent{
-		"message":                domain.Message{},
-		"join":                   domain.Join{},
-		"part":                   domain.Part{},
-		"quit":                   domain.Quit{},
-		"topic change":           domain.TopicChange{},
-		"channel mode change":    domain.ChannelModeChange{},
-		"invited":                domain.Invited{},
-		"inviting":               domain.Inviting{},
-		"kicked":                 domain.Kicked{},
-		"nick change":            domain.NickChange{},
-		"topic info":             domain.TopicInfo{},
-		"whois":                  domain.Whois{},
-		"list reply":             domain.ListReply{},
-		"command error":          domain.CommandError{},
-		"system notice":          domain.SystemNotice{},
-		"persona templates list": domain.PersonaTemplatesList{},
+		"message":             domain.Message{},
+		"join":                domain.Join{},
+		"part":                domain.Part{},
+		"quit":                domain.Quit{},
+		"topic change":        domain.TopicChange{},
+		"channel mode change": domain.ChannelModeChange{},
+		"invited":             domain.Invited{},
+		"inviting":            domain.Inviting{},
+		"kicked":              domain.Kicked{},
+		"nick change":         domain.NickChange{},
+		"topic info":          domain.TopicInfo{},
+		"whois":               domain.Whois{},
+		"list reply":          domain.ListReply{},
+		"command error":       domain.CommandError{},
+		"system notice":       domain.SystemNotice{},
 	}
 
 	classify := func(e domain.PersistableEvent) classification {

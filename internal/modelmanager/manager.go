@@ -1,22 +1,21 @@
 // Package modelmanager owns the LLM-specific state. The session
 // router handles only IRC protocol state. This package owns the
-// OpenRouter [api.Client] and its rebuild factory, the persona pool,
-// the small-model id used for nick generation and persona seeding, the
-// cached supported-models catalogue, and the per-instance
+// OpenRouter [api.Client] and its rebuild factory, the small-model id
+// used for nick and persona generation, the cached supported-models
+// catalogue, and the per-instance
 // [modelclient.ModelClient] registry that implements
 // [session.ModelClientFactory].
 //
-// The manager owns both the data (api key, factory, catalogue,
-// persona templates) and the lifecycle (per-instance client construction and
-// detach). A [Manager] consumer reads the api client through a
-// getter so each model-dispatch turn picks up the latest handle
-// after a `SetAPIKey` rebuild; the registry's [modelclient.New]
-// call wires the getter into every attached client.
+// The manager owns both the data (api key, factory, catalogue) and the
+// lifecycle (per-instance client construction and detach). Each
+// attached model-client reads the api client through a getter, so a
+// dispatch turn picks up the latest handle after a `SetAPIKey` rebuild;
+// the registry's [modelclient.New] call gives the getter to every
+// client it constructs.
 package modelmanager
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -56,10 +55,6 @@ type Store interface {
 	DeleteMemoriesByInstance(ctx context.Context, id domain.InstanceID) error
 	DeletePendingMemoryDeletion(ctx context.Context, id domain.InstanceID) error
 
-	ListPersonaTemplates(ctx context.Context) ([]domain.PersonaTemplate, error)
-	SavePersonaTemplate(ctx context.Context, p domain.PersonaTemplate) error
-	DeletePersonaTemplatesByOrigin(ctx context.Context, origin domain.PersonaOrigin) error
-	ReplaceGeneratedPersonaTemplates(ctx context.Context, templates []domain.PersonaTemplate) error
 	AppendReflectionEvents(
 		ctx context.Context,
 		instanceID domain.InstanceID,
@@ -148,8 +143,8 @@ func defaultPacer() *modelclient.Pacer {
 }
 
 // Manager is the LLM-side coordinator. It owns the OpenRouter
-// [api.Client], the rebuild factory, the persona pool, the small-
-// model id, the catalogue cache, and the per-instance
+// [api.Client], the rebuild factory, the small-model id, the catalogue
+// cache, and the per-instance
 // [modelclient.ModelClient] registry. It satisfies
 // [session.ModelClientFactory] via [Manager.Attach], [Manager.Detach]
 // and [Manager.Forget] so a single value passes to `session.New`.
@@ -796,15 +791,22 @@ func (m *Manager) nickIsTaken(ctx context.Context, sess *session.Session, nick d
 
 // PrepareInstance resolves the persona and unique nick for a new
 // model instance. The session's `AddModel` handler calls this before
-// attaching the constructed instance to a channel. A persona the pool
-// could not supply fails the command: the persona becomes revision zero
-// of the instance's lineage, which every later revision is a change to
-// and which a reset restores, and nothing after ADDMODEL supplies one.
+// attaching the constructed instance to a channel. The command fails
+// when the requester supplied no persona and none could be generated:
+// the persona becomes revision zero of the instance's lineage, which
+// every later revision is a change to and which a reset restores, and
+// nothing after ADDMODEL writes revision zero.
 // Nick generation is the part that degrades: the deterministic fallback
 // gives the instance a usable nick, and the warning the handler answers
 // with a server notice says so. The supplied session is consulted for
 // nick-uniqueness resolution so the manager does not hold a
 // back-reference.
+//
+// A requested persona is trimmed, so the description this returns, and
+// therefore the description the store keeps and the prompt renders,
+// has no leading or trailing whitespace. A requested persona that
+// is whitespace alone trims to the empty string, which is how a persona
+// is recognised as omitted, so the manager generates one.
 func (m *Manager) PrepareInstance(
 	ctx context.Context,
 	sess *session.Session,
@@ -813,17 +815,14 @@ func (m *Manager) PrepareInstance(
 ) (session.PreparedInstance, error) {
 	logger := slog.Default().With("component", "modelmanager", "model_id", modelID)
 
-	resolvedPersona, template, assigned, err := m.resolvePersona(ctx, persona)
-	if err != nil {
-		return session.PreparedInstance{}, err
-	}
+	prepared := session.PreparedInstance{Persona: strings.TrimSpace(persona)}
 
-	prepared := session.PreparedInstance{
-		Persona: resolvedPersona, PersonaTemplate: template,
-	}
-	if assigned {
+	// Run [domain.ValidatePersona] over a requested description before
+	// the catalogue lookup below, so one the server would refuse
+	// reaches no upstream call.
+	if prepared.Persona != "" {
 		if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
-			return prepared, domain.ErroneousPersonaError{Reason: reason, At: m.now()}
+			return session.PreparedInstance{}, domain.ErroneousPersonaError{Reason: reason, At: m.now()}
 		}
 	}
 
@@ -831,32 +830,18 @@ func (m *Manager) PrepareInstance(
 		return session.PreparedInstance{}, err
 	}
 
-	if !assigned {
-		// Topping the pool up is a no-op unless it is empty, so a
-		// failure here matters only when the draw then finds nothing.
-		// Reporting both says what went wrong as well as what it cost.
-		generateErr := m.EnsurePersonaTemplates(ctx)
-
-		p, err := m.RandomPersonaTemplate(ctx)
+	if prepared.Persona == "" {
+		generated, err := m.generatePersona(ctx, sess)
 		if err != nil {
-			if generateErr != nil {
-				err = fmt.Errorf("%w: %w", generateErr, err)
-			}
-
-			return prepared, fmt.Errorf("assign a persona to %s: %w", modelID, err)
+			return session.PreparedInstance{}, fmt.Errorf("assign a persona to %s: %w", modelID, err)
 		}
 
-		prepared.Persona = p.Description
-		prepared.PersonaTemplate = personaTemplateProvenance(p)
-	}
-
-	if reason := domain.ValidatePersona(prepared.Persona); reason != domain.PersonaAccepted {
-		return prepared, domain.ErroneousPersonaError{Reason: reason, At: m.now()}
+		prepared.Persona = generated
 	}
 
 	nick, err := m.generateUniqueNick(ctx, sess, modelID, prepared.Persona, logger)
 	if err != nil {
-		return prepared, err
+		return session.PreparedInstance{}, err
 	}
 
 	prepared.Nick = nick.Nick
@@ -869,42 +854,88 @@ func (m *Manager) PrepareInstance(
 	return prepared, nil
 }
 
-// resolvePersona copies a persona template when requested names one.
-// Text that identifies no template is the persona itself. Surrounding
-// whitespace is dropped before either reading: a persona is prose bound
-// for a prompt, and padding on a template id would otherwise make the
-// id miss and be taken as a two-word character the instance keeps for
-// good.
-func (m *Manager) resolvePersona(
-	ctx context.Context,
-	requested string,
-) (string, *domain.PersonaTemplateProvenance, bool, error) {
-	requested = strings.TrimSpace(requested)
-	if requested == "" {
-		return "", nil, false, nil
+// maxPersonaGenerationAttempts caps how many times the small model is
+// asked for a persona before [Manager.generatePersona] gives up. Each
+// retry adds the refused description and the reason it was refused to
+// the next request.
+const maxPersonaGenerationAttempts = 3
+
+// generatePersona asks the small model to invent a character for the
+// instance being added, and returns the first non-empty description
+// [domain.ValidatePersona] accepts. A failure here fails ADDMODEL,
+// because the description becomes revision zero of the instance's
+// lineage and nothing after ADDMODEL writes revision zero.
+//
+// An empty description is refused here although `ValidatePersona`
+// accepts one. Accepting it is what lets `PrepareInstance` recognise an
+// empty requested persona as one the requester omitted, and an instance
+// admitted on an empty generated description would hold an empty
+// revision zero and an empty reset baseline.
+func (m *Manager) generatePersona(ctx context.Context, sess *session.Session) (string, error) {
+	client, _ := m.snapshotAPI()
+	if client == nil {
+		return "", fmt.Errorf("generate persona: %w", api.ErrClientNotConfigured)
 	}
 
-	templates, err := m.store.ListPersonaTemplates(ctx)
-	if err != nil {
-		return "", nil, false, fmt.Errorf("resolve persona %q: %w", requested, err)
+	req := api.PersonaRequest{Present: m.presentPersonas(ctx, sess)}
+
+	for range maxPersonaGenerationAttempts {
+		description, err := client.GeneratePersona(ctx, m.SmallModel(), req)
+		if err != nil {
+			return "", fmt.Errorf("generate persona: %w", err)
+		}
+
+		description = strings.TrimSpace(description)
+
+		refusal := "That description was empty. Write one."
+		if reason := domain.ValidatePersona(description); reason != domain.PersonaAccepted {
+			refusal = fmt.Sprintf("That description was refused: %s. Write a different one.", reason)
+		} else if description != "" {
+			return description, nil
+		}
+
+		req.Rejected = append(req.Rejected, api.RejectedPersona{
+			Description: description,
+			Reason:      refusal,
+		})
 	}
 
-	for _, template := range templates {
-		if template.ID == requested {
-			return template.Description, personaTemplateProvenance(template), true, nil
+	return "", fmt.Errorf("generate persona: %d descriptions were refused", maxPersonaGenerationAttempts)
+}
+
+// presentPersonas returns the current description of every connected
+// model instance whose persona snapshot the store returns and whose
+// description is not empty. The prompt asks for a character none of
+// these descriptions already describes, and the generated description
+// is not compared with them afterwards. A description left out is one
+// the prompt does not mention, so a snapshot the store cannot return
+// is logged and the ADDMODEL goes on.
+//
+// Only model instances are read. The user is a connected client with a
+// row in the directory and no persona lineage, so asking for its
+// description would warn about a database that is intact.
+func (m *Manager) presentPersonas(ctx context.Context, sess *session.Session) []string {
+	var present []string
+
+	for entry := range sess.Instances(ctx) {
+		if entry.ModelID == "" {
+			continue
+		}
+
+		snapshot, err := m.store.PersonaSnapshot(ctx, entry.InstanceID)
+		if err != nil {
+			slog.Default().WarnContext(ctx, "read a connected instance's persona",
+				"component", "modelmanager", "instance_id", entry.InstanceID, "error", err)
+
+			continue
+		}
+
+		if snapshot.Revision.Description != "" {
+			present = append(present, snapshot.Revision.Description)
 		}
 	}
 
-	return requested, nil, true, nil
-}
-
-func personaTemplateProvenance(persona domain.PersonaTemplate) *domain.PersonaTemplateProvenance {
-	hash := sha256.Sum256([]byte(persona.Description))
-
-	return &domain.PersonaTemplateProvenance{
-		ID: persona.ID, Origin: persona.Origin,
-		DescriptionHash: fmt.Sprintf("%x", hash),
-	}
+	return present
 }
 
 // Start attaches the boot-time model-instance set to sess. Each

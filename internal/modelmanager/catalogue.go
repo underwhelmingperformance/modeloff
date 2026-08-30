@@ -106,7 +106,7 @@ func (m *Manager) EnsureToolCapableModel(ctx context.Context, modelID domain.Mod
 // EnsureStructuredOutputModel validates that the given model
 // supports strict JSON-schema structured outputs, lazy-loading the
 // catalogue if needed. This is the capability the small model's own
-// calls depend on: GenerateNick and GeneratePersonaTemplates both set a
+// calls depend on: GenerateNick and GeneratePersona both set a
 // strict `json_schema` ResponseFormat and never set Tools, so a
 // model missing structured-output support validates but then fails
 // every nick or persona call upstream. Returns

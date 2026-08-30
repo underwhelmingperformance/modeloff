@@ -81,14 +81,6 @@ func (stubAPI) GeneratePersona(context.Context, domain.ModelID, api.PersonaReque
 	return "a terse reviewer", nil
 }
 
-func (stubAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
-	return []domain.PersonaTemplate{{
-		ID:          "fake-persona",
-		Description: "a terse reviewer",
-		Origin:      domain.PersonaGenerated,
-	}}, nil
-}
-
 func newTestSession(t *testing.T) (*session.Session, *modelmanager.Manager, *userclient.UserClient) {
 	t.Helper()
 
@@ -152,9 +144,7 @@ func TestChatScreen_Commands_specs_are_complete(t *testing.T) {
 		{Name: "me", Help: "Send an action message (e.g. /me waves)."},
 		{Name: "whois", Help: "Show details about a model instance."},
 		{Name: "config", Help: "Update runtime configuration."},
-		{Name: "templates", Help: "List the persona templates available for new instances."},
 		{Name: "persona", Help: "Show, write, reset or roll back an instance's persona."},
-		{Name: "regenerate-templates", Help: "Replace the AI-written persona templates."},
 		{Name: "help", Help: "Show available commands."},
 		{Name: "clear", Help: "Clear the current window."},
 		{Name: "poke", Help: "Poke idle channels now to prompt model activity."},
@@ -189,9 +179,7 @@ func TestChatScreen_Commands_exposes_chat_commands(t *testing.T) {
 		"me",
 		"whois",
 		"config",
-		"templates",
 		"persona",
-		"regenerate-templates",
 		"help",
 		"clear",
 		"poke",

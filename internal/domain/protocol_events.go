@@ -32,25 +32,24 @@ type ModelClientEvent interface {
 // Wire-shaped events delivered on the protocol bus: channel activity,
 // issuer replies, and the protocol-only `UserModeChange`,
 // `ListEnd` and `JoinedChannel`.
-func (Message) isProtocolEvent()              {}
-func (Join) isProtocolEvent()                 {}
-func (Part) isProtocolEvent()                 {}
-func (Quit) isProtocolEvent()                 {}
-func (TopicChange) isProtocolEvent()          {}
-func (ChannelModeChange) isProtocolEvent()    {}
-func (UserModeChange) isProtocolEvent()       {}
-func (Invited) isProtocolEvent()              {}
-func (Inviting) isProtocolEvent()             {}
-func (Kicked) isProtocolEvent()               {}
-func (NickChange) isProtocolEvent()           {}
-func (TopicInfo) isProtocolEvent()            {}
-func (Whois) isProtocolEvent()                {}
-func (ListReply) isProtocolEvent()            {}
-func (ListEnd) isProtocolEvent()              {}
-func (JoinedChannel) isProtocolEvent()        {}
-func (CommandError) isProtocolEvent()         {}
-func (SystemNotice) isProtocolEvent()         {}
-func (PersonaTemplatesList) isProtocolEvent() {}
+func (Message) isProtocolEvent()           {}
+func (Join) isProtocolEvent()              {}
+func (Part) isProtocolEvent()              {}
+func (Quit) isProtocolEvent()              {}
+func (TopicChange) isProtocolEvent()       {}
+func (ChannelModeChange) isProtocolEvent() {}
+func (UserModeChange) isProtocolEvent()    {}
+func (Invited) isProtocolEvent()           {}
+func (Inviting) isProtocolEvent()          {}
+func (Kicked) isProtocolEvent()            {}
+func (NickChange) isProtocolEvent()        {}
+func (TopicInfo) isProtocolEvent()         {}
+func (Whois) isProtocolEvent()             {}
+func (ListReply) isProtocolEvent()         {}
+func (ListEnd) isProtocolEvent()           {}
+func (JoinedChannel) isProtocolEvent()     {}
+func (CommandError) isProtocolEvent()      {}
+func (SystemNotice) isProtocolEvent()      {}
 
 // Pure-live events. Order matches the seal block in `events.go`.
 func (PokeEvent) isProtocolEvent()             {}

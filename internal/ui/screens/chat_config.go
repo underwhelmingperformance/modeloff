@@ -15,13 +15,15 @@ import (
 	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 )
 
-// routeConfigResults answers the results a `/config` change reports,
-// plus the persona-pool results `/templates` and
-// `/regenerate-templates` share with `/config persona`. Each renders a
-// confirmation line in the window the command was issued from. Three
-// of the settings are ones the running screen reads for itself, the
-// API key, the highlight words and the timestamp format, and those
-// also republish the state they moved.
+// routeConfigResults handles the result a `/config` change reports,
+// and the one `/persona` reports. Each renders into the window the
+// command was issued from: a line naming the setting's new value for a
+// `/config` change, and the persona diagnostics [formatPersonaResult]
+// builds for `/persona`. Three of the settings reach the running
+// screen as well as the store: setting the API key or the highlight
+// words updates what the screen holds, and setting the API key or the
+// timestamp format sends the components that render from it a message
+// of their own.
 func (s ChatScreen) routeConfigResults(
 	issuingWindow domain.Window,
 	msg tea.Msg,
@@ -58,27 +60,6 @@ func (s ChatScreen) routeConfigResults(
 
 	case chatcmd.TimestampFormatSetResult:
 		return s, s.handleTimestampFormatSet(issuingWindow, msg), true
-
-	case chatcmd.PersonaTemplatesResult:
-		templatesList := domain.PersonaTemplatesList{
-			Templates: msg,
-			At:        time.Now(),
-		}
-
-		return s, tea.Batch(
-			s.logReplyEvent(issuingWindow, templatesList),
-			s.recordReply(nil, templatesList),
-		), true
-
-	case chatcmd.PersonaTemplatesRegeneratedResult:
-		return s, s.notice(issuingWindow,
-			fmt.Sprintf("Replaced %d generated persona templates.", msg.Count)), true
-
-	case chatcmd.PersonaTemplateSavedResult:
-		return s, s.notice(issuingWindow, fmt.Sprintf("Persona %s saved.", msg.ID)), true
-
-	case chatcmd.PersonaTemplatesResetResult:
-		return s, s.notice(issuingWindow, fmt.Sprintf("Removed %d user-defined persona(s).", msg.Count)), true
 
 	case chatcmd.PersonaResult:
 		return s, s.notice(issuingWindow, formatPersonaResult(msg)), true
@@ -137,20 +118,6 @@ func formatPersonaResult(result chatcmd.PersonaResult) string {
 		)
 	}
 	fmt.Fprintf(&text, "\nReset baseline: %s", inspection.Lineage.Baseline)
-	if inspection.Lineage.Template == nil {
-		// Not "none". A null provenance means the lineage predates the
-		// column, or was written from operator-supplied text, or had no
-		// persona available, and the row does not say which. An instance
-		// migrated from before the column may well have come from a pool
-		// row, so claiming it started from nothing would be false.
-		text.WriteString("\nTemplate: not recorded")
-	} else {
-		fmt.Fprintf(
-			&text, "\nTemplate: %s (%s; sha256 %s)",
-			inspection.Lineage.Template.ID, inspection.Lineage.Template.Origin,
-			inspection.Lineage.Template.DescriptionHash,
-		)
-	}
 
 	text.WriteString("\nExperiences:")
 	if len(inspection.Experiences) == 0 {
@@ -345,7 +312,6 @@ func (s ChatScreen) handleAPIKeySet(
 		return s, tea.Batch(
 			rebind,
 			s.loadLiveModels(),
-			s.ensurePersonaTemplates(),
 			msgCmd(components.SetPlaceholderMsg{
 				Text: s.checklist.text(),
 			}),
@@ -356,7 +322,6 @@ func (s ChatScreen) handleAPIKeySet(
 		rebind,
 		s.notice(issuingWindow, text),
 		s.loadLiveModels(),
-		s.ensurePersonaTemplates(),
 	)
 }
 

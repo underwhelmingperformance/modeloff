@@ -60,27 +60,9 @@ func withoutAt(ev domain.PersistableEvent) domain.PersistableEvent {
 	case domain.CommandError:
 		e.At = time.Time{}
 		return e
-	case domain.PersonaTemplatesList:
-		e.At = time.Time{}
-		return e
 	default:
 		return ev
 	}
-}
-
-func TestChatScreen_PersonaTemplatesList_persists_to_user_reply_log(t *testing.T) {
-	f := newReplyLogFixture(t)
-
-	templates := []domain.PersonaTemplate{
-		{ID: "p1", Description: "first", Origin: domain.PersonaGenerated},
-	}
-
-	_, cmd := f.screen.Update(chatcmd.PersonaTemplatesResult(templates))
-	collectMsgs(cmd)
-
-	require.Equal(t, []domain.PersistableEvent{
-		domain.PersonaTemplatesList{Templates: templates},
-	}, userReplies(t, f.store))
 }
 
 func TestChatScreen_CommandError_persists_to_user_reply_log(t *testing.T) {

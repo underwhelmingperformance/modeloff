@@ -369,14 +369,6 @@ func (toolTestAPI) GeneratePersona(context.Context, domain.ModelID, api.PersonaR
 	return "a terse reviewer", nil
 }
 
-func (toolTestAPI) GeneratePersonaTemplates(context.Context, domain.ModelID) ([]domain.PersonaTemplate, error) {
-	return []domain.PersonaTemplate{{
-		ID:          "fake-persona",
-		Description: "a terse reviewer",
-		Origin:      domain.PersonaGenerated,
-	}}, nil
-}
-
 func newToolTestSession(t *testing.T) (*session.Session, *userclient.UserClient) {
 	t.Helper()
 

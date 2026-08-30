@@ -175,30 +175,6 @@ type TimestampFormatSetResult struct {
 	Reset  bool
 }
 
-// PersonaTemplatesResult is the chat-screen-side dispatch marker
-// for a `/templates` reply. The named-slice shape keeps the
-// result distinguishable from a bare `[]domain.PersonaTemplate` in a
-// type switch.
-type PersonaTemplatesResult []domain.PersonaTemplate
-
-// PersonaTemplatesRegeneratedResult reports how many generated
-// templates were replaced.
-type PersonaTemplatesRegeneratedResult struct {
-	Count int
-}
-
-// PersonaTemplateSavedResult signals that a persona template was
-// written to the pool.
-type PersonaTemplateSavedResult struct {
-	ID string
-}
-
-// PersonaTemplatesResetResult reports how many operator-written persona
-// templates were removed.
-type PersonaTemplatesResetResult struct {
-	Count int
-}
-
 // PersonaAction identifies the operation reported by a [PersonaResult].
 type PersonaAction string
 

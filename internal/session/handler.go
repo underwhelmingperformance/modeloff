@@ -878,8 +878,7 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, guard p
 		}
 
 		registered, registerErr := s.registerModelAs(
-			ctx, cmd.Channel, cmd.Model, prepared.Nick,
-			prepared.Persona, prepared.PersonaTemplate,
+			ctx, cmd.Channel, cmd.Model, prepared.Nick, prepared.Persona,
 		)
 		if registerErr != nil {
 			return commandResult(registerErr)
@@ -930,11 +929,13 @@ func (s *Session) handleAddModel(ctx context.Context, c protocol.Client, guard p
 // preparationNotices turns each warning
 // [ModelClientFactory.PrepareInstance] reported into a
 // [domain.SystemNotice] on the `ADDMODEL` reply, addressed to the
-// channel the command was issued from. Without them a preparation
-// that quietly fell short, such as a persona pool the small model
-// could not supply, reaches only the log, and the operator sees a
-// model join with none of the character they asked for and nothing
-// to say why.
+// channel the command was issued from. A warning names a fallback the
+// preparation took: today the only one is a nick derived from the
+// model id after the small model could not supply a usable one. Every
+// suggestion may have been refused by the nick grammar or already
+// claimed, or the request may have failed outright. The operator sees
+// the nick either way, in the JOIN; without these notices the reason
+// the fallback was taken reaches the log alone.
 //
 // The notices are point-to-point replies to the issuer, so they are
 // filed to its reply log exactly as a refused INVITE's notice is,

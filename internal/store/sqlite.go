@@ -2154,6 +2154,69 @@ func (s *SQLiteStore) DMEventsBefore(ctx context.Context, self, peer domain.Inst
 	return events, err
 }
 
+// LatestEventID implements Store. The second result is false when the
+// channel has no events.
+func (s *SQLiteStore) LatestEventID(ctx context.Context, ch domain.ChannelName) (int64, bool, error) {
+	var (
+		id    int64
+		found bool
+	)
+
+	err := s.inSpan(ctx, "store.sqlite.latest_event_id",
+		[]attribute.KeyValue{attribute.String(observability.AttrChannel, string(ch))},
+		func(ctx context.Context, _ trace.Span) error {
+			got, err := queryRow(ctx, s.db,
+				`SELECT max(id) FROM events WHERE channel = ?`,
+				[]any{ch}, nil, nullableColumn[int64]())
+			if err != nil {
+				return err
+			}
+
+			if got != nil {
+				id, found = *got, true
+			}
+
+			return nil
+		})
+
+	return id, found, err
+}
+
+// LatestDMEventID implements Store, over both directions of the thread
+// [SQLiteStore.DMEventsBefore] reads. The second result is false when
+// the thread is empty.
+func (s *SQLiteStore) LatestDMEventID(ctx context.Context, self, peer domain.InstanceID) (int64, bool, error) {
+	var (
+		id    int64
+		found bool
+	)
+
+	err := s.inSpan(ctx, "store.sqlite.latest_dm_event_id",
+		[]attribute.KeyValue{
+			attribute.String(observability.AttrInstanceID, string(self)),
+			attribute.String("modeloff.dm.peer_id", string(peer)),
+		},
+		func(ctx context.Context, _ trace.Span) error {
+			got, err := queryRow(ctx, s.db, `SELECT max(id) FROM events WHERE
+					(channel = ? AND source_instance_id = ?)
+					OR
+					(channel = ? AND source_instance_id = ?)`,
+				[]any{string(peer), string(self), string(self), string(peer)},
+				nil, nullableColumn[int64]())
+			if err != nil {
+				return err
+			}
+
+			if got != nil {
+				id, found = *got, true
+			}
+
+			return nil
+		})
+
+	return id, found, err
+}
+
 // EventsFrom implements Store.
 func (s *SQLiteStore) EventsFrom(ctx context.Context, ch domain.ChannelName, from *int64, n int) ([]domain.StoredEvent, error) {
 	var events []domain.StoredEvent
@@ -2346,28 +2409,29 @@ func (s *SQLiteStore) ResolveNick(ctx context.Context, nick domain.Nick) (*domai
 // `instances` row. Registering the handle in the canonical map
 // ensures a subsequent `GetInstanceByID` returns the same pointer.
 func (s *SQLiteStore) SaveInstance(ctx context.Context, inst *domain.Instance) error {
-	return s.saveInstance(ctx, inst, nil)
+	return s.saveInstance(ctx, inst, time.Time{})
 }
 
 // SaveModelInstance records a newly prepared model instance, its persona
-// lineage and its revision zero in one transaction, so a failure leaves
-// neither the instance nor a lineage without one.
+// lineage and its revision zero in one transaction, which either
+// commits all three rows or commits none of them. `createdAt` stamps
+// the lineage and revision zero.
 func (s *SQLiteStore) SaveModelInstance(
 	ctx context.Context,
 	inst *domain.Instance,
-	foundation PersonaFoundation,
+	createdAt time.Time,
 ) error {
 	if !inst.IsModel() {
 		return errors.New("save model instance: instance has no model")
 	}
 
-	return s.saveInstance(ctx, inst, &foundation)
+	return s.saveInstance(ctx, inst, createdAt)
 }
 
 func (s *SQLiteStore) saveInstance(
 	ctx context.Context,
 	inst *domain.Instance,
-	foundation *PersonaFoundation,
+	createdAt time.Time,
 ) error {
 	// One snapshot answers every read this save makes: the span
 	// attribute, the INSERT columns, the marshaled data blob and the
@@ -2407,7 +2471,7 @@ func (s *SQLiteStore) saveInstance(
 
 			if saved.IsModel() {
 				if err := ensurePersonaLineageTx(
-					ctx, tx, saved.ID(), saved.Persona(), foundation,
+					ctx, tx, saved.ID(), saved.Persona(), createdAt,
 				); err != nil {
 					return err
 				}
@@ -3045,7 +3109,6 @@ func (s *SQLiteStore) Reset(ctx context.Context) error {
 			`DELETE FROM pending_memory_deletions`,
 			`DELETE FROM instances`,
 			`DELETE FROM memories`,
-			`DELETE FROM persona_templates`,
 			`DELETE FROM state`,
 			`DELETE FROM autojoin`,
 		} {
@@ -3137,6 +3200,22 @@ func scalarColumn[T any]() func(rowScanner) (T, error) {
 		var v T
 		if err := r.Scan(&v); err != nil {
 			return v, err
+		}
+
+		return v, nil
+	}
+}
+
+// nullableColumn is [scalarColumn] for a column that can be NULL,
+// returning nil when the scanned column is NULL. An aggregate over no
+// rows is the case here: `SELECT max(id)` returns one row holding NULL,
+// so a query using it reports an empty set as a nil value and never as
+// [sql.ErrNoRows].
+func nullableColumn[T any]() func(rowScanner) (*T, error) {
+	return func(r rowScanner) (*T, error) {
+		var v *T
+		if err := r.Scan(&v); err != nil {
+			return nil, err
 		}
 
 		return v, nil

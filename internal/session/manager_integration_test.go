@@ -71,7 +71,6 @@ type transientDMHistoryStore struct {
 
 type personaRegistrationState struct {
 	Baseline  string
-	Template  *domain.PersonaTemplateProvenance
 	CreatedAt bool
 }
 
@@ -232,14 +231,6 @@ func normaliseLogTime(t *testing.T, record map[string]any, startedAt, finishedAt
 	delete(record, "time")
 }
 
-func testPersonaTemplates() []domain.PersonaTemplate {
-	return []domain.PersonaTemplate{
-		{ID: "grumpy-sysadmin", Description: "Runs FreeBSD on everything.", Origin: domain.PersonaGenerated},
-		{ID: "lurker-larry", Description: "Only corrects RFC citations.", Origin: domain.PersonaGenerated},
-		{ID: "retro-gamer", Description: "Speedruns Doom on a toaster.", Origin: domain.PersonaGenerated},
-	}
-}
-
 // newTestSessionWithManager constructs a `*session.Session` backed
 // by a real `*modelmanager.Manager`. The manager's `PrepareInstance`
 // runs the full persona arbitration and unique-nick loop against
@@ -344,35 +335,40 @@ func singleResponseMessage(t *testing.T, response protocol.Response) domain.Mess
 	return message
 }
 
-func TestSession_AddModel_resolves_a_long_persona_template_ID_before_validation(t *testing.T) {
+// TestSession_AddModel_records_the_requested_persona_as_revision_zero
+// follows an operator-supplied description all the way to the lineage
+// it becomes the baseline of. That baseline is what a reset restores
+// and what every later revision is a change to, and ADDMODEL is the
+// only thing that writes it.
+func TestSession_AddModel_records_the_requested_persona_as_revision_zero(t *testing.T) {
 	fake := &apitest.Fake{
 		GenerateNickFn: func(_ context.Context, _ domain.ModelID, _ string, _ []domain.Nick) (domain.Nick, error) {
 			return "careful-reader", nil
 		},
+		GeneratePersonaFn: func(_ context.Context, _ domain.ModelID, _ api.PersonaRequest) (string, error) {
+			t.Fatal("a persona was requested although the operator supplied one")
+			return "", nil
+		},
 	}
 
-	_, eventStore, mgr, user := newTestSessionWithManager(t, fake, "")
+	_, eventStore, _, user := newTestSessionWithManager(t, fake, "")
 	ctx := t.Context()
-	personaID := strings.Repeat("template-", 51)
-	require.NoError(t, mgr.SetPersonaTemplate(ctx, personaID, "checks the source before reaching a conclusion"))
 
 	seedChannel(t, user, "#dev")
-	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "test/model", personaID))
+	require.NoError(t, addModelViaWire(
+		ctx, t, user, "#dev", "test/model",
+		"checks the source before reaching a conclusion",
+	))
 
 	inst, err := eventStore.ResolveNick(ctx, "careful-reader")
 	require.NoError(t, err)
 	state, err := eventStore.PersonaLineage(ctx, inst.ID())
 	require.NoError(t, err)
 	require.Equal(t, personaRegistrationState{
-		Baseline: "checks the source before reaching a conclusion",
-		Template: &domain.PersonaTemplateProvenance{
-			ID: personaID, Origin: domain.PersonaUser,
-			DescriptionHash: "da042dab335afd71b1dbd0c857aa0dd5f87028ba80412154adcc180729697204",
-		},
+		Baseline:  "checks the source before reaching a conclusion",
 		CreatedAt: true,
 	}, personaRegistrationState{
-		Baseline: state.Baseline, Template: state.Template,
-		CreatedAt: !state.CreatedAt.IsZero(),
+		Baseline: state.Baseline, CreatedAt: !state.CreatedAt.IsZero(),
 	})
 }
 
@@ -1006,11 +1002,11 @@ func writeMemoryToolCall(t *testing.T, key, content string) api.CompletionResult
 	}}
 }
 
-func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
+func TestSession_Invite_without_persona_generates_one(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := &apitest.Fake{
-			GeneratePersonaTemplatesFn: func(_ context.Context, _ domain.ModelID) ([]domain.PersonaTemplate, error) {
-				return testPersonaTemplates(), nil
+			GeneratePersonaFn: func(_ context.Context, _ domain.ModelID, _ api.PersonaRequest) (string, error) {
+				return "runs FreeBSD on everything", nil
 			},
 		}
 
@@ -1037,14 +1033,40 @@ func TestSession_Invite_without_persona_assigns_from_pool(t *testing.T) {
 			},
 		}, collectUserEvents(user))
 
-		descriptions := make(map[string]bool)
-		for _, p := range testPersonaTemplates() {
-			descriptions[p.Description] = true
-		}
-
-		require.True(t, descriptions[inst.Persona()],
-			"assigned persona %q not in pool", inst.Persona())
+		require.Equal(t, "runs FreeBSD on everything", inst.Persona())
 	})
+}
+
+// TestSession_AddModel_sends_the_generator_model_personas_alone pins
+// which of the connected clients the generation request describes.
+// The user is a connected client with a directory row and no persona
+// lineage, so its description is left out of the request and reading it
+// would warn about an intact database. A connected model whose stored
+// snapshot holds a non-empty description does have that description
+// sent, which is what the prompt asks the new character to differ from.
+func TestSession_AddModel_sends_the_generator_model_personas_alone(t *testing.T) {
+	var requests []api.PersonaRequest
+	descriptions := []string{"runs FreeBSD on everything", "only corrects RFC citations"}
+	fake := &apitest.Fake{
+		GeneratePersonaFn: func(_ context.Context, _ domain.ModelID, req api.PersonaRequest) (string, error) {
+			requests = append(requests, req)
+
+			return descriptions[len(requests)-1], nil
+		},
+	}
+
+	_, _, _, user := newTestSessionWithManager(t, fake, "")
+	ctx := t.Context()
+
+	seedChannel(t, user, "#dev")
+
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-haiku", ""))
+	require.NoError(t, addModelViaWire(ctx, t, user, "#dev", "anthropic/claude-3-sonnet", ""))
+
+	require.Equal(t, []api.PersonaRequest{
+		{},
+		{Present: []string{"runs FreeBSD on everything"}},
+	}, requests)
 }
 
 func TestSession_AddModel_short_circuits_after_ListModels_failure(t *testing.T) {
