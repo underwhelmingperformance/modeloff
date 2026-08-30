@@ -1693,33 +1693,107 @@ The UI works _with_ the Bubble Tea framework and communicates with Tea messages
 and commands. It does not work around this.
 
 Components must ALWAYS render responsively in the available space. There are
-NEVER hardcoded dimensions. For this to work, models need to know their size. So
-our models have an interface of:
+NEVER hardcoded dimensions. For this to work, components need to know the space
+they have been given, so `ui.Component` is:
 
 ```go
-type Model interface {
-    // Init is called when the model is first created. It can return an initial
-    // command to run.
+type Component interface {
+    // Init returns any command the component needs when it is first attached.
     Init() tea.Cmd
 
-    // Update is called when a message is sent to the model. It returns the
-    // updated model and an optional command to run.
-    Update(msg tea.Msg) (Model, tea.Cmd)
+    // Update handles a message and returns the replacement component and any
+    // command it produced.
+    Update(msg tea.Msg) (Component, tea.Cmd)
 
-    // View returns the string representation of the model, which will be
-    // rendered in the UI.
-    View(width, height int) string
+    // Draw renders the component into the area on a shared screen buffer.
+    Draw(screen uv.Screen, area uv.Rectangle)
 }
 ```
 
-which is almost identical to the standard Bubble Tea interface, except the
-`View` method takes the available width and height as parameters. This way, we
-can ensure that all models render responsively. The very root model keeps track
-of the application's overall size and passes it down to all child models.
+`Init` and `Update` are Bubble Tea's, narrowed to this interface from
+`tea.Model`. `Draw` replaces `View`: a component writes cells into a rectangle
+of a buffer its parent owns, and returns no string for its parent to place.
+`Root` is the only `tea.Model`, and it renders the whole tree into one
+`lipgloss.Canvas` per frame.
 
-With this, and with good use of `lipgloss` utilities like `Height`, `Width`, to
-to calculate actual rendered dimensions, we can ensure that the UI renders
-properly at _any_ size.
+A component draws into a rectangle its parent chooses and passes to it, so
+placement is the parent's decision, and an overlay is a rectangle drawn after
+the content beneath it. Sizes reach a component two ways, and both
+have to agree. `ui.BoundsMsg` delivers the rectangle down the Update path, where
+a component stores it for mouse hit testing; `Draw` is passed the same rectangle
+on the render path.
+
+Splitting a rectangle among children is `ultraviolet/layout`'s job, not
+arithmetic:
+
+```go
+var header, body, footer uv.Rectangle
+uvlayout.Vertical(
+    uvlayout.Len(headerRows),
+    uvlayout.Fill(1),
+    uvlayout.Len(footerRows),
+).Split(bounds).Assign(&header, &body, &footer)
+```
+
+It is a constraint solver, so `Len`, `Percent`, `Ratio`, `Fill`, `Min` and
+`Max` compose. Calling it every frame is what it is built for: it caches 500
+solved layouts, chosen to hold one entry per row and column of a typical
+terminal with headroom to spare. Priority runs between constraint kinds, not
+between two constraints of one kind, so two competing `Len`s are resolved by
+clamping them before the split, and not by ordering them.
+
+### Layers
+
+An overlay is a `ui.Layer` on a `ui.LayerStack`, which any component may hold;
+it is not a property of the root. The stack draws its layers back to front, so
+draw order is the z-order and there is no z field. Each component draws its
+own content and then its layers, and a component higher in the tree draws its
+layers after everything below it, which is where absolute ordering comes from.
+
+A layer is either modal or able to decline a key, and the constructors are what
+make that a property of the value. `ui.NewKeyLayer` takes a `ui.KeyHandler`,
+whose `HandleKey` returns whether it took the key; a key it declines passes on
+to the layer below and then to the component under the stack.
+`ui.NewModalLayer` takes any component: a modal layer ends the search whether or
+not it wanted the key. Pointer events go the same way, front to back, with two
+qualifications. Nothing in the stack takes an event outside the area its holder
+draws in, so a click on the sidebar reaches the sidebar and switches window
+even while a channel window's stack holds a modal. Inside that area the modal
+takes every event, and a layer in front of it still takes the clicks inside its
+own rectangle. Root's F1 keyboard help is currently the only modal layer.
+
+A modal layer takes every key it is offered, so its holder never sees the key
+that should dismiss it. `Layer.DismissedBy` names those keys on the layer, and
+the stack matches them during the front-to-back search it already runs, so the
+holder matches nothing of its own before offering a key to the stack.
+
+`KeyHandler`'s two methods both return a `KeyHandler`. `Component.Update`
+returns a `Component` instead, so a stack that took a `Component` back would
+have to type-assert the replacement each time and would silently stop offering
+it keys once an assertion failed. Narrowing the return type keeps a layer able
+to handle keys for as long as it exists.
+
+One id names at most one layer: `Push` removes any layer already holding the
+new layer's id, so an id lookup and the front-to-back search agree on which
+layer they mean.
+
+Placing a layer and telling it where it is are one call: `Push`, `Move` and
+`Resize` each set the rectangle and send the layer the `BoundsMsg` a component
+stores its geometry from. A layer that was not sent one would draw where the
+stack put it and hit-test against the rectangle it still holds. `Push` also
+calls the layer's `Init` and batches the command it returned, because a layer
+arriving part way through a session is attached the same way a component in the
+tree is at startup. A message Root does not act on goes to the layers as well
+as the screen, which is how the message such a command produces reaches the
+layer that issued it.
+
+`LayerStack` is a value type held inside components that parents copy freely,
+so every method that changes it returns a new stack and copies the slice before
+writing.
+
+`ui.ScreenFocusMsg` is how Root tells the active screen it is behind a modal.
+That is not `tea.FocusMsg`, which reports the terminal window gaining or losing
+focus; a screen that reads the two as one thing cannot tell them apart.
 
 ### Write components freely
 

@@ -54,11 +54,8 @@ type focusScreen struct {
 func (s focusScreen) Init() tea.Cmd { return nil }
 
 func (s focusScreen) Update(msg tea.Msg) (Component, tea.Cmd) {
-	switch msg.(type) {
-	case tea.FocusMsg:
-		s.focused = true
-	case tea.BlurMsg:
-		s.focused = false
+	if focus, ok := msg.(ScreenFocusMsg); ok {
+		s.focused = focus.Focused
 	}
 
 	return s, nil
@@ -229,7 +226,170 @@ func TestRoot_F1_renders_keyboard_help_from_key_bindings(t *testing.T) {
 	require.Equal(t, []string{"test:60x20"}, rootFrame(r))
 }
 
-func TestRoot_keyboard_help_blurs_and_refocuses_the_screen(t *testing.T) {
+// recordingScreen keeps every message Root passed down, so a test can
+// assert what the screen was and was not given.
+type recordingScreen struct {
+	seen *[]tea.Msg
+}
+
+func (s recordingScreen) Init() tea.Cmd { return nil }
+
+func (s recordingScreen) Update(msg tea.Msg) (Component, tea.Cmd) {
+	*s.seen = append(*s.seen, msg)
+
+	return s, nil
+}
+
+func (s recordingScreen) Draw(uv.Screen, uv.Rectangle) {}
+
+func (s recordingScreen) KeyBindings() []KeyBinding { return nil }
+
+// TestRoot_delivers_a_layer_command_result_to_that_layer pins the
+// round trip a layer's own command makes. Bubble Tea runs the command
+// and returns its message to Root, which has to pass it to the layers:
+// giving it to the screen alone would leave the issuing layer without
+// the result of its own command.
+func TestRoot_delivers_a_layer_command_result_to_that_layer(t *testing.T) {
+	type startedMsg struct{}
+
+	var seen []tea.Msg
+
+	r := NewRoot(stubScreen{label: "test"})
+	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 40, Height: 10})
+
+	layers, cmd := r.layers.Push(NewKeyLayer(
+		"probe",
+		recordingLayer{seen: &seen, initial: startedMsg{}},
+		r.bounds(),
+	))
+	r.layers = layers
+
+	require.NotNil(t, cmd)
+
+	r = updateRoot(t, r, startedMsg{})
+
+	require.Contains(t, seen, tea.Msg(startedMsg{}),
+		"the layer's own message went somewhere else")
+}
+
+// TestRoot_gives_a_declined_key_to_the_screen_only pins that a key
+// no layer took reaches the screen and not the layers a second time.
+// Root broadcasts what it does not act on itself, and a key that fell
+// through the layer search would otherwise arrive at those same layers
+// through their ordinary Update.
+func TestRoot_gives_a_declined_key_to_the_screen_only(t *testing.T) {
+	var layerSaw, screenSaw []tea.Msg
+
+	r := NewRoot(recordingScreen{seen: &screenSaw})
+	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 40, Height: 10})
+
+	layers, _ := r.layers.Push(NewKeyLayer(
+		"probe",
+		recordingLayer{seen: &layerSaw},
+		r.bounds(),
+	))
+	r.layers = layers
+
+	layerSaw, screenSaw = nil, nil
+
+	key := tea.KeyPressMsg{Code: 'z', Text: "z"}
+	updateRoot(t, r, key)
+
+	require.Equal(t, []tea.Msg{key}, screenSaw)
+	require.Empty(t, layerSaw, "the layer declined the key and was given it again")
+}
+
+// TestRoot_gives_an_unclaimed_mouse_event_to_the_screen_only pins the
+// same rule for a pointer event that fell outside every layer.
+func TestRoot_gives_an_unclaimed_mouse_event_to_the_screen_only(t *testing.T) {
+	var layerSaw, screenSaw []tea.Msg
+
+	r := NewRoot(recordingScreen{seen: &screenSaw})
+	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 40, Height: 10})
+
+	layers, _ := r.layers.Push(NewKeyLayer(
+		"probe",
+		recordingLayer{seen: &layerSaw},
+		uv.Rect(0, 0, 2, 2),
+	))
+	r.layers = layers
+
+	layerSaw, screenSaw = nil, nil
+
+	click := tea.MouseClickMsg{X: 30, Y: 5, Button: tea.MouseLeft}
+	updateRoot(t, r, click)
+
+	require.Equal(t, []tea.Msg{click}, screenSaw)
+	require.Empty(t, layerSaw, "the pointer was outside the layer and it was given the event anyway")
+}
+
+// recordingLayer keeps the messages it was given, and returns a
+// command from Init that produces initial.
+type recordingLayer struct {
+	seen    *[]tea.Msg
+	initial tea.Msg
+}
+
+func (l recordingLayer) Init() tea.Cmd {
+	if l.initial == nil {
+		return nil
+	}
+
+	return func() tea.Msg { return l.initial }
+}
+
+func (l recordingLayer) Update(msg tea.Msg) (Component, tea.Cmd) {
+	*l.seen = append(*l.seen, msg)
+
+	return l, nil
+}
+
+func (recordingLayer) Draw(uv.Screen, uv.Rectangle) {}
+
+func (l recordingLayer) UpdateKeys(msg tea.Msg) (KeyHandler, tea.Cmd) {
+	updated, cmd := l.Update(msg)
+
+	return updated.(recordingLayer), cmd
+}
+
+func (l recordingLayer) HandleKey(tea.KeyPressMsg) (KeyHandler, bool, tea.Cmd) {
+	return l, false, nil
+}
+
+// TestRoot_keyboard_help_keeps_keys_and_mice_from_the_screen pins that
+// the help is modal. Root sends the screen nothing while it is open,
+// not even the key that closes it: the first message the screen
+// receives afterwards says it has its focus back.
+func TestRoot_keyboard_help_keeps_keys_and_mice_from_the_screen(t *testing.T) {
+	var seen []tea.Msg
+
+	r := NewRoot(recordingScreen{seen: &seen})
+	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: tea.KeyF1})
+
+	require.True(t, r.layers.HasModal(),
+		"the help must be modal, which is what keeps a mouse click off the screen behind it")
+
+	seen = nil
+
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'x', Text: "x"})
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	r = updateRoot(t, r, tea.MouseClickMsg{Button: tea.MouseLeft})
+
+	require.Empty(t, seen, "a modal layer is open and the screen was given something anyway")
+
+	r = updateRoot(t, r, tea.KeyPressMsg{Code: tea.KeyEsc})
+
+	require.Equal(t, []tea.Msg{ScreenFocusMsg{Focused: true}}, seen)
+
+	seen = nil
+
+	updateRoot(t, r, tea.KeyPressMsg{Code: 'x', Text: "x"})
+
+	require.Equal(t, []tea.Msg{tea.KeyPressMsg{Code: 'x', Text: "x"}}, seen)
+}
+
+func TestRoot_keyboard_help_takes_focus_from_the_screen(t *testing.T) {
 	r := NewRoot(focusScreen{focused: true})
 	r = updateRoot(t, r, tea.WindowSizeMsg{Width: 80, Height: 24})
 

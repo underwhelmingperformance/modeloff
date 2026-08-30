@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -49,6 +50,7 @@ type AppKeyMap struct {
 	Quit        KeyBinding
 	ToggleMouse KeyBinding
 	ShowHelp    KeyBinding
+	Dismiss     KeyBinding
 }
 
 // DefaultAppKeyMap is the default set of application-level
@@ -66,6 +68,10 @@ var DefaultAppKeyMap = AppKeyMap{
 		key.WithKeys("f1"),
 		key.WithHelp("F1", "shortcuts"),
 	)).WithHelpMetadata(KeyHelpApplication, KeyHintEssential),
+	Dismiss: Bind(key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("Esc", "close overlay"),
+	)).WithHelpMetadata(KeyHelpApplication, KeyHintNone),
 }
 
 // quitConfirmWindow is how long a first Ctrl-C leaves the quit
@@ -95,9 +101,11 @@ type Root struct {
 	quitArmedAt  time.Time
 	now          func() time.Time
 
-	helpVisible bool
-	keyHelp     Component
+	layers LayerStack
 }
+
+// helpLayerID names the keyboard-help modal on Root's layer stack.
+const helpLayerID LayerID = "keyboard-help"
 
 // NewRoot creates the top-level Root model with the given initial screen.
 func NewRoot(screen Component) Root {
@@ -124,39 +132,29 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		r.width = msg.Width
 		r.height = msg.Height
-		if r.helpVisible {
-			help, cmd := r.keyHelp.Update(BoundsMsg{Rect: r.bounds()})
-			r.keyHelp = help
 
-			r, screenCmd := r.applyScreenBounds()
-			return r, tea.Batch(cmd, screenCmd)
-		}
+		r, layerCmd := r.resizeLayers()
+		r, screenCmd := r.applyScreenBounds()
 
-		return r.applyScreenBounds()
+		return r, tea.Batch(layerCmd, screenCmd)
 
 	case tea.KeyPressMsg:
-		if r.helpVisible {
-			if Matches(msg, r.keyMap.ShowHelp) || msg.Code == tea.KeyEsc {
-				r.helpVisible = false
+		hadModal := r.layers.HasModal()
 
-				return r.updateScreen(tea.FocusMsg{})
+		layers, handled, cmd := r.layers.HandleKey(msg)
+		r.layers = layers
+		if handled {
+			if !hadModal || r.layers.HasModal() {
+				return r, cmd
 			}
 
-			help, cmd := r.keyHelp.Update(msg)
-			r.keyHelp = help
+			r, focusCmd := r.updateScreen(ScreenFocusMsg{Focused: true})
 
-			return r, cmd
+			return r, tea.Batch(cmd, focusCmd)
 		}
 
 		if Matches(msg, r.keyMap.ShowHelp) {
-			var screenCmd tea.Cmd
-			r, screenCmd = r.updateScreen(tea.BlurMsg{})
-			r.keyHelp = newKeyboardHelp(r.KeyBindings())
-			help, cmd := r.keyHelp.Update(BoundsMsg{Rect: r.bounds()})
-			r.keyHelp = help
-			r.helpVisible = true
-
-			return r, tea.Batch(screenCmd, cmd)
+			return r.openHelp()
 		}
 
 		if Matches(msg, r.keyMap.Quit) {
@@ -178,18 +176,21 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r.applyScreenBounds()
 		}
 
+		// A key every layer declined belongs to the screen, and only
+		// to the screen: the fallback below would otherwise offer it
+		// to the same layers a second time.
+		return r.updateScreen(msg)
+
 	case tea.MouseMsg:
-		if r.helpVisible {
-			help, cmd := r.keyHelp.Update(msg)
-			r.keyHelp = help
+		mouse := msg.Mouse()
+		if layer, ok := r.layers.MouseLayer(image.Pt(mouse.X, mouse.Y), r.bounds()); ok {
+			layers, cmd := r.layers.UpdateID(layer.ID(), msg)
+			r.layers = layers
 
 			return r, cmd
 		}
 
-	case tea.FocusMsg:
-		if r.helpVisible {
-			return r.updateScreen(tea.BlurMsg{})
-		}
+		return r.updateScreen(msg)
 
 	case ScreenMsg:
 		transition, ok := r.screen.(ScreenTransition)
@@ -203,12 +204,13 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		r.screen = next
+
 		r, boundsCmd := r.applyScreenBounds()
-		if !r.helpVisible {
+		if !r.layers.HasModal() {
 			return r, boundsCmd
 		}
 
-		r, focusCmd := r.updateScreen(tea.BlurMsg{})
+		r, focusCmd := r.updateScreen(ScreenFocusMsg{Focused: false})
 
 		return r, tea.Batch(boundsCmd, focusCmd)
 
@@ -221,7 +223,17 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r.applyScreenBounds()
 	}
 
-	return r.updateScreen(msg)
+	// A message Root does not act on goes to the screen and to the
+	// layers alike. A message a layer's own command produced
+	// arrives here, so the layers have to be among the recipients.
+	// Keys and pointer events are not: the cases above route those and
+	// return.
+	layers, layerCmd := r.layers.Update(msg)
+	r.layers = layers
+
+	r, screenCmd := r.updateScreen(msg)
+
+	return r, tea.Batch(layerCmd, screenCmd)
 }
 
 func (r Root) quitConfirmationExpiryCmd() tea.Cmd {
@@ -267,9 +279,34 @@ func (r Root) draw(screen uv.Screen, area uv.Rectangle) {
 		r.screen.Draw(screen, contentArea)
 	}
 
-	if r.helpVisible {
-		r.keyHelp.Draw(screen, area)
-	}
+	r.layers.Draw(screen, area)
+}
+
+// openHelp puts the keyboard help on the stack as a modal layer over
+// the whole screen. The help centres its own panel inside that
+// rectangle.
+func (r Root) openHelp() (Root, tea.Cmd) {
+	bounds := r.bounds()
+
+	layers, cmd := r.layers.Push(
+		NewModalLayer(helpLayerID, newKeyboardHelp(r.KeyBindings()), bounds).
+			DismissedBy(r.keyMap.ShowHelp, r.keyMap.Dismiss),
+	)
+	r.layers = layers
+
+	r, screenCmd := r.updateScreen(ScreenFocusMsg{Focused: false})
+
+	return r, tea.Batch(cmd, screenCmd)
+}
+
+// resizeLayers moves every layer to the resized screen. Root's
+// overlays all cover the whole of it, so none of them needs a
+// rectangle of its own.
+func (r Root) resizeLayers() (Root, tea.Cmd) {
+	layers, cmd := r.layers.Resize(r.bounds())
+	r.layers = layers
+
+	return r, cmd
 }
 
 func (r Root) bounds() uv.Rectangle {

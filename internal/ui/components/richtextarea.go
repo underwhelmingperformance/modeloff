@@ -112,12 +112,45 @@ func (r RichTextarea) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		if updated, handled := r.handleMouse(msg); handled {
 			return updated, nil
 		}
+
+	case tea.FocusMsg, tea.BlurMsg:
+		return r, nil
+	}
+
+	if cursorFocus, ok := screenFocus(msg); ok {
+		var cmd tea.Cmd
+		r.cursor, cmd = r.cursor.Update(cursorFocus)
+
+		return r, cmd
 	}
 
 	var cmd tea.Cmd
 	r.cursor, cmd = r.cursor.Update(msg)
 
 	return r, cmd
+}
+
+// screenFocus translates a change in the editor's own focus into the
+// message the bubbles cursor takes, and reports whether the message
+// was such a change.
+//
+// The cursor blinks while it is focused, and it is focused and blurred
+// by [tea.FocusMsg] and [tea.BlurMsg]. Those report the terminal
+// window gaining and losing focus, which is a different thing: the
+// editor is behind a modal whether or not its terminal is in front,
+// and forwarding a terminal focus event would restore the cursor under
+// an open modal.
+func screenFocus(msg tea.Msg) (tea.Msg, bool) {
+	focus, ok := msg.(ui.ScreenFocusMsg)
+	if !ok {
+		return nil, false
+	}
+
+	if focus.Focused {
+		return tea.FocusMsg{}, true
+	}
+
+	return tea.BlurMsg{}, true
 }
 
 // Value returns the plain-text value.

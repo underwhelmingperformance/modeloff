@@ -64,6 +64,25 @@ func (h keyboardHelp) Update(msg tea.Msg) (Component, tea.Cmd) {
 	return h, cmd
 }
 
+// HandleKey implements KeyHandler. The help is a modal layer, so every
+// key offered to it stops here: the viewport scrolls with the ones it
+// recognises and ignores the rest. The keys that dismiss it are named
+// on its layer, and the stack removes that layer when one arrives, so
+// a dismissal key never reaches this.
+func (h keyboardHelp) HandleKey(msg tea.KeyPressMsg) (KeyHandler, bool, tea.Cmd) {
+	var cmd tea.Cmd
+	h.viewport, cmd = h.viewport.Update(msg)
+
+	return h, true, cmd
+}
+
+// UpdateKeys implements KeyHandler.
+func (h keyboardHelp) UpdateKeys(msg tea.Msg) (KeyHandler, tea.Cmd) {
+	updated, cmd := h.Update(msg)
+
+	return updated.(keyboardHelp), cmd
+}
+
 func (h keyboardHelp) resize(area uv.Rectangle) keyboardHelp {
 	inner := keyboardHelpInnerBounds(keyboardHelpBounds(area))
 	h.viewport.SetWidth(inner.Dx())
