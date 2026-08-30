@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/laney/modeloff/internal/command"
 	"github.com/laney/modeloff/internal/domain"
+	"github.com/laney/modeloff/internal/richtext"
 	"github.com/laney/modeloff/internal/ui"
 )
 
@@ -478,5 +480,215 @@ func TestChatViewKeepsTheInputRowInAShortWindow(t *testing.T) {
 				Input:   layout.InputRect.Dy(),
 			})
 		})
+	}
+}
+
+// modifiedLetterKey reports whether a binding's key names a single
+// letter modified by alt or ctrl, which is what ui.Matches folds and
+// the editor normalises. Modifiers are stripped without being
+// enumerated, so a chord that adds meta, hyper or super counts too. A
+// key whose name is a word does not.
+func modifiedLetterKey(k string) bool {
+	var modified bool
+
+	for {
+		prefix, rest, found := strings.Cut(k, "+")
+		if !found {
+			break
+		}
+
+		if prefix == "alt" || prefix == "ctrl" {
+			modified = true
+		}
+
+		k = rest
+	}
+
+	letter := []rune(k)
+
+	return modified && len(letter) == 1 && unicode.IsLetter(letter[0])
+}
+
+// modifiedLetterChord is one chord the editor handles, with whatever
+// starting state makes its effect observable.
+type modifiedLetterChord struct {
+	code rune
+	// mod is the chord's own modifier, defaulting to alt. A terminal
+	// encodes an alt chord and a ctrl chord ambiguously in the same
+	// way, so the table covers the letter chords bound under each.
+	mod  tea.KeyMod
+	seed string
+	// atStart puts the cursor before the seeded text, so a chord that
+	// acts forwards has something ahead of it.
+	atStart bool
+	// pending is the formatting state the editor starts in, so a chord
+	// that clears formatting has something to clear.
+	pending richtext.Attrs
+	// kill seeds the kill ring, so a yank has something to yank.
+	kill string
+	// moveTo is the position a movement chord lands on. The selection
+	// that goes with it depends on the encoding, so the runner derives
+	// it and no case names it.
+	moveTo *richtext.Position
+	expect func(*testing.T, RichTextarea)
+}
+
+// modifier returns the chord's modifier, which is alt unless the chord
+// names another.
+func (c modifiedLetterChord) modifier() tea.KeyMod {
+	if c.mod == 0 {
+		return tea.ModAlt
+	}
+
+	return c.mod
+}
+
+// editor builds an editor in the state the chord needs.
+func (c modifiedLetterChord) editor() RichTextarea {
+	editor := NewRichTextarea(RichTextareaConfig{AllowFormatting: true})
+	if c.seed != "" {
+		editor.insertText(c.seed)
+	}
+	if c.atStart {
+		editor.moveCursor(richtext.Position{}, false)
+	}
+	if c.kill != "" {
+		editor.recordKill(c.kill)
+	}
+	editor.pending = c.pending
+
+	return editor
+}
+
+// modifiedLetterChords is every letter chord the editor handles. A
+// word boundary in the seeded text gives the movement chords somewhere
+// to go.
+func modifiedLetterChords() map[string]modifiedLetterChord {
+	const line = "alpha beta"
+
+	formatting := func(want richtext.Attrs) func(*testing.T, RichTextarea) {
+		return func(t *testing.T, editor RichTextarea) {
+			require.Equal(t, want, editor.pending)
+		}
+	}
+
+	value := func(want string) func(*testing.T, RichTextarea) {
+		return func(t *testing.T, editor RichTextarea) {
+			require.Equal(t, want, editor.Value())
+		}
+	}
+
+	return map[string]modifiedLetterChord{
+		"bold":      {code: 'b', mod: tea.ModCtrl, expect: formatting(richtext.Attrs{Bold: true})},
+		"italic":    {code: 'i', expect: formatting(richtext.Attrs{Italic: true})},
+		"underline": {code: 'u', expect: formatting(richtext.Attrs{Underline: true})},
+		"reverse":   {code: 'r', expect: formatting(richtext.Attrs{Reverse: true})},
+		"strike":    {code: 's', expect: formatting(richtext.Attrs{Strike: true})},
+		"colour palette": {code: 'c', expect: func(t *testing.T, editor RichTextarea) {
+			require.True(t, editor.PaletteVisible())
+		}},
+		"reset formatting": {
+			code:    'o',
+			pending: richtext.Attrs{Bold: true, Italic: true},
+			expect:  formatting(richtext.Attrs{}),
+		},
+		"line start": {
+			code:   'a',
+			mod:    tea.ModCtrl,
+			seed:   line,
+			moveTo: &richtext.Position{Line: 0, Cluster: 0},
+		},
+		"line end": {
+			code:    'e',
+			mod:     tea.ModCtrl,
+			seed:    line,
+			atStart: true,
+			moveTo:  &richtext.Position{Line: 0, Cluster: len(line)},
+		},
+		"word left":           {code: 'b', seed: line, moveTo: &richtext.Position{Line: 0, Cluster: 6}},
+		"word right":          {code: 'f', seed: line, atStart: true, moveTo: &richtext.Position{Line: 0, Cluster: 5}},
+		"delete word forward": {code: 'd', seed: line, atStart: true, expect: value(" beta")},
+		"delete word back":    {code: 'w', mod: tea.ModCtrl, seed: line, expect: value("alpha ")},
+		"delete to end":       {code: 'k', mod: tea.ModCtrl, seed: line, atStart: true, expect: value("")},
+		"transpose":           {code: 't', mod: tea.ModCtrl, seed: "ab", expect: value("ba")},
+		"yank":                {code: 'y', mod: tea.ModCtrl, kill: "gamma", expect: value("gamma")},
+	}
+}
+
+// TestModifiedLetterChordsCoverTheEditorKeymap checks the coverage the
+// encoding test claims. A letter chord added to the editor's keymap and
+// left out of the table is reported here, where it would otherwise go
+// untested without anything saying so.
+func TestModifiedLetterChordsCoverTheEditorKeymap(t *testing.T) {
+	covered := map[string]bool{}
+	for _, chord := range modifiedLetterChords() {
+		covered[tea.KeyPressMsg{Code: chord.code, Mod: chord.modifier()}.String()] = true
+	}
+
+	var uncovered []string
+	for _, binding := range DefaultRichTextareaKeyMap.Bindings() {
+		for _, k := range binding.Keys() {
+			if modifiedLetterKey(k) && !covered[k] {
+				uncovered = append(uncovered, k)
+			}
+		}
+	}
+
+	require.Empty(t, uncovered, "the editor binds these letter chords and no case runs them")
+}
+
+// TestRichTextareaAcceptsEveryEncodingOfAModifiedLetter runs each
+// letter chord under every spelling a terminal may send it as. Holding
+// shift on M-i arrives as a lower-case code with Alt and Shift set
+// under the Kitty keyboard protocol, and as an upper-case code with
+// Alt alone under xterm's modifyOtherKeys, and the keymap spells the
+// chord once. A ctrl chord is encoded as ambiguously as an alt one.
+//
+// The movement cases assert the selection as well as the cursor,
+// because that is what separates the two shifted spellings: the editor
+// extends a selection when the key has shift set, and only one of the
+// two spellings sets it before normalisation.
+func TestRichTextareaAcceptsEveryEncodingOfAModifiedLetter(t *testing.T) {
+	encodings := map[string]struct {
+		press   func(rune, tea.KeyMod) tea.KeyPressMsg
+		shifted bool
+	}{
+		"unshifted": {press: func(r rune, mod tea.KeyMod) tea.KeyPressMsg {
+			return tea.KeyPressMsg{Code: r, Mod: mod}
+		}},
+		"shift modifier": {shifted: true, press: func(r rune, mod tea.KeyMod) tea.KeyPressMsg {
+			return tea.KeyPressMsg{Code: r, Mod: mod | tea.ModShift}
+		}},
+		"capital code": {shifted: true, press: func(r rune, mod tea.KeyMod) tea.KeyPressMsg {
+			return tea.KeyPressMsg{Code: unicode.ToUpper(r), Mod: mod}
+		}},
+		"capital code and shift modifier": {shifted: true, press: func(r rune, mod tea.KeyMod) tea.KeyPressMsg {
+			return tea.KeyPressMsg{Code: unicode.ToUpper(r), Mod: mod | tea.ModShift}
+		}},
+	}
+
+	for encoding, enc := range encodings {
+		for name, chord := range modifiedLetterChords() {
+			t.Run(encoding+"/"+name, func(t *testing.T) {
+				editor := chord.editor()
+				anchor := editor.position
+
+				updated, _ := editor.Update(enc.press(chord.code, chord.modifier()))
+				got := updated.(RichTextarea)
+
+				if chord.moveTo == nil {
+					chord.expect(t, got)
+					return
+				}
+
+				want := richtext.Selection{Anchor: *chord.moveTo, Head: *chord.moveTo}
+				if enc.shifted {
+					want = richtext.Selection{Anchor: anchor, Head: *chord.moveTo}
+				}
+
+				require.Equal(t, *chord.moveTo, got.position)
+				require.Equal(t, want, got.selection)
+			})
+		}
 	}
 }

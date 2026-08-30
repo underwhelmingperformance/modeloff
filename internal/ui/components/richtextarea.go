@@ -26,7 +26,9 @@ type RichTextareaConfig struct {
 // of their own: the colour palette, the kill ring and the multi-click
 // counter.
 type RichTextarea struct {
-	config RichTextareaConfig
+	config        RichTextareaConfig
+	keyMap        RichTextareaKeyMap
+	paletteKeyMap ColourPaletteKeyMap
 
 	document  richtext.Document
 	cursor    cursor.Model
@@ -55,9 +57,11 @@ func NewRichTextarea(config RichTextareaConfig) RichTextarea {
 	cur.TextStyle = lipgloss.NewStyle()
 
 	editor := RichTextarea{
-		config:   config,
-		document: richtext.NewDocument(),
-		cursor:   cur,
+		config:        config,
+		keyMap:        DefaultRichTextareaKeyMap,
+		paletteKeyMap: DefaultColourPaletteKeyMap,
+		document:      richtext.NewDocument(),
+		cursor:        cur,
 	}
 	editor.selection = richtext.Selection{Anchor: editor.position, Head: editor.position}
 
@@ -82,6 +86,12 @@ func (r RichTextarea) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		return r, nil
 
 	case tea.KeyPressMsg:
+		// handleEditorKey reads the shift modifier off the key to
+		// decide whether a movement extends the selection, so the key
+		// must arrive with it set however the terminal spelled the
+		// chord.
+		msg = ui.NormaliseModifiedLetter(msg)
+
 		if updated, handled := r.handlePaletteKey(msg); handled {
 			return updated, nil
 		}
@@ -207,6 +217,34 @@ func (r RichTextarea) SetCursorFromCell(x int) RichTextarea {
 	r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
 
 	return r.ensureViewport()
+}
+
+// Bindings returns the editing keys this editor handles, leaving out
+// the ones its configuration makes inert. A single-line editor has no
+// second line to move to and refuses a newline, so the vertical
+// movement keys and Newline do nothing and are not offered.
+func (r RichTextarea) Bindings() []ui.KeyBinding {
+	all := r.keyMap.Bindings()
+	if !r.config.SingleLine {
+		return all
+	}
+
+	inert := map[string]bool{
+		r.keyMap.Up.Help().Key:      true,
+		r.keyMap.Down.Help().Key:    true,
+		r.keyMap.Newline.Help().Key: true,
+	}
+
+	live := make([]ui.KeyBinding, 0, len(all))
+	for _, binding := range all {
+		if inert[binding.Help().Key] {
+			continue
+		}
+
+		live = append(live, binding)
+	}
+
+	return live
 }
 
 // SetAllowFormatting updates formatting availability.

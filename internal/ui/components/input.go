@@ -279,19 +279,6 @@ func (b InputBar) handleKey(msg tea.KeyPressMsg) (ui.Component, tea.Cmd) {
 	case ui.Matches(msg, b.keyMap.DeleteChar):
 		return b.deleteCharForward(), nil
 
-	// alt+b is WordLeft's Emacs-style pairing with alt+f (WordRight).
-	// It is intercepted here, before it can fall through to the rich
-	// text editor, which still treats alt+b as its own hardcoded bold
-	// toggle. ctrl+left keeps working through the normal fallthrough
-	// below, unaffected by this case.
-	case ui.Matches(msg, b.keyMap.WordLeft) && msg.Mod.Contains(tea.ModAlt):
-		return b.moveWordLeft(), nil
-
-	case ui.Matches(msg, b.keyMap.ToggleBold):
-		if !strings.HasPrefix(b.input.Value(), "/") {
-			return b.toggleBold(), nil
-		}
-
 	case msg.Code == tea.KeyTab && !msg.Mod.Contains(tea.ModShift):
 		if !strings.HasPrefix(b.input.Value(), "/") {
 			return b.completeNick(false), nil
@@ -346,24 +333,6 @@ func (b InputBar) deleteCharForward() InputBar {
 	b.input.position = b.input.document.Delete(richtext.Selection{Anchor: b.input.position, Head: end})
 	b.input.selection = richtext.Selection{Anchor: b.input.position, Head: b.input.position}
 	b.input = b.input.ensureViewport()
-
-	return b
-}
-
-// moveWordLeft moves the cursor one word to the left (Emacs's
-// backward-word), mirroring the rich textarea's own word-right
-// movement so alt+b and alt+f feel identical apart from direction.
-func (b InputBar) moveWordLeft() InputBar {
-	target := b.input.document.MoveWordLeft(b.input.position)
-	b.input.moveCursor(target, false)
-
-	return b
-}
-
-// toggleBold toggles bold at the cursor, or across the selection if
-// one is active.
-func (b InputBar) toggleBold() InputBar {
-	b.input = b.input.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Bold = !attrs.Bold })
 
 	return b
 }
@@ -692,65 +661,87 @@ func (b InputBar) KeyBindings() []ui.KeyBinding {
 	}
 
 	if b.input.PaletteVisible() {
-		return []ui.KeyBinding{
-			ui.Bind(key.NewBinding(
-				key.WithKeys("left", "right"),
-				key.WithHelp("←→", "swatch"),
-			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintHigh),
-			ui.Bind(key.NewBinding(
-				key.WithKeys("0", "1", "2", "3", "4", "5", "6", "7", "8", "9"),
-				key.WithHelp("0-9", "jump"),
-			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintLow),
-			ui.Bind(key.NewBinding(
-				key.WithKeys("tab"),
-				key.WithHelp("Tab", "fg/bg"),
-			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintNormal),
-			ui.Bind(key.NewBinding(
-				key.WithKeys("enter"),
-				key.WithHelp("↵", "apply"),
-			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintHigh),
-			ui.Bind(key.NewBinding(
-				key.WithKeys("esc"),
-				key.WithHelp("Esc", "dismiss"),
-			)).WithHelpMetadata(ui.KeyHelpFormatting, ui.KeyHintEssential),
-		}
+		return b.input.paletteKeyMap.Bindings()
 	}
 
 	bindings := []ui.KeyBinding{
 		b.keyMap.Submit,
 		ui.WithBindingEnabled(b.keyMap.HistoryUp, len(b.history) > 0),
 		ui.WithBindingEnabled(b.keyMap.HistoryDn, len(b.history) > 0),
-		b.keyMap.WordLeft,
-		b.keyMap.WordRight,
-		b.keyMap.DeleteWordBack,
-		b.keyMap.DeleteWordFwd,
-		b.keyMap.DeleteToEnd,
 		b.keyMap.KillLineStart,
 		b.keyMap.DeleteChar,
-		ui.WithBindingEnabled(b.keyMap.Yank, b.input.canYank()),
-		b.keyMap.Transpose,
 		ui.WithBindingEnabled(b.keyMap.CopySelection, !b.input.selection.Collapsed()),
-		b.keyMap.Home,
-		b.keyMap.End,
 	}
 
 	commandMode := strings.HasPrefix(b.input.Value(), "/")
-	if commandMode {
-		return bindings
+	attrs := b.input.activeAttrs()
+	editor := b.input.keyMap
+	claimed := b.claimedKeys()
+
+	for _, binding := range b.input.Bindings() {
+		// The bar matches its own bindings before the editor sees a
+		// key, so an editor binding whose every key the bar already
+		// matches can never be reached from the bar. Leave it
+		// unadvertised.
+		if shadowed(binding, claimed) {
+			continue
+		}
+
+		switch binding.Help().Key {
+		case editor.Yank.Help().Key:
+			binding = ui.WithBindingEnabled(binding, b.input.canYank())
+		case editor.ToggleBold.Help().Key:
+			binding = b.fmtBinding(binding, attrs.Bold)
+		case editor.ToggleItalic.Help().Key:
+			binding = b.fmtBinding(binding, attrs.Italic)
+		case editor.ToggleUnderline.Help().Key:
+			binding = b.fmtBinding(binding, attrs.Underline)
+		case editor.ToggleReverse.Help().Key:
+			binding = b.fmtBinding(binding, attrs.Reverse)
+		case editor.ToggleStrike.Help().Key:
+			binding = b.fmtBinding(binding, attrs.Strike)
+		case editor.OpenPalette.Help().Key:
+			binding = b.fmtBinding(binding, attrs.FG != nil || attrs.BG != nil)
+		case editor.ResetFormat.Help().Key:
+			binding = b.fmtBinding(binding, attrs != (richtext.Attrs{}))
+		}
+
+		// A line starting with "/" is a command and takes no
+		// formatting, so its toggles are not offered.
+		if commandMode && binding.HelpGroup == ui.KeyHelpFormatting {
+			continue
+		}
+
+		bindings = append(bindings, binding)
 	}
 
-	attrs := b.input.activeAttrs()
-	bindings = append(bindings,
-		b.fmtBinding(b.keyMap.ToggleBold, attrs.Bold),
-		b.fmtBinding(b.keyMap.ToggleItalic, attrs.Italic),
-		b.fmtBinding(b.keyMap.ToggleUnderline, attrs.Underline),
-		b.fmtBinding(b.keyMap.ToggleReverse, attrs.Reverse),
-		b.fmtBinding(b.keyMap.ToggleStrike, attrs.Strike),
-		b.fmtBinding(b.keyMap.OpenPalette, attrs.FG != nil || attrs.BG != nil),
-		b.fmtBinding(b.keyMap.ResetFormat, attrs != (richtext.Attrs{})),
-	)
-
 	return bindings
+}
+
+// claimedKeys collects the keys in the bar's own keymap. Tab and the
+// palette's keys are matched outside that keymap, so they are not in
+// the set.
+func (b InputBar) claimedKeys() map[string]bool {
+	claimed := map[string]bool{}
+	for _, binding := range b.keyMap.Bindings() {
+		for _, k := range binding.Keys() {
+			claimed[k] = true
+		}
+	}
+
+	return claimed
+}
+
+// shadowed reports whether claimed already contains every key the
+// binding matches.
+func shadowed(binding ui.KeyBinding, claimed map[string]bool) bool {
+	for _, k := range binding.Keys() {
+		if !claimed[k] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (b InputBar) fmtBinding(binding ui.KeyBinding, active bool) ui.KeyBinding {

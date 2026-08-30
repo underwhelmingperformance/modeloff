@@ -2,8 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"unicode"
 
 	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 )
 
 // KeyBinding wraps the upstream key.Binding with additional UI state
@@ -74,13 +76,68 @@ func (b KeyBinding) WithHelpMetadata(group KeyHelpGroup, priority KeyHintPriorit
 
 // Matches reports whether a key message matches any of the given
 // KeyBindings, delegating to the upstream key.Matches.
+//
+// A modified letter matches one spelling however the terminal encodes
+// the shift. Holding shift on M-b reaches the application as
+// "alt+shift+b" under the Kitty keyboard protocol and as "alt+B" under
+// xterm's modifyOtherKeys, and both mean the chord the binding spells
+// "alt+b". Shift alone is not folded away: with no alt or ctrl, an
+// upper-case code is the character the operator typed. A handler that
+// goes on to test the shift modifier wants [NormaliseModifiedLetter],
+// which sets the modifier that Matches drops.
 func Matches[K fmt.Stringer](k K, bindings ...KeyBinding) bool {
 	inner := make([]key.Binding, len(bindings))
 	for i, b := range bindings {
 		inner[i] = b.Binding
 	}
 
-	return key.Matches(k, inner...)
+	if key.Matches(k, inner...) {
+		return true
+	}
+
+	folded, ok := foldModifiedLetter(k)
+
+	return ok && key.Matches(folded, inner...)
+}
+
+// foldModifiedLetter rewrites a letter modified by alt or ctrl to its
+// lower-case, unshifted spelling, and reports whether that changed
+// anything. Only letters are folded, because only a letter has a case
+// to fold: shift on a digit or a punctuation key produces a different
+// character, not another case of the same character.
+func foldModifiedLetter(k any) (tea.KeyPressMsg, bool) {
+	msg, ok := k.(tea.KeyPressMsg)
+	if !ok {
+		return tea.KeyPressMsg{}, false
+	}
+
+	if msg.Mod&(tea.ModAlt|tea.ModCtrl) == 0 || !unicode.IsLetter(msg.Code) {
+		return tea.KeyPressMsg{}, false
+	}
+
+	folded := msg
+	folded.Code = unicode.ToLower(msg.Code)
+	folded.Mod &^= tea.ModShift
+
+	return folded, folded != msg
+}
+
+// NormaliseModifiedLetter rewrites a letter modified by alt or ctrl into
+// one spelling: a lower-case code, with the shift modifier set when
+// the terminal reported the shift as a capital letter and not as a
+// modifier. A handler that tests the shift modifier therefore gets the
+// same result whichever spelling its terminal sends, and [Matches]
+// still matches the binding, which spells the chord without the
+// shift.
+func NormaliseModifiedLetter(msg tea.KeyPressMsg) tea.KeyPressMsg {
+	if msg.Mod&(tea.ModAlt|tea.ModCtrl) == 0 || !unicode.IsUpper(msg.Code) {
+		return msg
+	}
+
+	msg.Code = unicode.ToLower(msg.Code)
+	msg.Mod |= tea.ModShift
+
+	return msg
 }
 
 // Keybinding is implemented by components that contribute keybindings to

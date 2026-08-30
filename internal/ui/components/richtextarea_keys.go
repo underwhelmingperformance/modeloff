@@ -1,54 +1,41 @@
 package components
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/laney/modeloff/internal/richtext"
+	"github.com/laney/modeloff/internal/ui"
 )
 
-// handleFormattingKey answers the alt-modified keys that toggle IRC
-// formatting on the selection, or on the text the user types next when
-// there is no selection. With formatting switched off the key is still
-// taken, so an alt combination never falls through and inserts its
-// letter as text.
+// handleFormattingKey handles the keys that toggle IRC formatting on
+// the selection, or on the text the user types next when there is no
+// selection. With formatting switched off the key is still taken, so
+// a chord never falls through and inserts its letter as text.
 func (r RichTextarea) handleFormattingKey(msg tea.KeyPressMsg) (RichTextarea, bool) {
-	if !msg.Mod.Contains(tea.ModAlt) {
-		return r, false
+	toggles := []struct {
+		binding ui.KeyBinding
+		flip    func(*richtext.Attrs)
+	}{
+		{r.keyMap.ToggleBold, func(a *richtext.Attrs) { a.Bold = !a.Bold }},
+		{r.keyMap.ToggleItalic, func(a *richtext.Attrs) { a.Italic = !a.Italic }},
+		{r.keyMap.ToggleUnderline, func(a *richtext.Attrs) { a.Underline = !a.Underline }},
+		{r.keyMap.ToggleReverse, func(a *richtext.Attrs) { a.Reverse = !a.Reverse }},
+		{r.keyMap.ToggleStrike, func(a *richtext.Attrs) { a.Strike = !a.Strike }},
 	}
 
-	if msg.Code == 0 {
-		return r, false
+	for _, toggle := range toggles {
+		if !ui.Matches(msg, toggle.binding) {
+			continue
+		}
+		if !r.config.AllowFormatting {
+			return r, true
+		}
+
+		return r.toggleFormatting(toggle.flip), true
 	}
 
-	switch strings.ToLower(string(msg.Code)) {
-	case "b":
-		if !r.config.AllowFormatting {
-			return r, true
-		}
-		return r.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Bold = !attrs.Bold }), true
-	case "i":
-		if !r.config.AllowFormatting {
-			return r, true
-		}
-		return r.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Italic = !attrs.Italic }), true
-	case "u":
-		if !r.config.AllowFormatting {
-			return r, true
-		}
-		return r.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Underline = !attrs.Underline }), true
-	case "r":
-		if !r.config.AllowFormatting {
-			return r, true
-		}
-		return r.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Reverse = !attrs.Reverse }), true
-	case "s":
-		if !r.config.AllowFormatting {
-			return r, true
-		}
-		return r.toggleFormatting(func(attrs *richtext.Attrs) { attrs.Strike = !attrs.Strike }), true
-	case "o":
+	switch {
+	case ui.Matches(msg, r.keyMap.ResetFormat):
 		if !r.config.AllowFormatting {
 			return r, true
 		}
@@ -57,14 +44,17 @@ func (r RichTextarea) handleFormattingKey(msg tea.KeyPressMsg) (RichTextarea, bo
 		} else {
 			r.document.UpdateAttrs(r.selection, func(richtext.Attrs) richtext.Attrs { return richtext.Attrs{} })
 		}
+
 		return r, true
-	case "c":
+
+	case ui.Matches(msg, r.keyMap.OpenPalette):
 		if !r.config.AllowFormatting {
 			return r, true
 		}
 		r.palette.open = true
 		r.palette.index = 0
 		r.palette.target = colourTargetForeground
+
 		return r, true
 	}
 
@@ -100,60 +90,62 @@ func (r RichTextarea) toggleFormatting(toggle func(*richtext.Attrs)) RichTextare
 // handleEditorKey answers the movement, selection, kill and text-entry
 // keys, following readline's bindings where the terminal has one.
 func (r RichTextarea) handleEditorKey(msg tea.KeyPressMsg) (RichTextarea, bool) {
-	extendSelection := msg.Mod.Contains(tea.ModShift)
+	extend := msg.Mod.Contains(tea.ModShift)
 
-	switch msg.String() {
-	case "alt+d":
+	switch {
+	case ui.Matches(msg, r.keyMap.WordLeft):
+		r.moveCursor(r.document.MoveWordLeft(r.position), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.WordRight):
+		r.moveCursor(r.document.MoveWordRight(r.position), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.Left):
+		r.moveCursor(r.document.MoveLeft(r.position), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.Right):
+		r.moveCursor(r.document.MoveRight(r.position), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.Up):
+		r.moveCursor(r.moveVertical(-1), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.Down):
+		r.moveCursor(r.moveVertical(1), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.LineStart):
+		r.moveCursor(r.document.MoveLineStart(r.position), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.LineEnd):
+		r.moveCursor(r.document.MoveLineEnd(r.position), extend)
+		return r, true
+
+	case ui.Matches(msg, r.keyMap.DeleteWordFwd):
 		if !r.selection.Collapsed() {
 			r.killSelection()
 			return r, true
 		}
 		end := r.document.MoveWordRight(r.position)
 		r.killRange(richtext.Selection{Anchor: r.position, Head: end})
+
 		return r, true
-	case "ctrl+left":
-		r.moveCursor(r.document.MoveWordLeft(r.position), extendSelection)
+
+	case ui.Matches(msg, r.keyMap.DeleteWordBack):
+		if !r.selection.Collapsed() {
+			r.killSelection()
+			return r, true
+		}
+		start := r.document.MoveWordLeft(r.position)
+		r.killRange(richtext.Selection{Anchor: start, Head: r.position})
+
 		return r, true
-	case "ctrl+right", "alt+f":
-		r.moveCursor(r.document.MoveWordRight(r.position), extendSelection)
-		return r, true
-	case "ctrl+shift+left":
-		r.moveCursor(r.document.MoveWordLeft(r.position), true)
-		return r, true
-	case "ctrl+shift+right":
-		r.moveCursor(r.document.MoveWordRight(r.position), true)
-		return r, true
-	case "left", "shift+left":
-		r.moveCursor(r.document.MoveLeft(r.position), extendSelection)
-		return r, true
-	case "right", "shift+right":
-		r.moveCursor(r.document.MoveRight(r.position), extendSelection)
-		return r, true
-	case "home":
-		r.moveCursor(r.document.MoveLineStart(r.position), extendSelection)
-		return r, true
-	case "shift+home":
-		r.moveCursor(r.document.MoveLineStart(r.position), true)
-		return r, true
-	case "end":
-		r.moveCursor(r.document.MoveLineEnd(r.position), extendSelection)
-		return r, true
-	case "shift+end":
-		r.moveCursor(r.document.MoveLineEnd(r.position), true)
-		return r, true
-	case "up", "shift+up":
-		r.moveCursor(r.moveVertical(-1), extendSelection)
-		return r, true
-	case "down", "shift+down":
-		r.moveCursor(r.moveVertical(1), extendSelection)
-		return r, true
-	case "ctrl+a":
-		r.moveCursor(r.document.MoveLineStart(r.position), false)
-		return r, true
-	case "ctrl+e":
-		r.moveCursor(r.document.MoveLineEnd(r.position), false)
-		return r, true
-	case "ctrl+k":
+
+	case ui.Matches(msg, r.keyMap.DeleteToEnd):
 		if !r.selection.Collapsed() {
 			r.killSelection()
 			return r, true
@@ -163,20 +155,16 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyPressMsg) (RichTextarea, bool) 
 			Cluster: r.document.LineClusterCount(r.position.Line),
 		}
 		r.killRange(richtext.Selection{Anchor: r.position, Head: end})
+
 		return r, true
-	case "ctrl+t":
+
+	case ui.Matches(msg, r.keyMap.Transpose):
 		return r.transposeChars(), true
-	case "ctrl+w", "alt+backspace":
-		if !r.selection.Collapsed() {
-			r.killSelection()
-			return r, true
-		}
-		start := r.document.MoveWordLeft(r.position)
-		r.killRange(richtext.Selection{Anchor: start, Head: r.position})
-		return r, true
-	case "ctrl+y":
+
+	case ui.Matches(msg, r.keyMap.Yank):
 		return r.yank(), true
-	case "backspace":
+
+	case ui.Matches(msg, r.keyMap.Backspace):
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
 			return r, true
@@ -184,8 +172,10 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyPressMsg) (RichTextarea, bool) 
 		start := r.document.MoveLeft(r.position)
 		r.position = r.document.Delete(richtext.Selection{Anchor: start, Head: r.position})
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
+
 		return r.ensureViewport(), true
-	case "delete":
+
+	case ui.Matches(msg, r.keyMap.Delete):
 		if !r.selection.Collapsed() {
 			r.deleteSelection()
 			return r, true
@@ -193,12 +183,15 @@ func (r RichTextarea) handleEditorKey(msg tea.KeyPressMsg) (RichTextarea, bool) 
 		end := r.document.MoveRight(r.position)
 		r.position = r.document.Delete(richtext.Selection{Anchor: r.position, Head: end})
 		r.selection = richtext.Selection{Anchor: r.position, Head: r.position}
+
 		return r.ensureViewport(), true
-	case "enter":
+
+	case ui.Matches(msg, r.keyMap.Newline):
 		if r.config.SingleLine {
 			return r, false
 		}
 		r.insertText("\n")
+
 		return r, true
 	}
 

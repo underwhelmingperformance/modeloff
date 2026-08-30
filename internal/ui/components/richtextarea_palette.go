@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/laney/modeloff/internal/richtext"
+	"github.com/laney/modeloff/internal/ui"
 	"github.com/laney/modeloff/internal/ui/theme"
 )
 
@@ -81,26 +82,31 @@ func (r RichTextarea) handlePaletteKey(msg tea.KeyPressMsg) (RichTextarea, bool)
 		return r, false
 	}
 
-	switch msg.String() {
-	case "esc":
+	switch {
+	case ui.Matches(msg, r.paletteKeyMap.Close):
 		r.palette.open = false
 		return r, true
-	case "tab":
+
+	case ui.Matches(msg, r.paletteKeyMap.ToggleTarget):
 		r.palette.toggleTarget()
 		return r, true
-	case "left":
+
+	case ui.Matches(msg, r.paletteKeyMap.Prev):
 		r.palette.moveLeft()
 		return r, true
-	case "right":
+
+	case ui.Matches(msg, r.paletteKeyMap.Next):
 		r.palette.moveRight()
 		return r, true
-	case "enter":
-		return r.applyPaletteSelection(), true
-	}
 
-	if digit, ok := digitRune(msg); ok {
-		r.palette.index = digit
-		return r, true
+	case ui.Matches(msg, r.paletteKeyMap.Apply):
+		return r.applyPaletteSelection(), true
+
+	case ui.Matches(msg, r.paletteKeyMap.JumpSwatch):
+		if digit, ok := digitRune(msg); ok {
+			r.palette.index = digit
+			return r, true
+		}
 	}
 
 	return r, false

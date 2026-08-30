@@ -1,7 +1,6 @@
 package components
 
 import (
-	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -146,21 +145,11 @@ func (c ChatView[C]) Init() tea.Cmd {
 
 // KeyBindings implements ui.Keybinding.
 func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
-	bindings := []ui.KeyBinding{
-		ui.WithBindingEnabled(
-			ui.Bind(key.NewBinding(
-				key.WithKeys("pgup", "pgdown"),
-				key.WithHelp("PgUp/Dn", "scroll"),
-			)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
-			c.messages.Len() > 0,
-		),
-		ui.WithBindingEnabled(
-			ui.Bind(key.NewBinding(
-				key.WithKeys("ctrl+up", "ctrl+down"),
-				key.WithHelp("^↑/↓", "scroll"),
-			)).WithHelpMetadata(ui.KeyHelpNavigation, ui.KeyHintNone),
-			c.messages.Len() > 0,
-		),
+	scrollable := c.messages.Len() > 0
+
+	var bindings []ui.KeyBinding
+	for _, binding := range c.keyMap.Bindings() {
+		bindings = append(bindings, ui.WithBindingEnabled(binding, scrollable))
 	}
 
 	bindings = append(bindings, ui.CollectKeyBindings(c.input)...)

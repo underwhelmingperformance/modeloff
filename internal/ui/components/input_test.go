@@ -739,7 +739,7 @@ func TestInputBar_keybindings_include_palette_when_visible(t *testing.T) {
 		helpTexts = append(helpTexts, b.Help().Desc)
 	}
 
-	require.Equal(t, []string{"swatch", "jump", "fg/bg", "apply", "dismiss"}, helpTexts)
+	require.Equal(t, []string{"prev swatch", "next swatch", "jump", "fg/bg", "apply", "dismiss"}, helpTexts)
 }
 
 func TestInputBar_palette_enter_does_not_submit(t *testing.T) {
@@ -781,6 +781,10 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"M-w\x00copy sel":      {},
 		"Home\x00line start":   {},
 		"End\x00line end":      {},
+		"←\x00left":            {},
+		"→\x00right":           {},
+		"⌫\x00delete back":     {},
+		"Del\x00delete":        {},
 	}, bindings)
 
 	b = typeText(t, b, "/join").(components.InputBar)
@@ -801,6 +805,10 @@ func TestInputBar_keybindings_include_rich_shortcuts(t *testing.T) {
 		"M-w\x00copy sel":      {},
 		"Home\x00line start":   {},
 		"End\x00line end":      {},
+		"←\x00left":            {},
+		"→\x00right":           {},
+		"⌫\x00delete back":     {},
+		"Del\x00delete":        {},
 	}, bindings)
 }
 
@@ -1284,18 +1292,22 @@ func TestInputBar_keybindings_include_history_when_popover_hidden(t *testing.T) 
 		"send",
 		"history",
 		"history",
+		"del \u2192 start",
+		"del char",
+		"copy sel",
+		"left",
+		"right",
 		"word \u2190",
 		"word \u2192",
+		"line start",
+		"line end",
+		"delete back",
+		"delete",
 		"del word",
 		"del next word",
 		"del \u2192 end",
-		"del \u2192 start",
-		"del char",
-		"yank",
 		"transpose",
-		"copy sel",
-		"line start",
-		"line end",
+		"yank",
 		"bold",
 		"italic",
 		"underline",
