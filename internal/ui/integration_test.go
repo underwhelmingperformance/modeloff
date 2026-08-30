@@ -134,7 +134,7 @@ func TestApp_add_model_and_receive_reply(t *testing.T) {
 	tm := uitest.New(t, uipkg.NewRoot(chatScreen))
 	tm.WaitFor("#general")
 
-	tm.Submit("/add-model test/model")
+	tm.Submit("/add-model test/model --persona a terse reviewer")
 	tm.WaitFor("botty has joined #general")
 
 	tm.Submit("hello world")
@@ -405,7 +405,7 @@ func TestApp_vector_memory_write_and_search(t *testing.T) {
 		uitest.WithInitialTermSize(200, 30))
 	tm.WaitFor("#lab")
 
-	tm.Submit("/add-model test/model")
+	tm.Submit("/add-model test/model --persona a terse reviewer")
 	tm.WaitFor("membot has joined #lab")
 
 	tm.Submit("what is my favourite colour?")

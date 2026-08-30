@@ -29,6 +29,7 @@ var keyboardHelpGroupOrder = []KeyHelpGroup{
 	KeyHelpEditing,
 	KeyHelpFormatting,
 	KeyHelpCompletion,
+	KeyHelpPersona,
 	KeyHelpPanels,
 	KeyHelpApplication,
 }

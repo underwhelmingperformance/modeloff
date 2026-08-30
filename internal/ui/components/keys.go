@@ -506,3 +506,50 @@ func (m InputBarKeyMap) Bindings() []ui.KeyBinding {
 func (m ChatViewKeyMap) Bindings() []ui.KeyBinding {
 	return []ui.KeyBinding{m.PageUp, m.PageDown, m.ScrollUp, m.ScrollDown}
 }
+
+// PersonaSelectorKeyMap binds the keys the invite-time persona
+// selector handles.
+//
+// Enter is bound to Accept and Tab to Reroll, but Enter asks for
+// another description when the adjustment holds anything once trimmed:
+// an operator who has just typed "more sceptical" wants a different
+// persona, and the footer says which of the two Enter is doing. Neither
+// key does anything while a request is in flight, and both are disabled
+// then.
+type PersonaSelectorKeyMap struct {
+	Accept   ui.KeyBinding
+	Reroll   ui.KeyBinding
+	Navigate ui.KeyBinding
+	Scroll   ui.KeyBinding
+	Cancel   ui.KeyBinding
+}
+
+// DefaultPersonaSelectorKeyMap is the default set of persona-selector
+// keybindings.
+var DefaultPersonaSelectorKeyMap = PersonaSelectorKeyMap{
+	Accept: ui.Bind(key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("↵", "accept persona"),
+	)).WithHelpMetadata(ui.KeyHelpPersona, ui.KeyHintEssential),
+	Reroll: ui.Bind(key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("Tab", "write another"),
+	)).WithHelpMetadata(ui.KeyHelpPersona, ui.KeyHintHigh),
+	Navigate: ui.Bind(key.NewBinding(
+		key.WithKeys("up", "down"),
+		key.WithHelp("↑↓", "earlier candidates"),
+	)).WithHelpMetadata(ui.KeyHelpPersona, ui.KeyHintNormal),
+	Scroll: ui.Bind(key.NewBinding(
+		key.WithKeys("pgup", "pgdown"),
+		key.WithHelp("PgUp/PgDn", "scroll the candidate"),
+	)).WithHelpMetadata(ui.KeyHelpPersona, ui.KeyHintLow),
+	Cancel: ui.Bind(key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("Esc", "close the review"),
+	)).WithHelpMetadata(ui.KeyHelpPersona, ui.KeyHintEssential),
+}
+
+// Bindings returns every binding in the map, in declaration order.
+func (m PersonaSelectorKeyMap) Bindings() []ui.KeyBinding {
+	return []ui.KeyBinding{m.Accept, m.Reroll, m.Navigate, m.Scroll, m.Cancel}
+}

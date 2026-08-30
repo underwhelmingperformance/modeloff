@@ -2,6 +2,7 @@ package components
 
 import (
 	"image"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -40,7 +41,15 @@ func (c ChatView[C]) Draw(screen uv.Screen, area uv.Rectangle) {
 	}
 
 	c.messages.Draw(screen, layout.MessageRect)
-	c.input.Draw(screen, layout.InputRect)
+
+	// A modal layer takes every key the window receives, so the input
+	// bar under it receives none. Its cursor is blurred while one is
+	// open, leaving whatever the operator had typed there where it is.
+	input := c.input
+	_, modal := c.selector()
+	input.blurred = modal
+	input.Draw(screen, layout.InputRect)
+
 	c.layers.Draw(screen, area)
 }
 
@@ -60,7 +69,7 @@ func (b InputBar) Draw(screen uv.Screen, area uv.Rectangle) {
 	drawString(screen, layout.input, nickLabel+lockBadge+prompt)
 
 	editor := b.input
-	if b.locked {
+	if b.locked || b.blurred {
 		editor.cursor.Blur()
 	}
 	editor.Draw(screen, layout.editor)
@@ -89,6 +98,79 @@ func (n NickList) Draw(screen uv.Screen, area uv.Rectangle) {
 // Draw implements ui.Component.
 func (p Popover) Draw(screen uv.Screen, area uv.Rectangle) {
 	drawString(screen, area, p.render(area.Dx()))
+}
+
+// Draw implements ui.Component. An area too short for the bordered pane
+// the rest of the app uses gets one row: the adjustment field when that
+// field's trimmed value is not empty, and the condensed form
+// otherwise.
+func (p PersonaSelector) Draw(screen uv.Screen, area uv.Rectangle) {
+	if area.Empty() {
+		return
+	}
+
+	if area.Dy() < personaSelectorChrome+1 {
+		// One row holds the candidate or the adjustment, and the
+		// adjustment wins: the field the operator is typing into is what
+		// they need to see.
+		if strings.TrimSpace(p.adjustment.Value()) != "" {
+			row := uv.Rect(area.Min.X, area.Min.Y, area.Dx(), 1)
+			field := row
+
+			// The keys take their columns only when the row is wide
+			// enough for them and `minCondensedField` besides. A
+			// narrower row keeps the field, because an adjustment the
+			// operator cannot read is one that has changed what Enter
+			// does without their knowing.
+			if keys := p.condensedKeys(); row.Dx() >= minCondensedField+lipgloss.Width(keys) {
+				drawString(screen, uv.Rect(
+					row.Max.X-lipgloss.Width(keys), row.Min.Y, lipgloss.Width(keys), 1,
+				), theme.Dim.Render(keys))
+
+				field = uv.Rect(row.Min.X, row.Min.Y, row.Dx()-lipgloss.Width(keys), 1)
+			}
+
+			drawAdjustmentField(screen, field, p)
+
+			return
+		}
+
+		drawString(screen, area, p.condensed(area.Dx()))
+
+		return
+	}
+
+	drawBorderedPane(screen, area, p.title(area.Dx()), true, func(content uv.Rectangle) {
+		rows, field := p.bodyRows(content.Dx(), content.Dy())
+		drawString(screen, content, strings.Join(rows, "\n"))
+
+		if field < 0 || field >= content.Dy() {
+			return
+		}
+
+		drawAdjustmentField(
+			screen, uv.Rect(content.Min.X, content.Min.Y+field, content.Dx(), 1), p,
+		)
+	})
+}
+
+// minCondensedField is how many columns the condensed row reserves for
+// the adjustment field before it gives any to the key list: enough for
+// the field's label and for reading back what was typed.
+const minCondensedField = 20
+
+// drawAdjustmentField writes the selector's adjustment field into one
+// row: its label, then the editor, which draws its own horizontally
+// scrolled view of the text and the cursor in it.
+func drawAdjustmentField(screen uv.Screen, area uv.Rectangle, p PersonaSelector) {
+	const label = "adjust: "
+
+	drawString(screen, area, theme.Dim.Render(label))
+
+	p.adjustment.Draw(screen, uv.Rect(
+		area.Min.X+lipgloss.Width(label), area.Min.Y,
+		max(area.Dx()-lipgloss.Width(label), 0), 1,
+	))
 }
 
 // Draw implements ui.Component.

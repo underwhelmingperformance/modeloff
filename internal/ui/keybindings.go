@@ -39,6 +39,7 @@ const (
 	KeyHelpEditing     KeyHelpGroup = "Editing"
 	KeyHelpFormatting  KeyHelpGroup = "Formatting"
 	KeyHelpCompletion  KeyHelpGroup = "Completion"
+	KeyHelpPersona     KeyHelpGroup = "Persona"
 	KeyHelpPanels      KeyHelpGroup = "Panels"
 	KeyHelpApplication KeyHelpGroup = "Application"
 )

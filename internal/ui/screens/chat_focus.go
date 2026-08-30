@@ -94,12 +94,21 @@ func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
 
 	leaving := s.active
 
+	// A persona review belongs to the window it was started in, so
+	// leaving that window ends it: a generation request still running is
+	// cancelled, the descriptions go, and the window the operator
+	// arrives at has its own input bar back.
+	var reviewCmd tea.Cmd
+	if leaving != w {
+		s, reviewCmd = s.closePersonaReview()
+	}
+
 	s.active = w
 	s.visible.window = w
 	w.Visits++
 	w.Revision++
 
-	cmds := []tea.Cmd{s.rebindCompleter(), s.markReadCmd(w)}
+	cmds := []tea.Cmd{reviewCmd, s.rebindCompleter(), s.markReadCmd(w)}
 	if leaving != nil && leaving != w {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}
@@ -111,10 +120,12 @@ func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
 // the empty name remains a valid identity for the user's self-DM.
 func (s ChatScreen) clearFocus() (ChatScreen, tea.Cmd) {
 	leaving := s.active
+
+	s, reviewCmd := s.closePersonaReview()
 	s.active = nil
 	s.visible.window = nil
 
-	cmds := []tea.Cmd{s.rebindCompleter()}
+	cmds := []tea.Cmd{reviewCmd, s.rebindCompleter()}
 	if leaving != nil {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}

@@ -585,10 +585,19 @@ func TestChatScreen_list_empty(t *testing.T) {
 	tm.WaitFor("End of /list")
 }
 
+// TestChatScreen_add_model_command drives the review end to end:
+// `/add-model` with no persona has one written and shows it, and Enter
+// sends the `ADDMODEL` that names it. The test then waits for the JOIN,
+// which arrives only once the session has prepared, registered and
+// attached the instance.
 func TestChatScreen_add_model_command(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/add-model anthropic/claude-3-haiku")
+	tm.WaitFor("persona for anthropic/claude-3-haiku")
+	tm.WaitFor("a terse reviewer")
+
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 	tm.WaitFor("fakenick has joined #general")
 }
 
@@ -603,7 +612,7 @@ func TestChatScreen_add_model_no_args(t *testing.T) {
 	tm, _ := newChatAppInChannel(t, "#general")
 
 	tm.Submit("/add-model")
-	tm.WaitFor("usage: /add-model <model-id> [--persona <id-or-text>]")
+	tm.WaitFor("usage: /add-model <model-id> [--persona <text>]")
 }
 
 func TestChatScreen_invite_existing_instance(t *testing.T) {
@@ -1151,7 +1160,7 @@ func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *test
 	tm.Send(chatcmd.APIKeySetResult{})
 	tm.WaitFor("Model list unavailable: upstream 503.")
 
-	tm.Submit("/add-model anthropic/claude-3-haiku")
+	tm.Submit("/add-model anthropic/claude-3-haiku --persona a terse reviewer")
 	tm.WaitFor("add-model: model list unavailable")
 }
 

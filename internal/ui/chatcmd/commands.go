@@ -509,14 +509,30 @@ func (c AddModelCommand) ToCommand(rc Context) (protocol.Command, error) {
 	}, nil
 }
 
-// Run implements Command.
+// Run implements Command. A `--persona` whose trimmed value is not
+// empty is sent as the operator wrote it. Otherwise `Run` returns
+// [PersonaProposalRequested] and
+// sends nothing: the chat-screen has a description written for this
+// instance and shows it to the operator, and the `ADDMODEL` follows
+// from what they accept.
 func (c AddModelCommand) Run(ctx context.Context, rc Context) tea.Cmd {
 	if rc.Active == nil {
 		return noChannelCmd("add-model")
 	}
 
 	if c.Model == "" {
-		return usageCmd("add-model", "/add-model <model-id> [--persona <id-or-text>]")
+		return usageCmd("add-model", "/add-model <model-id> [--persona <text>]")
+	}
+
+	if strings.TrimSpace(strings.Join(c.Persona, " ")) == "" {
+		channel, _ := rc.ActiveName()
+
+		return func() tea.Msg {
+			return PersonaProposalRequested{
+				Channel: channel,
+				Model:   domain.ModelID(c.Model),
+			}
+		}
 	}
 
 	return func() tea.Msg {

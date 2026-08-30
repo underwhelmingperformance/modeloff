@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"maps"
 	"slices"
@@ -831,7 +832,7 @@ func (m *Manager) PrepareInstance(
 	}
 
 	if prepared.Persona == "" {
-		generated, err := m.generatePersona(ctx, sess)
+		generated, err := m.ProposePersona(ctx, sess, nil)
 		if err != nil {
 			return session.PreparedInstance{}, fmt.Errorf("assign a persona to %s: %w", modelID, err)
 		}
@@ -855,29 +856,52 @@ func (m *Manager) PrepareInstance(
 }
 
 // maxPersonaGenerationAttempts caps how many times the small model is
-// asked for a persona before [Manager.generatePersona] gives up. Each
+// asked for a persona before [Manager.ProposePersona] gives up. Each
 // retry adds the refused description and the reason it was refused to
 // the next request.
 const maxPersonaGenerationAttempts = 3
 
-// generatePersona asks the small model to invent a character for the
-// instance being added, and returns the first non-empty description
-// [domain.ValidatePersona] accepts. A failure here fails ADDMODEL,
-// because the description becomes revision zero of the instance's
-// lineage and nothing after ADDMODEL writes revision zero.
+// ConnectedInstances is the directory [Manager.ProposePersona]
+// enumerates to collect the descriptions the new character must differ
+// from. Both `*session.Session` and the read-only handle the
+// chat-screen holds satisfy it, so the operator's review and `ADDMODEL`
+// reach the directory through this one method.
+type ConnectedInstances interface {
+	Instances(ctx context.Context) iter.Seq[domain.InstanceDirectoryEntry]
+}
+
+// ProposePersona asks the small model to invent a character for an
+// instance about to be added, and returns the first non-empty
+// description [domain.ValidatePersona] accepts.
+//
+// `rejected` is what the caller has already turned down, each with the
+// reason: for `ADDMODEL` it is empty, and for the operator's invite-time
+// review it is every candidate they passed over, each with what the
+// operator typed to steer the next one or, when they typed nothing, a
+// bare request for another. The nick loop puts a refused suggestion into
+// its next request the same way, and sends the reason alongside it for
+// a model that supports [api.NickReasonGenerator].
 //
 // An empty description is refused here although `ValidatePersona`
-// accepts one. Accepting it is what lets `PrepareInstance` recognise an
-// empty requested persona as one the requester omitted, and an instance
-// admitted on an empty generated description would hold an empty
-// revision zero and an empty reset baseline.
-func (m *Manager) generatePersona(ctx context.Context, sess *session.Session) (string, error) {
+// accepts one. `PrepareInstance` reads an empty requested persona as
+// one the requester omitted, so it never asks the validator about one;
+// this is the only place an empty description could get through, and an
+// instance created with one would hold an empty revision zero and an
+// empty reset baseline.
+func (m *Manager) ProposePersona(
+	ctx context.Context,
+	instances ConnectedInstances,
+	rejected []api.RejectedPersona,
+) (string, error) {
 	client, _ := m.snapshotAPI()
 	if client == nil {
 		return "", fmt.Errorf("generate persona: %w", api.ErrClientNotConfigured)
 	}
 
-	req := api.PersonaRequest{Present: m.presentPersonas(ctx, sess)}
+	req := api.PersonaRequest{
+		Present:  m.presentPersonas(ctx, instances),
+		Rejected: rejected,
+	}
 
 	for range maxPersonaGenerationAttempts {
 		description, err := client.GeneratePersona(ctx, m.SmallModel(), req)
@@ -914,10 +938,10 @@ func (m *Manager) generatePersona(ctx context.Context, sess *session.Session) (s
 // Only model instances are read. The user is a connected client with a
 // row in the directory and no persona lineage, so asking for its
 // description would warn about a database that is intact.
-func (m *Manager) presentPersonas(ctx context.Context, sess *session.Session) []string {
+func (m *Manager) presentPersonas(ctx context.Context, instances ConnectedInstances) []string {
 	var present []string
 
-	for entry := range sess.Instances(ctx) {
+	for entry := range instances.Instances(ctx) {
 		if entry.ModelID == "" {
 			continue
 		}

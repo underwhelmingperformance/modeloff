@@ -175,6 +175,21 @@ type TimestampFormatSetResult struct {
 	Reset  bool
 }
 
+// PersonaProposalRequested asks the chat-screen to have a persona
+// written for a model the operator is adding, and to show it to them
+// before `ADDMODEL` is sent. [AddModelCommand.Run] returns it in place
+// of the wire command when the `--persona` it was given is empty once
+// trimmed, which covers the option being absent and the option being
+// given nothing.
+//
+// The review is the chat-screen's alone. The session sees an `ADDMODEL`
+// naming a persona, which is the command it already runs, and learns
+// nothing about how the operator arrived at the text.
+type PersonaProposalRequested struct {
+	Channel domain.ChannelName
+	Model   domain.ModelID
+}
+
 // PersonaAction identifies the operation reported by a [PersonaResult].
 type PersonaAction string
 

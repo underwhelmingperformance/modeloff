@@ -101,17 +101,27 @@ type ChatView[C command.KindProvider] struct {
 	input    InputBar
 	keyMap   ChatViewKeyMap
 
-	// layers holds the command-completion popover, which is drawn over
-	// the transcript. The stack is the only place it is kept, so
-	// drawing it, offering it a key and routing a message to it all
-	// read the same value.
+	// layers holds the command-completion popover and, for as long as an
+	// `/add-model` persona review is open, the selector. The stack is
+	// the only place either is kept, so drawing one, offering it a key
+	// and routing a message to it all read the same value.
 	layers ui.LayerStack
+
+	// selectorRevision is the newest persona-selector state this window
+	// has been told about. See [ChatView.routeSelector].
+	selectorRevision uint64
 
 	bounds uv.Rectangle
 }
 
 // popoverLayerID names the completion popover on the window's stack.
 const popoverLayerID ui.LayerID = "completion-popover"
+
+// selectorLayerID names the invite-time persona selector on the
+// window's stack. It is pushed only while a review is open, and it is
+// modal: the completions and the input bar beneath it are offered
+// nothing for as long as it is there.
+const selectorLayerID ui.LayerID = "persona-selector"
 
 type chatViewLayout struct {
 	InputRect   uv.Rectangle
@@ -120,6 +130,11 @@ type chatViewLayout struct {
 	// PopoverRect is where the completions float, over the transcript,
 	// so it takes no rows from MessageRect.
 	PopoverRect uv.Rectangle
+
+	// SelectorRect is where the persona selector floats, over the
+	// transcript and immediately above the input, and is empty while no
+	// review is open.
+	SelectorRect uv.Rectangle
 }
 
 // NewChatView creates a chat view for the given channel. The
@@ -167,6 +182,14 @@ func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
 		return nil
 	}
 
+	// A persona selector is modal and takes every key the window
+	// receives, so while one is open its keys are the only ones the
+	// window has: the transcript's scrolling, the completions and the
+	// input bar are all behind it and receive none.
+	if selector, ok := c.selector(); ok {
+		return selector.KeyBindings()
+	}
+
 	scrollable := c.messages.Len() > 0
 
 	var bindings []ui.KeyBinding
@@ -180,6 +203,7 @@ func (c ChatView[C]) KeyBindings() []ui.KeyBinding {
 	// while there are suggestions to cycle, they do not reach input
 	// history, and naming history there would offer the operator
 	// something the key will not do.
+
 	popover := c.popover()
 	claimed := popover.claimedKeys()
 
@@ -259,6 +283,9 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 	case PopoverRefreshMsg, PopoverDismissMsg:
 		return c.updatePopover(msg)
 
+	case PersonaSelectorMsg:
+		return c.routeSelector(msg)
+
 	case tea.MouseMsg:
 		if updated, handled, cmd := c.handleMouse(msg); handled {
 			updated, syncCmd := updated.syncChildBounds()
@@ -266,6 +293,18 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		}
 
 		return c, nil
+
+	case tea.PasteMsg:
+		// The stack routes keys and pointer events, and a paste is
+		// neither, so it is routed here. Without this the paste lands
+		// in the input bar the selector covers, and is still sitting
+		// there when the selector closes.
+		if _, ok := c.selector(); ok {
+			layers, cmd := c.layers.UpdateID(selectorLayerID, msg)
+			c.layers = layers
+
+			return c, cmd
+		}
 
 	case tea.KeyPressMsg:
 		// A locked bar ignores keys while the client shuts down, and
@@ -395,13 +434,42 @@ func (c ChatView[C]) layoutRectsFor(bounds uv.Rectangle) chatViewLayout {
 		uvlayout.Len(inputRows),
 	).Split(bounds).Assign(&header, &message, &input)
 
-	popover := c.popoverRect(message, input)
-
 	return chatViewLayout{
-		PopoverRect: popover,
-		InputRect:   input,
-		MessageRect: message,
+		PopoverRect:  c.popoverRect(message, input),
+		SelectorRect: c.selectorRect(message, input),
+		InputRect:    input,
+		MessageRect:  message,
 	}
+}
+
+// selectorRect is where the persona selector floats: the rows
+// immediately above the input, taken from the transcript's area without
+// shrinking it, the same arrangement the completions use.
+func (c ChatView[C]) selectorRect(message, input uv.Rectangle) uv.Rectangle {
+	selector, ok := c.selector()
+	if !ok {
+		return uv.Rectangle{}
+	}
+
+	rows := selector.Height(message.Dx(), message.Dy())
+	if rows <= 0 {
+		return uv.Rectangle{}
+	}
+
+	return uv.Rect(message.Min.X, input.Min.Y-rows, message.Dx(), rows)
+}
+
+// selector returns the persona selector on the window's stack, and
+// false when no interaction is open.
+func (c ChatView[C]) selector() (PersonaSelector, bool) {
+	layer, ok := c.layers.Get(selectorLayerID)
+	if !ok {
+		return PersonaSelector{}, false
+	}
+
+	selector, ok := layer.Content().(PersonaSelector)
+
+	return selector, ok
 }
 
 func (c ChatView[C]) updateMessages(msg tea.Msg) (ChatView[C], tea.Cmd) {
@@ -421,8 +489,24 @@ func (c ChatView[C]) syncChildBounds() (ChatView[C], tea.Cmd) {
 	c.messages = updated.(MessageList[C])
 
 	c, layerCmd := c.syncPopoverLayer(layout)
+	c, selectorCmd := c.syncSelectorLayer(layout)
 
-	return c, tea.Batch(inputCmd, cmd, layerCmd)
+	return c, tea.Batch(inputCmd, cmd, layerCmd, selectorCmd)
+}
+
+// syncSelectorLayer moves the selector's layer to where the layout says
+// it goes. [ChatView.routeSelector] is what pushes and removes it, from
+// the state the chat-screen sends, so nothing here creates or destroys
+// it.
+func (c ChatView[C]) syncSelectorLayer(layout chatViewLayout) (ChatView[C], tea.Cmd) {
+	if _, ok := c.layers.Get(selectorLayerID); !ok {
+		return c, nil
+	}
+
+	layers, cmd := c.layers.Move(selectorLayerID, layout.SelectorRect)
+	c.layers = layers
+
+	return c, cmd
 }
 
 // popoverRect is where the completions float: the rows immediately
@@ -564,4 +648,43 @@ func (c ChatView[C]) renderHeader(width int) string {
 	style := theme.PaneBorder.BorderBottom(true).Width(width)
 
 	return style.Render(theme.ChannelTitle.Render(text))
+}
+
+// routeSelector opens the persona selector, hands it each later state,
+// and closes it on a state of nil. Its layer is modal, so the
+// completions and the input bar are offered nothing while it is there.
+//
+// Each state is stamped with a revision, and one below the highest
+// already seen is dropped: it describes the review as it was before a
+// change this window has already applied. The chat-screen dispatches a
+// state alongside the work that changes it, and a batch's commands run
+// concurrently, so the two arrive in either order.
+func (c ChatView[C]) routeSelector(msg PersonaSelectorMsg) (ChatView[C], tea.Cmd) {
+	if msg.Revision < c.selectorRevision {
+		return c, nil
+	}
+
+	c.selectorRevision = msg.Revision
+
+	if msg.State == nil {
+		c.layers = c.layers.Remove(selectorLayerID)
+
+		return c.syncChildBounds()
+	}
+
+	var pushCmd tea.Cmd
+
+	if _, ok := c.layers.Get(selectorLayerID); !ok {
+		layers, cmd := c.layers.Push(ui.NewModalLayer(
+			selectorLayerID, NewPersonaSelector(), uv.Rectangle{},
+		).WithOpaque())
+		c.layers, pushCmd = layers, cmd
+	}
+
+	layers, cmd := c.layers.UpdateID(selectorLayerID, msg)
+	c.layers = layers
+
+	c, syncCmd := c.syncChildBounds()
+
+	return c, tea.Batch(pushCmd, cmd, syncCmd)
 }

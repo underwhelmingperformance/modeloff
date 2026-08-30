@@ -82,6 +82,12 @@ type InputBar struct {
 
 	locked bool
 
+	// blurred hides the cursor without the badge `locked` renders. A
+	// modal layer over this window is taking the keys, so nothing the
+	// operator types reaches the bar and a cursor on it would say
+	// otherwise.
+	blurred bool
+
 	// secretChecker reports whether a raw line carries a credential,
 	// so pushHistory can keep it out of ↑ recall. Set once from
 	// SecretCheckerMsg; nil until then, which pushHistory reads as

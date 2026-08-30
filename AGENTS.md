@@ -918,6 +918,18 @@ remaining commands are purely UI-side, have no wire counterpart, and
 do not implement `ToCommand`: `/config`, `/query`, `/persona`,
 `/help`, `/clear`, `/poke`, and the tool-only `pass`.
 
+`/add-model` is the one command whose `Run` sends its wire counterpart
+only sometimes. A `--persona` whose trimmed value is not empty is sent
+immediately. Otherwise it returns `chatcmd.PersonaProposalRequested`
+and the chat-screen opens the persona review described under Operator
+controls; the `ADDMODEL` that eventually reaches the wire names the
+description the operator accepted. `RunTool` sends either way and opens
+no review: a persona it named is validated, and when it named none
+`PrepareInstance` asks the small model for a description and returns it.
+`handleAddModel` passes that description to `registerModelAs`, which
+persists it. The tool is tagged `caps:"operator"`, so the capability gate
+is what decides who may reach that path at all.
+
 Whether a command becomes a model-callable tool is a separate question
 from whether it has a wire counterpart, and `internal/command` answers
 it from the presence of the `tool:` tag alone. `/persona` deliberately
@@ -1638,6 +1650,25 @@ from a reflection in the history. `--rollback` takes a pointer so that
 tag, so leaving it off keeps the command out of every model's tools.
 That is the write-authority split the four levels rest on.
 
+`/add-model` with no `--persona` opens the persona review before
+anything reaches the wire. The chat-screen asks the manager for one
+description, shows it in a modal layer over the transcript's bottom
+rows, and takes the operator's decision: Enter accepts it, Tab asks for
+another, typing first steers what the next one is asked to be, and Esc
+abandons the review. Each description the review is given is kept and Up
+and Down move between them, so returning to an earlier one costs no
+upstream call. An adjustment is sent as the reason the description on
+screen was turned down; the nick loop sends a refused suggestion back
+with its reason the same way.
+
+There is one review at a time and it belongs to the window it was
+started in: `ChatScreen.focus` ends it on the way out, cancelling a
+generation request still running. An `ADDMODEL` already sent is not
+cancelled, so an `ADDMODEL` the operator sent and then walked away from
+goes on to succeed or fail on its own. Nothing about the review is
+persisted, so a model the operator never accepted does not come back on
+the next connection.
+
 Two `/config` settings control reflection. `reflection-mode` takes
 `disabled`, `shadow` or `active`, and an installation that has never
 written it runs `active`: an instance that never reflects keeps the
@@ -1757,7 +1788,13 @@ qualifications. Nothing in the stack takes an event outside the area its holder
 draws in, so a click on the sidebar reaches the sidebar and switches window
 even while a channel window's stack holds a modal. Inside that area the modal
 takes every event, and a layer in front of it still takes the clicks inside its
-own rectangle. Root's F1 keyboard help is currently the only modal layer.
+own rectangle. Two layers are modal: Root's F1 keyboard help, and the
+persona selector `ChatView` holds for as long as an `/add-model` persona
+review is open. The selector being modal is what leaves the input bar
+under it inert. The operator can still leave the window either way:
+`MainLayout` takes the window-switch chords before `Content` sees them,
+and a click on the sidebar lands outside `ChatView`, the rectangle its
+stack is confined to.
 
 Root matches the quit key before it offers a key to the layers, so Ctrl-C
 works while a modal is open. Every other key stops at a modal while one is

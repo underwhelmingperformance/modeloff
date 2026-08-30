@@ -153,6 +153,10 @@ func (s ChatScreen) routeCommandResult(
 		return s, s.logReplyEvent(result.IssuingWindow, msg), true
 	}
 
+	if next, cmd, ok := s.routePersonaReview(result.IssuingWindow, result.Message); ok {
+		return next, cmd, true
+	}
+
 	if next, cmd, ok := s.routeConfigResults(result.IssuingWindow, result.Message); ok {
 		return next, cmd, true
 	}

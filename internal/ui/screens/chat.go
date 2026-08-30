@@ -110,6 +110,24 @@ type ChatScreen struct {
 	protocolEffectRunning bool
 	nickListRevision      uint64
 
+	// personaReview is the `/add-model` whose persona the operator is
+	// reviewing, and nil when there is none. It ends three ways: an
+	// `ADDMODEL` the session accepts, Esc, or leaving the window. An
+	// `ADDMODEL` the session refuses leaves it open with the reason on
+	// screen. There is at most one: it belongs to the window it was
+	// started in, and [ChatScreen.focus] ends it on the way out.
+	personaReview *personaReview
+
+	// personaReviewSeq numbers reviews and the requests they make, from
+	// one series. Nothing it hands out repeats, so a result or a
+	// decision from a review the operator has abandoned matches neither
+	// a later request nor the review that replaced it.
+	personaReviewSeq uint64
+
+	// personaReviewRevision orders the selector states the chat-screen
+	// sends. See [ChatScreen.showPersonaSelector].
+	personaReviewRevision uint64
+
 	// active is the canonical window the user is looking at. Nil
 	// means the welcome state has no window selected. A non-nil DM
 	// may have an empty name when its counterpart is the user.
@@ -462,6 +480,9 @@ func (s ChatScreen) update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 //     chat_dm.go);
 //   - routeInput: what the user typed (chat_commands.go);
 //   - routeReplies: what a command answered (chat_replies.go);
+//   - routePersonaReview: the `/add-model` persona review, from the
+//     request that opens it to whichever of an accepted `ADDMODEL`,
+//     Esc or a window change ends it (chat_persona_review.go);
 //   - routeCatalogue: the model list (chat_catalogue.go);
 //   - routeLifecycle: quitting and the API key (chat_lifecycle.go);
 //   - routeObservability: the log drawer (chat_observability.go).
@@ -483,6 +504,10 @@ func (s ChatScreen) route(msg tea.Msg) (ChatScreen, tea.Cmd) {
 	}
 
 	if next, cmd, ok := s.routeReplies(msg); ok {
+		return next, cmd
+	}
+
+	if next, cmd, ok := s.routePersonaReview(nil, msg); ok {
 		return next, cmd
 	}
 
