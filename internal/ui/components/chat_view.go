@@ -59,7 +59,17 @@ type TopicUpdatedMsg struct {
 
 // CompleterMsg sets the completer the window's completion popover
 // consults.
+//
+// Revision orders these against each other, and the window drops one
+// below the highest it has seen. The chat-screen publishes a completer
+// alongside the work that supersedes it: `/config api-key` clears the
+// model list and starts the load that fills it in one batch, and a
+// batch's commands run concurrently, so the two arrive in either
+// order. Dropping the older one is what stops a completer built before
+// the models arrived staying in place and offering none for the rest
+// of the session.
 type CompleterMsg struct {
+	Revision  uint64
 	Completer command.Completable
 }
 
@@ -110,6 +120,10 @@ type ChatView[C command.KindProvider] struct {
 	// selectorRevision is the newest persona-selector state this window
 	// has been told about. See [ChatView.routeSelector].
 	selectorRevision uint64
+
+	// completerRevision is the newest completer this window has been
+	// told about. See [CompleterMsg].
+	completerRevision uint64
 
 	bounds uv.Rectangle
 }
@@ -268,6 +282,11 @@ func (c ChatView[C]) Update(msg tea.Msg) (ui.Component, tea.Cmd) {
 		return c, tea.Batch(msgCmd, syncCmd)
 
 	case CompleterMsg:
+		if msg.Revision < c.completerRevision {
+			return c, nil
+		}
+		c.completerRevision = msg.Revision
+
 		return c.updatePopover(PopoverApplyMsg{
 			Completer: msg.Completer,
 			Raw:       c.input.Value(),

@@ -108,7 +108,9 @@ func (s ChatScreen) focus(ch domain.ChannelName) (ChatScreen, tea.Cmd) {
 	w.Visits++
 	w.Revision++
 
-	cmds := []tea.Cmd{reviewCmd, s.rebindCompleter(), s.markReadCmd(w)}
+	s, completerCmd := s.rebindCompleter()
+
+	cmds := []tea.Cmd{reviewCmd, completerCmd, s.markReadCmd(w)}
 	if leaving != nil && leaving != w {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}
@@ -125,7 +127,9 @@ func (s ChatScreen) clearFocus() (ChatScreen, tea.Cmd) {
 	s.active = nil
 	s.visible.window = nil
 
-	cmds := []tea.Cmd{reviewCmd, s.rebindCompleter()}
+	s, completerCmd := s.rebindCompleter()
+
+	cmds := []tea.Cmd{reviewCmd, completerCmd}
 	if leaving != nil {
 		cmds = append(cmds, s.markReadCmd(leaving))
 	}

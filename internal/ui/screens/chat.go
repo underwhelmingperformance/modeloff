@@ -128,6 +128,10 @@ type ChatScreen struct {
 	// sends. See [ChatScreen.showPersonaSelector].
 	personaReviewRevision uint64
 
+	// completerRevision orders the completers the chat-screen
+	// publishes. See [ChatScreen.rebindCompleter].
+	completerRevision uint64
+
 	// active is the canonical window the user is looking at. Nil
 	// means the welcome state has no window selected. A non-nil DM
 	// may have an empty name when its counterpart is the user.
@@ -322,7 +326,9 @@ func (s ChatScreen) Init() tea.Cmd {
 			Commands: command.VisibleCommands(s.parser.Set(), s.client.Caps()),
 		}),
 		msgCmd(components.SecretCheckerMsg{Checker: s.parser}),
-		s.rebindCompleter(),
+		// Revision zero is the baseline every later publish is
+		// numbered above.
+		msgCmd(components.CompleterMsg{Completer: s.completionSet()}),
 		msgCmd(components.HighlightWordsMsg{
 			Words:    s.highlightWords,
 			UserNick: s.user.Nick(),
@@ -562,8 +568,19 @@ func msgCmd(msg tea.Msg) tea.Cmd {
 // window, its kind, the live-model cache — freeze that value when the
 // closure is built, so a fresh set has to be published whenever one
 // of them moves.
-func (s ChatScreen) rebindCompleter() tea.Cmd {
-	return msgCmd(components.CompleterMsg{Completer: s.completionSet()})
+//
+// Each set is stamped with a revision one higher than the last, so the
+// window can drop a completer built before one it has already applied.
+// `/config api-key` is where that matters: it clears the model list
+// and starts the load that fills it in one batch, and a batch's
+// commands run concurrently.
+func (s ChatScreen) rebindCompleter() (ChatScreen, tea.Cmd) {
+	s.completerRevision++
+
+	return s, msgCmd(components.CompleterMsg{
+		Revision:  s.completerRevision,
+		Completer: s.completionSet(),
+	})
 }
 
 // completionSet binds the grammar to the chat-screen's current state.

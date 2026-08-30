@@ -2401,3 +2401,48 @@ func TestChatView_locked_window_names_no_keys(t *testing.T) {
 
 	require.Empty(t, m.(components.ChatView[testKind]).KeyBindings())
 }
+
+// TestChatView_drops_a_completer_it_has_moved_past covers the two
+// completers `/config api-key` publishes: one clearing the model list
+// and one holding the models the load returned. Both are dispatched in
+// one batch, and a batch's commands run concurrently, so the clearing
+// one can arrive second. Applying it then would leave `/add-model`
+// offering no models for the rest of the session.
+func TestChatView_drops_a_completer_it_has_moved_past(t *testing.T) {
+	models := []*command.Node[testKind]{
+		{
+			Name: "add-model",
+			Help: "Add a model",
+			Positionals: []command.Positional[testKind]{
+				{Name: "model", Source: command.LiteralSource[testKind](
+					command.Suggestion{Value: "anthropic/claude-3-haiku", Label: "anthropic/claude-3-haiku"},
+				)},
+			},
+		},
+	}
+	empty := []*command.Node[testKind]{
+		{Name: "add-model", Help: "Add a model"},
+	}
+
+	var m ui.Component = components.NewChatView[testKind](
+		nilContent("#general"), "#general", domain.KindChannel, "testuser", "")
+	m, _ = m.Update(components.CommandsMsg[testKind]{Commands: models})
+	m, _ = m.Update(ui.BoundsMsg{Rect: uv.Rect(20, 0, 60, 24)})
+
+	// The loaded completer arrives first, then the cleared one it
+	// supersedes.
+	m, _ = m.Update(components.CompleterMsg{
+		Revision:  2,
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: models}, Ctx: testKindChannel},
+	})
+	m, _ = m.Update(components.CompleterMsg{
+		Revision:  1,
+		Completer: command.CompletionSet[testKind]{Set: command.Set[testKind]{Commands: empty}, Ctx: testKindChannel},
+	})
+
+	m = typeText(t, m, "/add-model anth")
+
+	require.Equal(t,
+		[]string{"anthropic/claude-3-haiku"},
+		popoverLines(renderToBuffer(m, 60, 24)))
+}

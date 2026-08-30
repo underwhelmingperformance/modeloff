@@ -97,7 +97,7 @@ func (s ChatScreen) setLiveModels(models []chatcmd.ModelOption, state command.Su
 	s.liveModelsState = state
 	s.checklist.modelCount = len(models)
 
-	return s, s.rebindCompleter()
+	return s.rebindCompleter()
 }
 
 func (s ChatScreen) loadLiveModels() tea.Cmd {
