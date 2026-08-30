@@ -1149,14 +1149,17 @@ func TestChatScreen_add_model_short_circuits_when_model_list_unavailable(t *test
 	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
-	// After α, the connect-time live-model load runs in the
-	// connection screen — bypassing it (as this test does) skips
-	// the load entirely. Wait for #general's focus to settle, then
-	// send an APIKeySetResult to drive the chat-screen's refresh
-	// path, which calls `loadLiveModels` against the failing fake;
-	// the resulting failure flips `liveModelsState` to error so
-	// `/add-model` short-circuits.
-	tm.WaitFor("#general")
+	// This test builds its own app, so it does not go through the
+	// connection screen and the live-model load that runs there.
+	// `APIKeySetResult` drives the chat-screen's refresh path, which
+	// calls `loadLiveModels` against the failing fake, and the failure
+	// flips `liveModelsState` to error so `/add-model` short-circuits.
+	//
+	// `handleLiveModelsLoadFailed` addresses its notice to the active
+	// window, and reports to `&modeloff` while there is none. The
+	// focus banner is what says a window is active, so waiting for it
+	// is what puts the notice in the window this test reads.
+	tm.WaitFor("Created channel #general")
 	tm.Send(chatcmd.APIKeySetResult{})
 	tm.WaitFor("Model list unavailable: upstream 503.")
 
@@ -1180,7 +1183,10 @@ func TestChatScreen_add_model_completion_hides_popover_when_model_list_unavailab
 	uitest.SeedChannel(t, user, "#general")
 
 	tm := newChatAppWithConfig(t, h, cfgStore)
-	tm.WaitFor("#general")
+	// Waiting for the focus banner is what puts the load failure in
+	// this window; see
+	// TestChatScreen_add_model_short_circuits_when_model_list_unavailable.
+	tm.WaitFor("Created channel #general")
 	tm.Send(chatcmd.APIKeySetResult{})
 	tm.WaitFor("Model list unavailable: upstream 503.")
 
