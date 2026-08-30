@@ -326,3 +326,82 @@ func TestSidebar_click_activates_and_moves_cursor(t *testing.T) {
 	require.Equal(t, "beta", sb.ActiveKey())
 	require.Equal(t, []string{"beta"}, *activated)
 }
+
+// newMarkingSidebar is [newTestSidebar] with a View that shows which
+// row is active, which the shared helper's View discards.
+func newMarkingSidebar(names ...string) components.Sidebar[sidebarItem, string] {
+	items := set.NewSorted[sidebarItem]()
+	for _, n := range names {
+		items.Insert(sidebarItem{name: n})
+	}
+
+	return components.NewSidebar(items, components.SidebarConfig[sidebarItem, string]{
+		Key: func(i sidebarItem) string { return i.name },
+		View: func(i sidebarItem, state components.ViewState, _ int) string {
+			if state == components.StateActive || state == components.StateActiveSelected {
+				return "▸" + i.name
+			}
+
+			return " " + i.name
+		},
+	})
+}
+
+// markedRows renders the sidebar and returns its rows. The sidebar
+// draws a column of its own to the left of each item, so a row reads
+// as that column, then the marker [newMarkingSidebar]'s View writes,
+// then the name.
+func markedRows(t *testing.T, sb components.Sidebar[sidebarItem, string]) []string {
+	t.Helper()
+
+	updated, _ := sb.Update(ui.BoundsMsg{Rect: uv.Rect(0, 0, 20, 6)})
+	sb = updated.(components.Sidebar[sidebarItem, string])
+
+	screen := uv.NewScreenBuffer(20, 6)
+	sb.Draw(screen, screen.Bounds())
+
+	var rows []string
+	for line := range strings.SplitSeq(ansi.Strip(screen.Render()), "\n") {
+		if strings.TrimSpace(line) != "" {
+			rows = append(rows, strings.TrimRight(line, " "))
+		}
+	}
+
+	return rows
+}
+
+// TestSidebar_activation_before_the_item_arrives covers the order the
+// holder's two messages can reach the sidebar in. The item list and
+// the active key arrive as separate commands, and commands run
+// concurrently, so the activation can land before the insert that
+// brings the item in.
+func TestSidebar_activation_before_the_item_arrives(t *testing.T) {
+	sb := newMarkingSidebar("alpha")
+
+	sb = sb.SetActiveKey("beta")
+	require.Equal(t, []string{"  alpha"}, markedRows(t, sb),
+		"an unresolved key marks nothing")
+
+	sb = sb.Insert(sidebarItem{name: "beta"})
+
+	require.Equal(t, "beta", sb.ActiveKey())
+	require.Equal(t, []string{"  alpha", " ▸beta"}, markedRows(t, sb))
+}
+
+// TestSidebar_removing_the_active_item_clears_the_key pins the other
+// half of that rule. `revalidate` keeps a key it cannot resolve, so
+// removal is what clears one, and an item arriving later under the
+// same key is not marked active on its own.
+func TestSidebar_removing_the_active_item_clears_the_key(t *testing.T) {
+	sb := newMarkingSidebar("alpha", "beta")
+
+	sb = sb.SetActiveKey("beta")
+	sb = sb.Remove(sidebarItem{name: "beta"})
+
+	require.Equal(t, "", sb.ActiveKey())
+
+	sb = sb.Insert(sidebarItem{name: "beta"})
+
+	require.Equal(t, "", sb.ActiveKey())
+	require.Equal(t, []string{"  alpha", "  beta"}, markedRows(t, sb))
+}

@@ -166,7 +166,7 @@ func NewSidebar[T set.Lesser[T], K comparable](
 // nothing is active.
 func (s Sidebar[T, K]) SetItems(items *set.Sorted[T]) Sidebar[T, K] {
 	s.items = items
-	s.revalidate()
+	s.reconcileToItems()
 
 	return s
 }
@@ -199,28 +199,50 @@ func (s Sidebar[T, K]) SetKeyMap(km SidebarKeyMap) Sidebar[T, K] {
 	return s
 }
 
-// SetActiveKey sets the active item by key, leaving the cursor
-// where it is. Returns the sidebar unchanged if the key is not
-// found.
+// SetActiveKey marks the item with this key as the active one, and
+// records the key even when no item holds it yet. The holder learns
+// that an item exists and that it is the active one through two
+// separate messages, and the two are dispatched as commands that run
+// concurrently, so the activation can arrive first. Keeping the key
+// lets [Sidebar.Insert] resolve it when the item arrives; discarding
+// it would leave the list with no active item and nothing to restore
+// one.
+//
+// An unresolved key renders nothing, because [Sidebar.stateFor]
+// matches an item's key against it.
 func (s Sidebar[T, K]) SetActiveKey(k K) Sidebar[T, K] {
+	s.active = k
+	s.hasActive = true
+
 	idx, ok := s.indexOf(k)
 	if !ok {
+		s.activeIdx = -1
+
 		return s
 	}
 
-	s.active = k
 	s.activeIdx = idx
-	s.hasActive = true
 
 	return s
 }
 
-// SetCursorKey moves the cursor to the item with the given key.
-// Returns the sidebar unchanged if the key is not found.
+// SetCursorKey moves the cursor to the item with the given key, and
+// records the key even when no item holds it yet. This is
+// [Sidebar.SetActiveKey]'s rule for the same reason: the holder's two
+// messages race, so the cursor can be placed before the item arrives,
+// and [Sidebar.Insert] resolves the key when it does.
 func (s Sidebar[T, K]) SetCursorKey(k K) Sidebar[T, K] {
-	if idx, ok := s.indexOf(k); ok {
-		s.placeCursor(idx)
+	s.cursor = k
+	s.hasCursor = true
+
+	idx, ok := s.indexOf(k)
+	if !ok {
+		s.cursorIdx = 0
+
+		return s
 	}
+
+	s.cursorIdx = idx
 
 	return s
 }
@@ -240,7 +262,7 @@ func (s Sidebar[T, K]) Insert(item T) Sidebar[T, K] {
 	}
 
 	s.items.Insert(item)
-	s.revalidate()
+	s.resolvePositions()
 
 	return s
 }
@@ -255,7 +277,7 @@ func (s Sidebar[T, K]) Remove(item T) Sidebar[T, K] {
 	}
 
 	s.items.Remove(item)
-	s.revalidate()
+	s.reconcileToItems()
 
 	return s
 }
@@ -588,7 +610,7 @@ func (s *Sidebar[T, K]) activateAt(idx int) tea.Cmd {
 // baseIndex is the item ActivateOffsetMsg and ActivateNextActivityMsg
 // count from: the active item if there is one, otherwise the cursor.
 func (s Sidebar[T, K]) baseIndex() int {
-	if s.hasActive {
+	if s.hasActive && s.activeIdx >= 0 {
 		return s.activeIdx
 	}
 
@@ -625,25 +647,21 @@ func (s Sidebar[T, K]) activateNextActivity() (Sidebar[T, K], tea.Cmd) {
 	return s, nil
 }
 
-// revalidate recalculates the cursor and active positions after the item
-// list changes. An insertion or a removal can shift later items, so a
-// stored index may name a different item than it did, and each is found
-// again by its key.
-func (s *Sidebar[T, K]) revalidate() {
+// resolvePositions re-derives the cursor and active indices from their
+// keys, which an insertion shifts by moving later items along.
+//
+// A key no item holds keeps its place. It is one the holder set before
+// the item arrived, and the insert that brings the item in is what
+// resolves it. [Sidebar.reconcileToItems] is the other reading, for
+// the callers where an unresolved key means the item has gone.
+func (s *Sidebar[T, K]) resolvePositions() {
 	if s.items == nil || s.items.Len() == 0 {
-		s.cursorIdx = 0
-		s.hasCursor = false
-		s.activeIdx = -1
-		s.hasActive = false
-
 		return
 	}
 
 	if s.hasCursor {
 		if idx, ok := s.indexOf(s.cursor); ok {
 			s.cursorIdx = idx
-		} else {
-			s.placeCursor(min(s.cursorIdx, s.items.Len()-1))
 		}
 	}
 
@@ -652,8 +670,41 @@ func (s *Sidebar[T, K]) revalidate() {
 			s.activeIdx = idx
 		} else {
 			s.activeIdx = -1
-			s.hasActive = false
 		}
+	}
+}
+
+// reconcileToItems resolves the positions for the two callers that
+// change which items exist: a removal, and a wholesale replacement of
+// the list. A key that no longer resolves names an item that has gone,
+// so the cursor moves to whatever now occupies its position and the
+// active key is dropped.
+func (s *Sidebar[T, K]) reconcileToItems() {
+	var none K
+
+	if s.items == nil || s.items.Len() == 0 {
+		s.cursor = none
+		s.cursorIdx = 0
+		s.hasCursor = false
+		s.active = none
+		s.activeIdx = -1
+		s.hasActive = false
+
+		return
+	}
+
+	at := s.cursorIdx
+	s.resolvePositions()
+
+	if s.hasCursor {
+		if _, ok := s.indexOf(s.cursor); !ok {
+			s.placeCursor(min(at, s.items.Len()-1))
+		}
+	}
+
+	if s.hasActive && s.activeIdx < 0 {
+		s.active = none
+		s.hasActive = false
 	}
 }
 
