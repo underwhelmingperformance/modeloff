@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
-	github.com/charmbracelet/x/exp/teatest v0.0.0-20260828171018-3c30eef5e73e
+	github.com/charmbracelet/x/exp/teatest v0.0.0-20260830003929-9f48cc723c1c
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/muesli/termenv v0.16.0
