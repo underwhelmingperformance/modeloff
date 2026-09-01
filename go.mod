@@ -13,7 +13,7 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/muesli/termenv v0.16.0
-	github.com/ncruces/go-sqlite3 v0.35.3
+	github.com/ncruces/go-sqlite3 v0.35.4
 	github.com/openai/openai-go/v3 v3.54.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.7
@@ -58,6 +58,7 @@ require (
 	github.com/ncruces/go-sqlite3-wasm v1.0.4-0.20260329114232-2491c387476c // indirect
 	github.com/ncruces/go-sqlite3-wasm/v2 v2.6.35302 // indirect
 	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 // indirect
+	github.com/ncruces/go-sqlite3-wasm/v5 v5.0.35304 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
