@@ -24,6 +24,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/theme"
 	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
 	"github.com/laney/modeloff/internal/userclient"
+	"golang.org/x/text/language"
 )
 
 // UIStateStore persists client-side UX state across restarts. The
@@ -196,6 +197,12 @@ type ChatScreen struct {
 	// goroutine.
 	highlightWords []string
 
+	// timestampFormat and locale are the current timestamp settings.
+	// The screen sends them to the message list whenever they change,
+	// and `/persona` formats the times in its report with them.
+	timestampFormat *string
+	locale          language.Tag
+
 	// configRecoveryBackup is the backup path main.go's loadConfig
 	// moved an unreadable config.json to, set via
 	// WithConfigRecoveryNotice. Empty when config.json loaded
@@ -269,6 +276,8 @@ func NewChatScreen(baseContext func() context.Context, sess SessionReader, mgr *
 	}
 
 	cs.highlightWords = cfg.HighlightWords
+	cs.timestampFormat = cfg.TimestampFormat
+	cs.locale = uitimestamp.CurrentLocale()
 
 	return cs, nil
 }
@@ -302,8 +311,6 @@ func (s ChatScreen) WithConfigRecoveryNotice(backupPath string) ChatScreen {
 // the event drain, inserts the local `&modeloff` server view,
 // and restores focus to the user's prior landing channel.
 func (s ChatScreen) Init() tea.Cmd {
-	cfg, _ := s.loadConfig()
-
 	statusWindow := newWindow(domain.NewStatusWindow(s.sess.ConnectedAt()))
 	s.channels.Insert(statusWindow)
 
@@ -328,8 +335,8 @@ func (s ChatScreen) Init() tea.Cmd {
 			UserNick: s.user.Nick(),
 		}),
 		msgCmd(components.TimestampFormatMsg{
-			Format: cfg.TimestampFormat,
-			Locale: uitimestamp.CurrentLocale(),
+			Format: s.timestampFormat,
+			Locale: s.locale,
 		}),
 		msgCmd(components.SetPlaceholderMsg{Text: s.checklist.text()}),
 	}

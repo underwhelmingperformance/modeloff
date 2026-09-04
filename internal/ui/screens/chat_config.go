@@ -2,6 +2,7 @@ package screens
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/laney/modeloff/internal/ui/chatcmd"
 	"github.com/laney/modeloff/internal/ui/components"
 	uitimestamp "github.com/laney/modeloff/internal/ui/timestamp"
+	"golang.org/x/text/language"
 )
 
 // routeConfigResults handles the result a `/config` change reports,
@@ -59,10 +61,14 @@ func (s ChatScreen) routeConfigResults(
 		return next, cmd, true
 
 	case chatcmd.TimestampFormatSetResult:
-		return s, s.handleTimestampFormatSet(issuingWindow, msg), true
+		next, cmd := s.handleTimestampFormatSet(issuingWindow, msg)
+		return next, cmd, true
 
 	case chatcmd.PersonaResult:
-		return s, s.notice(issuingWindow, formatPersonaResult(msg)), true
+		return s, s.notice(
+			issuingWindow,
+			formatPersonaResult(msg, s.timestampFormat, s.locale),
+		), true
 	}
 
 	return s, nil, false
@@ -76,136 +82,199 @@ func reflectionModelNotice(modelID domain.ModelID) string {
 	return string(modelID)
 }
 
-// formatAmendmentDeparture renders the recorded removal kind and time.
-// Schema v20 could backfill consolidations only, so a retraction or
-// supersession recorded before that migration has no reason to show.
-func formatAmendmentDeparture(departure *domain.AmendmentDeparture) string {
+// formatAmendmentDeparture renders why a tendency is no longer active,
+// and the revision that removed it. Schema v20 could backfill
+// consolidations only, so a retraction or a supersession recorded
+// before that migration has no recorded departure, and the tendency
+// renders with nothing after it.
+func formatAmendmentDeparture(
+	departure *domain.AmendmentDeparture,
+	revision domain.PersonaRevisionID,
+) string {
 	if departure == nil {
-		return " (departure not recorded)"
+		return ""
 	}
 
-	return fmt.Sprintf(" (%s %s)", departure.Kind, departure.At.Format(time.RFC3339))
+	return fmt.Sprintf("  %s r%d", departure.Kind, revision)
 }
 
-func formatPersonaResult(result chatcmd.PersonaResult) string {
+// formatPersonaResult renders an instance's persona lineage as a
+// header, the description in force under it, and one section for each
+// list the lineage holds. Fields within a row are separated by two
+// spaces and appear in the same order on every row, so an operator
+// comparing confidences or revision numbers reads down a column.
+//
+// Times use the operator's configured format, so an inspection reads in
+// the same clock as every other line in the window.
+func formatPersonaResult(
+	result chatcmd.PersonaResult,
+	timestampFormat *string,
+	locale language.Tag,
+) string {
 	inspection := result.Inspection
+	at := func(t time.Time) string {
+		if t.IsZero() {
+			return ""
+		}
+
+		return uitimestamp.Format(t, timestampFormat, locale)
+	}
+
 	var text strings.Builder
-	fmt.Fprintf(&text, "Persona for %s", inspection.Nick)
-	switch result.Action {
-	case chatcmd.PersonaReset:
-		text.WriteString(" reset")
-	case chatcmd.PersonaRolledBack:
-		text.WriteString(" rolled back")
-	case chatcmd.PersonaDescribed:
-		text.WriteString(" described")
-	case chatcmd.PersonaInspected:
+
+	kind, _ := revisionArrivedBy(result)
+	fmt.Fprintf(&text, "%s\n\n  %s\n", columns(
+		fmt.Sprintf("%s  r%d", inspection.Nick, inspection.Revision.ID),
+		string(kind),
+		at(inspection.Revision.CreatedAt),
+	), inspection.Revision.Description)
+
+	field := func(label, value string) {
+		fmt.Fprintf(&text, "\n%-11s %s", label, value)
 	}
-	fmt.Fprintf(
-		&text, ": revision %d; checkpoint %d.\nPersona: %s",
-		inspection.Revision.ID, inspection.Lineage.Checkpoint,
-		inspection.Revision.Description,
-	)
+
 	if len(inspection.Revision.DescriptionEvidence) > 0 {
-		fmt.Fprintf(
-			&text, "\nBuilt from experiences: %s",
-			formatExperienceIDs(inspection.Revision.DescriptionEvidence),
-		)
+		field("built from", formatExperienceIDs(inspection.Revision.DescriptionEvidence))
 	}
+
 	if parent := inspection.Parent; parent != nil &&
 		parent.Description != inspection.Revision.Description {
-		fmt.Fprintf(
-			&text, "\nRevision %d said: %s", parent.ID, parent.Description,
-		)
+		field(fmt.Sprintf("parent r%d", parent.ID), parent.Description)
 	}
-	fmt.Fprintf(&text, "\nReset baseline: %s", inspection.Lineage.Baseline)
 
-	text.WriteString("\nExperiences:")
+	field("baseline", inspection.Lineage.Baseline)
+
+	text.WriteString("\n\nexperiences")
 	if len(inspection.Experiences) == 0 {
-		text.WriteString(" none")
+		text.WriteString("\n  none")
 	}
+
 	for _, experience := range inspection.Experiences {
 		fmt.Fprintf(
-			&text, "\n- #%d [%s/%s; sources %s] %s",
+			&text, "\n  #%d  %s  %s  %s",
 			experience.ID, formatExperienceKind(experience, inspection.Counterparts),
-			experience.Confidence,
-			formatReflectionSources(experience.Sources), experience.Summary,
+			experience.Confidence, experience.Summary,
 		)
 	}
 
-	text.WriteString("\nTendencies:")
+	text.WriteString("\n\ntendencies")
 	if len(inspection.Amendments) == 0 {
-		text.WriteString(" none")
+		text.WriteString("\n  none")
 	}
+
 	for _, amendment := range inspection.Amendments {
 		fmt.Fprintf(
-			&text, "\n- #%d [%s/%s; evidence %s] %s",
+			&text, "\n  #%d  %s  %s  %s",
 			amendment.ID, formatAmendmentScope(amendment, inspection.Counterparts),
-			amendment.Confidence, formatExperienceIDs(amendment.Evidence),
-			amendment.Tendency,
+			amendment.Confidence, amendment.Tendency,
 		)
 	}
 
 	if len(inspection.Departed) > 0 {
-		text.WriteString("\nTendencies this revision removed:")
+		text.WriteString("\n\ntendencies removed")
 	}
+
 	for _, amendment := range inspection.Departed {
 		fmt.Fprintf(
-			&text, "\n- #%d [%s/%s; evidence %s] %s%s",
-			amendment.ID, formatAmendmentScope(amendment, inspection.Counterparts),
-			amendment.Confidence, formatExperienceIDs(amendment.Evidence),
-			amendment.Tendency, formatAmendmentDeparture(amendment.Departure),
+			&text, "\n  #%d  %s%s",
+			amendment.ID, amendment.Tendency,
+			formatAmendmentDeparture(amendment.Departure, inspection.Revision.ID),
 		)
 	}
 
-	text.WriteString("\nRecent reflections:")
+	text.WriteString("\n\nreflections")
 	if len(inspection.RecentRuns) == 0 {
-		text.WriteString(" none")
+		text.WriteString("\n  none")
 	}
+
 	for _, run := range inspection.RecentRuns {
 		experiences, tendencies := reflectionRunCounts(run)
-		fmt.Fprintf(
-			&text,
-			"\n- %s: %s via %s, revision %d -> %d, %s, %s, finished %s",
-			run.ID, run.Outcome, run.ModelID, run.BaseRevisionID,
-			run.ResultRevisionID, experiences, tendencies,
-			run.FinishedAt.Format(time.RFC3339),
-		)
+		fmt.Fprintf(&text, "\n  %s", columns(
+			at(run.FinishedAt), string(run.Outcome),
+			fmt.Sprintf("r%d -> r%d", run.BaseRevisionID, run.ResultRevisionID),
+			experiences, tendencies, string(run.ModelID),
+		))
+
 		if run.RejectionReason != "" {
 			fmt.Fprintf(&text, " (%s)", run.RejectionReason)
 		}
 	}
 
-	text.WriteString("\nRevision transitions:")
-	if len(inspection.Transitions) == 0 {
-		text.WriteString(" none")
-	}
+	// Every accepted reflection in the section above wrote a
+	// transition, so listing all transitions here would report each one
+	// twice. A revision pointer an operator moved by hand appears
+	// nowhere else, and those are what remain.
+	operatorMoves := make([]domain.PersonaTransition, 0, len(inspection.Transitions))
 	for _, transition := range inspection.Transitions {
-		fmt.Fprintf(
-			&text, "\n- %s: %d -> %d at %s",
-			transition.Kind, transition.FromRevisionID, transition.ToRevisionID,
-			transition.At.Format(time.RFC3339),
-		)
+		if transition.Kind != domain.PersonaTransitionReflection {
+			operatorMoves = append(operatorMoves, transition)
+		}
+	}
+
+	if len(operatorMoves) > 0 {
+		text.WriteString("\n\noperator changes")
+	}
+
+	for _, transition := range operatorMoves {
+		fmt.Fprintf(&text, "\n  %s", columns(
+			at(transition.At), string(transition.Kind),
+			fmt.Sprintf("r%d -> r%d", transition.FromRevisionID, transition.ToRevisionID),
+		))
 	}
 
 	return text.String()
 }
 
-func formatReflectionSources(sources []domain.ReflectionEventRef) string {
-	values := make([]string, 0, len(sources))
-	for _, source := range sources {
-		values = append(values, strconv.FormatInt(int64(source.Sequence), 10))
+// columns joins a row's fields with two spaces, dropping any the caller
+// left empty. An operator can switch timestamps off, which empties the
+// leading field of most rows, so a row has to read correctly without
+// it.
+func columns(fields ...string) string {
+	present := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field != "" {
+			present = append(present, field)
+		}
 	}
 
-	return strings.Join(values, ", ")
+	return strings.Join(present, "  ")
+}
+
+// revisionArrivedBy reports what made this revision the active one.
+//
+// When the command wrote a revision, the answer is that write, because
+// an operator who has just reset or rolled back needs to see which of
+// the two happened. When the command only inspected, the answer is the
+// kind of the transition into the active revision. Revision zero was
+// never moved to, and retention can trim an older transition, so this
+// reports false when neither source has an answer.
+func revisionArrivedBy(result chatcmd.PersonaResult) (domain.PersonaTransitionKind, bool) {
+	switch result.Action {
+	case chatcmd.PersonaReset:
+		return domain.PersonaTransitionReset, true
+	case chatcmd.PersonaRolledBack:
+		return domain.PersonaTransitionRollback, true
+	case chatcmd.PersonaDescribed:
+		return domain.PersonaTransitionOperator, true
+	case chatcmd.PersonaInspected:
+	}
+
+	for _, transition := range slices.Backward(result.Inspection.Transitions) {
+		if transition.ToRevisionID == result.Inspection.Revision.ID {
+			return transition.Kind, true
+		}
+	}
+
+	return "", false
 }
 
 func formatExperienceIDs(ids []domain.ExperienceID) string {
 	values := make([]string, 0, len(ids))
 	for _, id := range ids {
-		values = append(values, strconv.FormatInt(int64(id), 10))
+		values = append(values, "#"+strconv.FormatInt(int64(id), 10))
 	}
 
-	return strings.Join(values, ", ")
+	return strings.Join(values, " ")
 }
 
 // formatExperienceKind renders an experience's kind with the actor its subject
@@ -355,7 +424,9 @@ func (s ChatScreen) handleHighlightWordsSet(
 func (s ChatScreen) handleTimestampFormatSet(
 	issuingWindow domain.Window,
 	msg chatcmd.TimestampFormatSetResult,
-) tea.Cmd {
+) (ChatScreen, tea.Cmd) {
+	s.timestampFormat = msg.Format
+
 	var text string
 
 	switch {
@@ -367,11 +438,11 @@ func (s ChatScreen) handleTimestampFormatSet(
 		text = "Timestamps disabled."
 	}
 
-	return tea.Batch(
+	return s, tea.Batch(
 		s.notice(issuingWindow, text),
 		msgCmd(components.TimestampFormatMsg{
-			Format: msg.Format,
-			Locale: uitimestamp.CurrentLocale(),
+			Format: s.timestampFormat,
+			Locale: s.locale,
 		}),
 	)
 }

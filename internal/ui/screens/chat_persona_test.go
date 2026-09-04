@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/text/language"
 
 	"github.com/laney/modeloff/internal/domain"
 	"github.com/laney/modeloff/internal/ui/chatcmd"
@@ -28,7 +29,7 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 			CurrentRevisionID: 4, Checkpoint: 12,
 		},
 		Revision: domain.PersonaRevision{
-			ID: 4, InstanceID: "inst-botty", ParentID: &parentID,
+			ID: 4, InstanceID: "inst-botty", ParentID: &parentID, CreatedAt: at,
 			Description:         "cares more about being right than about being easy to be around",
 			DescriptionEvidence: []domain.ExperienceID{7, 8},
 			ExperienceIDs:       []domain.ExperienceID{7, 8},
@@ -94,19 +95,21 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 			Result: chatcmd.PersonaResult{
 				Action: chatcmd.PersonaInspected, Inspection: inspection,
 			},
-			Text: "Persona for Botty: revision 4; checkpoint 12.\n" +
-				"Persona: cares more about being right than about being easy to be around\n" +
-				"Built from experiences: 7, 8\n" +
-				"Revision 3 said: careful and curious\n" +
-				"Reset baseline: careful and curious\n" +
-				"Experiences:\n- #7 [observation/high; sources 11, 12] Alice supplied a reproduction.\n" +
-				"- #8 [assertion by Alice/medium; sources 12] Alice said the migration is safe to re-run.\n" +
-				"Tendencies:\n- #9 [relationship with Alice/medium; evidence 7] Usually asks for evidence.\n" +
-				"Tendencies this revision removed:\n" +
-				"- #10 [global/low; evidence 7] Gives people a figure. (superseded 2026-08-27T15:00:00Z)\n" +
-				"- #11 [global/low; evidence 7] Answers the question that was asked. (departure not recorded)\n" +
-				"Recent reflections:\n- reflection-12: accepted via test/reflection, revision 3 -> 4, 1 experience, 1 tendency change, finished 2026-08-27T15:00:00Z\n" +
-				"Revision transitions:\n- reflection: 3 -> 4 at 2026-08-27T15:00:00Z",
+			Text: "Botty  r4  reflection  15:00\n" +
+				"\n  cares more about being right than about being easy to be around\n" +
+				"\nbuilt from  #7 #8" +
+				"\nparent r3   careful and curious" +
+				"\nbaseline    careful and curious" +
+				"\n\nexperiences" +
+				"\n  #7  observation  high  Alice supplied a reproduction." +
+				"\n  #8  assertion by Alice  medium  Alice said the migration is safe to re-run." +
+				"\n\ntendencies" +
+				"\n  #9  relationship with Alice  medium  Usually asks for evidence." +
+				"\n\ntendencies removed" +
+				"\n  #10  Gives people a figure.  superseded r4" +
+				"\n  #11  Answers the question that was asked." +
+				"\n\nreflections" +
+				"\n  15:00  accepted  r3 -> r4  1 experience  1 tendency change  test/reflection",
 		},
 		{
 			Name: "reset empty state",
@@ -132,11 +135,12 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 					Transitions:  []domain.PersonaTransition{},
 				},
 			},
-			Text: "Persona for Botty reset: revision 1; checkpoint 12.\n" +
-				"Persona: careful and curious\n" +
-				"Reset baseline: careful and curious\n" +
-				"Experiences: none\nTendencies: none\n" +
-				"Recent reflections: none\nRevision transitions: none",
+			Text: "Botty  r1  reset\n" +
+				"\n  careful and curious\n" +
+				"\nbaseline    careful and curious" +
+				"\n\nexperiences\n  none" +
+				"\n\ntendencies\n  none" +
+				"\n\nreflections\n  none",
 		},
 		{
 			Name: "operator description",
@@ -172,13 +176,15 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 					}},
 				},
 			},
-			Text: "Persona for Botty described: revision 5; checkpoint 12.\n" +
-				"Persona: terse, and unbothered by that\n" +
-				"Revision 3 said: careful and curious\n" +
-				"Reset baseline: careful and curious\n" +
-				"Experiences: none\nTendencies: none\n" +
-				"Recent reflections: none\n" +
-				"Revision transitions:\n- operator: 3 -> 5 at 2026-08-27T15:00:00Z",
+			Text: "Botty  r5  operator\n" +
+				"\n  terse, and unbothered by that\n" +
+				"\nparent r3   careful and curious" +
+				"\nbaseline    careful and curious" +
+				"\n\nexperiences\n  none" +
+				"\n\ntendencies\n  none" +
+				"\n\nreflections\n  none" +
+				"\n\noperator changes" +
+				"\n  15:00  operator  r3 -> r5",
 		},
 		{
 			Name: "departed experience subject and relationship counterpart",
@@ -222,19 +228,20 @@ func TestFormatPersonaResult_reports_complete_bounded_diagnostics(t *testing.T) 
 					Transitions:  []domain.PersonaTransition{},
 				},
 			},
-			Text: "Persona for Botty: revision 4; checkpoint 0.\n" +
-				"Persona: careful and curious\n" +
-				"Reset baseline: careful and curious\n" +
-				"Experiences:\n" +
-				"- #8 [relationship with departed counterpart/low; sources 12] Alice preferred a shorter answer.\n" +
-				"Tendencies:\n- #9 [relationship with departed counterpart/low; evidence 7] Keep earlier trust bounded.\n" +
-				"Recent reflections: none\nRevision transitions: none",
+			Text: "Botty  r4\n" +
+				"\n  careful and curious\n" +
+				"\nbaseline    careful and curious" +
+				"\n\nexperiences" +
+				"\n  #8  relationship with departed counterpart  low  Alice preferred a shorter answer." +
+				"\n\ntendencies" +
+				"\n  #9  relationship with departed counterpart  low  Keep earlier trust bounded." +
+				"\n\nreflections\n  none",
 		},
 	}
 
 	for _, testCase := range cases {
 		t.Run(testCase.Name, func(t *testing.T) {
-			require.Equal(t, testCase.Text, formatPersonaResult(testCase.Result))
+			require.Equal(t, testCase.Text, formatPersonaResult(testCase.Result, nil, language.BritishEnglish))
 		})
 	}
 }
@@ -268,17 +275,16 @@ func TestFormatPersonaResult_reports_what_a_shadow_run_proposed(t *testing.T) {
 		}},
 	}
 
-	text := formatPersonaResult(chatcmd.PersonaResult{Inspection: inspection})
+	text := formatPersonaResult(chatcmd.PersonaResult{Inspection: inspection}, nil, language.BritishEnglish)
 	line := ""
 	for candidate := range strings.SplitSeq(text, "\n") {
-		if strings.HasPrefix(candidate, "- reflection-shadow:") {
+		if strings.Contains(candidate, "  shadow  ") {
 			line = candidate
 		}
 	}
 
 	require.Equal(t, shadowRunLineEffect{
-		Line: "- reflection-shadow: shadow via test/reflection, revision 1 -> 1, " +
-			"3 experiences proposed, 2 tendency changes proposed, " +
-			"finished 2026-08-27T15:00:00Z",
+		Line: "  15:00  shadow  r1 -> r1  3 experiences proposed  " +
+			"2 tendency changes proposed  test/reflection",
 	}, shadowRunLineEffect{Line: line})
 }
