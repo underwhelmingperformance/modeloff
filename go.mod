@@ -15,22 +15,22 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260816001655-68d539dca504
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
-	github.com/ncruces/go-sqlite3 v0.35.3
-	github.com/openai/openai-go/v3 v3.52.0
+	github.com/ncruces/go-sqlite3 v0.35.4
+	github.com/openai/openai-go/v3 v3.56.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/sjson v1.2.5
 	github.com/wk8/go-ordered-map/v2 v2.1.8
-	go.opentelemetry.io/contrib/bridges/otelslog v0.20.0
-	go.opentelemetry.io/otel v1.45.0
-	go.opentelemetry.io/otel/log v0.21.0
-	go.opentelemetry.io/otel/metric v1.45.0
-	go.opentelemetry.io/otel/sdk v1.45.0
-	go.opentelemetry.io/otel/sdk/log v0.21.0
-	go.opentelemetry.io/otel/sdk/metric v1.45.0
-	go.opentelemetry.io/otel/trace v1.45.0
+	go.opentelemetry.io/contrib/bridges/otelslog v0.20.1
+	go.opentelemetry.io/otel v1.46.0
+	go.opentelemetry.io/otel/log v0.22.0
+	go.opentelemetry.io/otel/metric v1.46.0
+	go.opentelemetry.io/otel/sdk v1.46.0
+	go.opentelemetry.io/otel/sdk/log v0.22.0
+	go.opentelemetry.io/otel/sdk/metric v1.46.0
+	go.opentelemetry.io/otel/trace v1.46.0
 	golang.org/x/text v0.41.0
 )
 
@@ -49,11 +49,12 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 // indirect
+	github.com/ncruces/go-sqlite3-wasm/v5 v5.0.35304 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
