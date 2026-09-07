@@ -12,7 +12,7 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260906173415-0277a179edd9
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260816001655-68d539dca504
-	github.com/charmbracelet/x/vt v0.0.0-20260816001655-68d539dca504
+	github.com/charmbracelet/x/vt v0.0.0-20260906004030-3986e9119cf9
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/ncruces/go-sqlite3 v0.35.4
