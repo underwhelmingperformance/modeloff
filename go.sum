@@ -54,6 +54,8 @@ github.com/charmbracelet/x/vt v0.0.0-20260913004009-c615ff2f7805 h1:ryw9EpSw916Z
 github.com/charmbracelet/x/vt v0.0.0-20260913004009-c615ff2f7805/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/x/vt v0.0.0-20260920004010-53e2afe73ae5 h1:Zsy7QX/GcTt7RJw8Hy9SiemYvheLimtK8dF+yx4MbVU=
 github.com/charmbracelet/x/vt v0.0.0-20260920004010-53e2afe73ae5/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
+github.com/charmbracelet/x/vt v0.0.0-20260924144451-d676b019604b h1:2GdxQ8L+rtTeYX4O3TU913nLg/RXHPAd0wiQ7SKqseM=
+github.com/charmbracelet/x/vt v0.0.0-20260924144451-d676b019604b/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/x/windows v0.2.2 h1:IofanmuvaxnKHuV04sC0eBy/smG6kIKrWG2/jYn2GuM=
 github.com/charmbracelet/x/windows v0.2.2/go.mod h1:/8XtdKZzedat74NQFn0NGlGL4soHB0YQZrETF96h75k=
 github.com/clipperhouse/displaywidth v0.11.0 h1:lBc6kY44VFw+TDx4I8opi/EtL9m20WSEFgwIwO+UVM8=
