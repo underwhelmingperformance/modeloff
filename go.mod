@@ -16,7 +16,7 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/ncruces/go-sqlite3 v0.35.6
-	github.com/openai/openai-go/v3 v3.74.0
+	github.com/openai/openai-go/v3 v3.76.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
@@ -31,7 +31,7 @@ require (
 	go.opentelemetry.io/otel/sdk/log v0.22.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	golang.org/x/text v0.42.0
+	golang.org/x/text v0.43.0
 )
 
 require (
@@ -66,7 +66,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
