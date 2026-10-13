@@ -94,6 +94,8 @@ github.com/charmbracelet/x/vt v0.0.0-20261008172826-faa4adf95555 h1:l0NChS3jadPx
 github.com/charmbracelet/x/vt v0.0.0-20261008172826-faa4adf95555/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/x/vt v0.0.0-20261011004359-2acd7e345453 h1:SJnvIdTDlUIciqhwQRJYwRJxo7Ib0XXnaKrIdTinmfE=
 github.com/charmbracelet/x/vt v0.0.0-20261011004359-2acd7e345453/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
+github.com/charmbracelet/x/vt v0.1.0 h1:oVueL3dwH/DlY/z6R6XHA9PQ/w3LdCCq99600Vs48vA=
+github.com/charmbracelet/x/vt v0.1.0/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/x/windows v0.2.2 h1:IofanmuvaxnKHuV04sC0eBy/smG6kIKrWG2/jYn2GuM=
 github.com/charmbracelet/x/windows v0.2.2/go.mod h1:/8XtdKZzedat74NQFn0NGlGL4soHB0YQZrETF96h75k=
 github.com/clipperhouse/displaywidth v0.11.0 h1:lBc6kY44VFw+TDx4I8opi/EtL9m20WSEFgwIwO+UVM8=
@@ -183,6 +185,8 @@ github.com/openai/openai-go/v3 v3.74.0 h1:MvAN/lrn8OUhA5KcFBerS86AzKpc+idrQzSvk8
 github.com/openai/openai-go/v3 v3.74.0/go.mod h1:+dSPa+nbX+dNoXg1jecMnVpgRP+E/5IBA6Jiz9Pc8WM=
 github.com/openai/openai-go/v3 v3.76.0 h1:QYJqbvNueO0rgKIyCMdWt4xI/NWjSs13Yih0ZNbJQ8A=
 github.com/openai/openai-go/v3 v3.76.0/go.mod h1:OHCyuBWptTsxCYQY2WaqdtcbS22WYx2C9yG0CzZ0BU8=
+github.com/openai/openai-go/v3 v3.77.0 h1:a0iVTVtUNGBlScvTr+i2DTbH1v2x2HMkd2XTIwQPzH0=
+github.com/openai/openai-go/v3 v3.77.0/go.mod h1:OHCyuBWptTsxCYQY2WaqdtcbS22WYx2C9yG0CzZ0BU8=
 github.com/pb33f/ordered-map/v2 v2.3.1 h1:5319HDO0aw4DA4gzi+zv4FXU9UlSs3xGZ40wcP1nBjY=
 github.com/pb33f/ordered-map/v2 v2.3.1/go.mod h1:qxFQgd0PkVUtOMCkTapqotNgzRhMPL7VvaHKbd1HnmQ=
 github.com/philippgille/chromem-go v0.7.0 h1:4jfvfyKymjKNfGxBUhHUcj1kp7B17NL/I1P+vGh1RvY=
