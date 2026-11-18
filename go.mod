@@ -16,12 +16,12 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/ncruces/go-sqlite3 v0.37.0
-	github.com/openai/openai-go/v3 v3.100.0
+	github.com/openai/openai-go/v3 v3.102.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/stretchr/testify v1.12.1
-	github.com/tidwall/sjson v1.2.9
+	github.com/tidwall/sjson v1.2.10
 	github.com/wk8/go-ordered-map/v2 v2.1.8
 	go.opentelemetry.io/contrib/bridges/otelslog v0.21.0
 	go.opentelemetry.io/otel v1.47.0
@@ -59,7 +59,7 @@ require (
 	github.com/ncruces/go-sqlite3-wasm/v6 v6.5.35401 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
-	github.com/tidwall/gjson v1.20.2 // indirect
+	github.com/tidwall/gjson v1.20.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.3.0 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
