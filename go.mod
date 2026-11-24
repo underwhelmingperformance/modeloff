@@ -16,7 +16,7 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
 	github.com/ncruces/go-sqlite3 v0.38.0
-	github.com/openai/openai-go/v3 v3.105.0
+	github.com/openai/openai-go/v3 v3.106.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.8-0.20261110175422-3a370411ca06
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
