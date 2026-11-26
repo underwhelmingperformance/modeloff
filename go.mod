@@ -9,7 +9,7 @@ require (
 	github.com/KarpelesLab/strftime v1.0.1
 	github.com/adrg/xdg v0.5.3
 	github.com/charmbracelet/colorprofile v0.4.3
-	github.com/charmbracelet/ultraviolet v0.0.0-20261119151026-8ecbcf0e188c
+	github.com/charmbracelet/ultraviolet v0.0.0-20261125122737-8ed499892fb4
 	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20261122002409-8aab43ea2d8f
 	github.com/charmbracelet/x/vt v0.1.0
