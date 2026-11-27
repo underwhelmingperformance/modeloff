@@ -4,19 +4,19 @@ go 1.26.7
 
 require (
 	charm.land/bubbles/v2 v2.2.2
-	charm.land/bubbletea/v2 v2.1.2
+	charm.land/bubbletea/v2 v2.2.0
 	charm.land/lipgloss/v2 v2.1.1
 	github.com/KarpelesLab/strftime v1.0.1
 	github.com/adrg/xdg v0.5.3
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20261125122737-8ed499892fb4
-	github.com/charmbracelet/x/ansi v0.11.10
+	github.com/charmbracelet/x/ansi v0.12.0
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20261126095604-0c8f306be07e
 	github.com/charmbracelet/x/vt v0.1.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
-	github.com/ncruces/go-sqlite3 v0.38.0
-	github.com/openai/openai-go/v3 v3.106.0
+	github.com/ncruces/go-sqlite3 v0.38.1
+	github.com/openai/openai-go/v3 v3.108.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/rivo/uniseg v0.4.8-0.20261110175422-3a370411ca06
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
