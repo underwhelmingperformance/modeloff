@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20261125122737-8ed499892fb4
 	github.com/charmbracelet/x/ansi v0.11.10
-	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20261122002409-8aab43ea2d8f
+	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20261126095604-0c8f306be07e
 	github.com/charmbracelet/x/vt v0.1.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade
